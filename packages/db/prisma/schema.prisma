@@ -238,13 +238,15 @@ model KnowledgeUnit {
 /// A targeted reveal — the CURRENT state the filter reads. A DM_ONLY unit with a
 /// grant to a character/party becomes visible to exactly them.
 model KnowledgeGrant {
-  id                     String     @id @default(cuid())
+  id                     String   @id @default(cuid())
   knowledgeUnitId        String
-  scope                  GrantScope
+  // The target IS the scope: exactly one of characterId / partyId is set.
+  // No redundant `scope` column to fall out of sync with the target.
+  // "Exactly one" is enforced in the grant-creation helper (Phase 1).
   characterId            String?
   partyId                String?
   revealedByMembershipId String
-  revealedAt             DateTime   @default(now())
+  revealedAt             DateTime @default(now())
 
   knowledgeUnit KnowledgeUnit @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
   character     Character?    @relation("GrantCharacter", fields: [characterId], references: [id], onDelete: Cascade)
