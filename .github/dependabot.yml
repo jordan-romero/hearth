@@ -1,0 +1,46 @@
+version: 2
+updates:
+  # ── npm / pnpm dependencies across the workspace ────────────────────────────
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(dev-deps)"
+    # Wait a few days before opening PRs for a freshly-published version — dodges
+    # the "malicious release, yanked within hours" supply-chain window.
+    cooldown:
+      default-days: 7
+    groups:
+      # Batch routine minor/patch bumps so a solo maintainer isn't buried.
+      production-minor-patch:
+        applies-to: version-updates
+        dependency-type: production
+        update-types: [minor, patch]
+      development-minor-patch:
+        applies-to: version-updates
+        dependency-type: development
+        update-types: [minor, patch]
+      # Batch security fixes into one PR so they land fast.
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+    # Major bumps are intentionally left ungrouped → one PR each, for real review.
+
+  # ── GitHub Actions used in the workflows ────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns: ["*"]
