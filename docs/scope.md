@@ -51,6 +51,20 @@ Locked decisions (2026-07-04):
 - **The permission filter wraps every read on every surface.**
 - **Design system + themes** treated as their own track (see below).
 
+## Fog-of-war UX principle (how the filter shows up on screen)
+- **Players never see what they're missing.** Hidden knowledge is *absent*, not
+  greyed-out or locked. Every player's page looks complete to them — no teasing
+  placeholders, no "🔒" hinting a secret exists.
+- **Revelation is a live moment.** When the DM reveals something, it animates in
+  on the player's open page — **fog lifting**, in real time (Supabase Realtime),
+  no refresh. Creating a grant *is* the event the page subscribes to.
+- **The DM sees the whole world**, fully legible, with small state chips
+  (`Hidden` / `Party` / `Everyone`) for *management* — never as grey-out.
+- **The bot/chat never leaks absence.** A filtered answer stays inside what the
+  character knows and does not hint that anything was withheld.
+- **Map is the one exception to consider:** classic "dark unexplored" fog is often
+  *wanted* on a map. Flagged as a DM option, not assumed.
+
 ## Explicitly OUT (not just later — out)
 - Dice rolling, HP/combat/initiative, full mechanical character sheets, VTT play.
 
