@@ -39,7 +39,10 @@ export interface FilterableKnowledgeUnit {
 }
 
 /** Can this one viewer know this one unit? The whole rule, in one place. */
-export function canView(viewer: Viewer, unit: FilterableKnowledgeUnit): boolean {
+export function canView(
+  viewer: Viewer,
+  unit: FilterableKnowledgeUnit,
+): boolean {
   // 1. Hard campaign boundary — applies to everyone, the DM included.
   if (unit.campaignId !== viewer.campaignId) return false;
 

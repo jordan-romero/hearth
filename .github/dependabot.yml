@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # npm / pnpm dependencies across the workspace
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Batch updates so a solo maintainer isn't buried in PRs.
+      production-dependencies:
+        dependency-type: production
+      development-dependencies:
+        dependency-type: development
+
+  # Keep the GitHub Actions in the CI workflow current
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

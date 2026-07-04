@@ -24,19 +24,51 @@ function unit(
 }
 
 // Viewers in campaign c1
-const dm: Viewer = { campaignId: "c1", role: "DM", characterId: null, partyId: null };
-const alice: Viewer = { campaignId: "c1", role: "PLAYER", characterId: "char-alice", partyId: "party-1" };
-const bob: Viewer = { campaignId: "c1", role: "PLAYER", characterId: "char-bob", partyId: "party-2" };
+const dm: Viewer = {
+  campaignId: "c1",
+  role: "DM",
+  characterId: null,
+  partyId: null,
+};
+const alice: Viewer = {
+  campaignId: "c1",
+  role: "PLAYER",
+  characterId: "char-alice",
+  partyId: "party-1",
+};
+const bob: Viewer = {
+  campaignId: "c1",
+  role: "PLAYER",
+  characterId: "char-bob",
+  partyId: "party-2",
+};
 // A DM of a DIFFERENT campaign
-const dmOfC2: Viewer = { campaignId: "c2", role: "DM", characterId: null, partyId: null };
+const dmOfC2: Viewer = {
+  campaignId: "c2",
+  role: "DM",
+  characterId: null,
+  partyId: null,
+};
 
 // Units
 const sessionFact = unit({ id: "k-session", baseVisibility: "EVERYONE" }); // SESSION → stored EVERYONE
 const dmSecret = unit({ id: "k-secret", baseVisibility: "DM_ONLY" });
 const publicUnit = unit({ id: "k-public", baseVisibility: "PUBLIC" });
-const revealedToAlice = unit({ id: "k-to-alice", baseVisibility: "DM_ONLY", grantedCharacterIds: ["char-alice"] });
-const revealedToParty1 = unit({ id: "k-to-party1", baseVisibility: "DM_ONLY", grantedPartyIds: ["party-1"] });
-const otherCampaignFact = unit({ id: "k-c2", baseVisibility: "EVERYONE", campaignId: "c2" });
+const revealedToAlice = unit({
+  id: "k-to-alice",
+  baseVisibility: "DM_ONLY",
+  grantedCharacterIds: ["char-alice"],
+});
+const revealedToParty1 = unit({
+  id: "k-to-party1",
+  baseVisibility: "DM_ONLY",
+  grantedPartyIds: ["party-1"],
+});
+const otherCampaignFact = unit({
+  id: "k-c2",
+  baseVisibility: "EVERYONE",
+  campaignId: "c2",
+});
 
 describe("filterKnowledge — the permission spine", () => {
   it("never returns DM_ONLY knowledge to a player", () => {
@@ -64,7 +96,13 @@ describe("filterKnowledge — the permission spine", () => {
   });
 
   it("gives the DM everything in their campaign, DM_ONLY included", () => {
-    const all = [sessionFact, dmSecret, revealedToAlice, revealedToParty1, publicUnit];
+    const all = [
+      sessionFact,
+      dmSecret,
+      revealedToAlice,
+      revealedToParty1,
+      publicUnit,
+    ];
     expect(canView(dm, dmSecret)).toBe(true);
     expect(filterKnowledge(dm, all)).toHaveLength(all.length);
   });
@@ -107,7 +145,12 @@ describe("filterKnowledge — the permission spine", () => {
   });
 
   it("a character-less player (no characterId, no party) sees only open knowledge", () => {
-    const spectator: Viewer = { campaignId: "c1", role: "PLAYER", characterId: null, partyId: null };
+    const spectator: Viewer = {
+      campaignId: "c1",
+      role: "PLAYER",
+      characterId: null,
+      partyId: null,
+    };
     expect(canView(spectator, sessionFact)).toBe(true);
     expect(canView(spectator, publicUnit)).toBe(true);
     expect(canView(spectator, dmSecret)).toBe(false);
