@@ -86,6 +86,10 @@ Locked decisions (2026-07-04):
 - **Timeline** = derived from `Session` + unit provenance. No schema change.
 
 ## Design track (because "amazing looking" is a requirement)
+- **Locked visual direction: "Firelight in the dark."** Dark warm-ink ground lit
+  by ember-gold — known things glow, hidden things are simply *absent* (never
+  greyed). Fog-of-war is the visual language, and revelation is an animated
+  fog-lift. Theme presets ride on top of these layouts. (See the wireframe deck.)
 - The web page is a **first-class design effort**, not an afterthought.
 - Explore themes + key screens (codex, character page, graph) as **mockups early**
   — in parallel with building the memory/bot — so visuals are ready by the page phase.
