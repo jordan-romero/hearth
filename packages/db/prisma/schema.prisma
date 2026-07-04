@@ -207,6 +207,10 @@ model KnowledgeUnit {
   title          String
   content        String
 
+  // Semantic-search embedding (Voyage, 1024-dim). Written on create; similarity
+  // search runs via raw SQL ($queryRaw) — Prisma can't express pgvector's `<=>`.
+  embedding Unsupported("vector(1024)")?
+
   // provenance
   gameSessionId String?
 
