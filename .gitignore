@@ -15,6 +15,7 @@ dist/
 
 # prisma
 packages/db/prisma/*.db
+packages/db/src/generated/
 
 # os / editor
 .DS_Store
