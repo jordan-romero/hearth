@@ -1,0 +1,22 @@
+{
+  "name": "hearth",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Hearth — a D&D campaign memory you can talk to, permission-filtered per player.",
+  "packageManager": "pnpm@10.12.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "db:generate": "pnpm --filter @hearth/db generate",
+    "db:migrate": "pnpm --filter @hearth/db migrate"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.6.3"
+  }
+}

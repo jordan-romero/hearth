@@ -1,0 +1,39 @@
+// Hearth — campaign memory schema.
+//
+// This is the SPINE. The real data model (knowledge units + visibility +
+// provenance, multi-campaign) is the next focused deliverable — designed
+// deliberately with a few product decisions still to confirm. For now this
+// file establishes the datasource, generator, and the two enums the whole
+// permission model turns on. Models land in the next step.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL") // pooled (pgbouncer) — app queries
+  directUrl  = env("DIRECT_URL")   // direct — migrations + worker LISTEN/NOTIFY
+  extensions = [vector]            // pgvector, for Phase 1 retrieval
+}
+
+// Where a piece of knowledge came from. Drives the two-tier permission rule.
+enum KnowledgeSource {
+  SESSION   // happened at the table — fair game to those present
+  DM_ADDED  // authored/uploaded by the DM — gated until revealed
+}
+
+// Who may know a knowledge unit. PUBLIC is reserved (schema leaves room per the
+// product plan) but nothing uses it yet.
+enum VisibilityTier {
+  DM_ONLY   // only the DM
+  PLAYERS   // specific named players/characters (via grants)
+  PARTY     // a specific party within the campaign (via grants)
+  EVERYONE  // all members of the campaign
+  PUBLIC    // reserved — not yet used
+}
+
+// TODO (next step): Campaign, User, Membership, Party, Character,
+// KnowledgeUnit, KnowledgeGrant (reveal-in-pieces + audit history),
+// and the pgvector embedding column for retrieval.
