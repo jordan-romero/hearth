@@ -1,0 +1,21 @@
+{
+  "name": "@hearth/bot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "dotenv -e ../../.env -- tsx watch src/index.ts",
+    "start": "dotenv -e ../../.env -- tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hearth/agents": "workspace:*",
+    "@hearth/core": "workspace:*",
+    "@hearth/db": "workspace:*",
+    "discord.js": "^14.16.3"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^8.0.0",
+    "tsx": "^4.19.2"
+  }
+}
