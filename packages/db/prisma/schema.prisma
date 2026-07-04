@@ -1,39 +1,285 @@
-// Hearth — campaign memory schema.
+// Hearth — campaign memory schema (Phase 0: the permission spine).
 //
-// This is the SPINE. The real data model (knowledge units + visibility +
-// provenance, multi-campaign) is the next focused deliverable — designed
-// deliberately with a few product decisions still to confirm. For now this
-// file establishes the datasource, generator, and the two enums the whole
-// permission model turns on. Models land in the next step.
+// Design notes live in docs/data-model.md. This migration ships identity +
+// tenancy (partial) and the memory core. Transcripts, embeddings, recaps, maps,
+// billing, etc. are added additively in their phases — this file is a deliberate
+// SUBSET of that full model, not the whole thing.
+//
+// pgvector (embeddings) is intentionally NOT here yet — it arrives in Phase 1
+// with retrieval, to keep this first migration clean on Supabase.
 
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"]
+  provider = "prisma-client"          // Prisma 7 generator (no binary engine)
+  output   = "../src/generated/prisma" // generates into the repo, not node_modules
+  runtime  = "nodejs"
 }
 
 datasource db {
-  provider   = "postgresql"
-  url        = env("DATABASE_URL") // pooled (pgbouncer) — app queries
-  directUrl  = env("DIRECT_URL")   // direct — migrations + worker LISTEN/NOTIFY
-  extensions = [vector]            // pgvector, for Phase 1 retrieval
+  provider = "postgresql"
+  // Connection URLs live in prisma.config.ts (Prisma 7). At runtime the client
+  // connects via the pg driver adapter using DATABASE_URL (pooled) directly.
 }
 
-// Where a piece of knowledge came from. Drives the two-tier permission rule.
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum MemberRole {
+  DM
+  PLAYER
+}
+
+/// Where a piece of knowledge came from — drives the two-tier permission rule.
 enum KnowledgeSource {
-  SESSION   // happened at the table — fair game to those present
-  DM_ADDED  // authored/uploaded by the DM — gated until revealed
+  SESSION  // happened at the table — fair game to the campaign
+  DM_ADDED // authored/uploaded by the DM — gated until revealed
 }
 
-// Who may know a knowledge unit. PUBLIC is reserved (schema leaves room per the
-// product plan) but nothing uses it yet.
-enum VisibilityTier {
-  DM_ONLY   // only the DM
-  PLAYERS   // specific named players/characters (via grants)
-  PARTY     // a specific party within the campaign (via grants)
-  EVERYONE  // all members of the campaign
-  PUBLIC    // reserved — not yet used
+/// How a DM_ADDED unit originated (provenance/trust). SESSION units are PLAYED.
+enum KnowledgeOrigin {
+  PLAYED
+  AUTHORED
+  GENERATED // NPC generator & friends
 }
 
-// TODO (next step): Campaign, User, Membership, Party, Character,
-// KnowledgeUnit, KnowledgeGrant (reveal-in-pieces + audit history),
-// and the pgvector embedding column for retrieval.
+/// The broad visibility. Targeted reveals (party/character) live in KnowledgeGrant,
+/// so there is a single source of truth. PUBLIC is reserved, unused today.
+enum BaseVisibility {
+  DM_ONLY
+  EVERYONE
+  PUBLIC
+}
+
+enum KnowledgeType {
+  NPC
+  LOCATION
+  EVENT
+  FACT
+  LORE
+  ITEM
+  RELATIONSHIP // links two other units via subject/object
+  THREAD       // an open question / dangling plot
+}
+
+enum GrantScope {
+  CHARACTER
+  PARTY
+}
+
+enum RevealAction {
+  REVEAL
+  REVOKE
+  CHANGE_VISIBILITY
+}
+
+enum CharacterStatus {
+  ACTIVE
+  RETIRED
+  DEAD
+}
+
+enum GameSessionStatus {
+  PLANNED
+  ACTIVE
+  COMPLETE
+}
+
+// ─── Identity & tenancy ──────────────────────────────────────────────────────
+
+model Campaign {
+  id        String   @id @default(cuid())
+  name      String
+  theme     String   @default("firelight") // preset key; see the design track
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships    Membership[]
+  parties        Party[]
+  characters     Character[]
+  gameSessions   GameSession[]
+  knowledgeUnits KnowledgeUnit[]
+}
+
+/// A person. Auth.js will extend this table later; minimal for Phase 0.
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+
+  memberships Membership[]
+}
+
+/// A user's seat in one campaign, with a role.
+model Membership {
+  id         String     @id @default(cuid())
+  userId     String
+  campaignId String
+  role       MemberRole
+  createdAt  DateTime   @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  characters     Character[]
+  grantsRevealed KnowledgeGrant[] @relation("GrantRevealedBy")
+  revealEvents   RevealEvent[]    @relation("RevealBy")
+
+  @@unique([userId, campaignId])
+  @@index([campaignId])
+}
+
+/// A group of characters. Latent for a single table (one party), but modeled so
+/// reveals can target "the party" and split-party is a cheap future upgrade.
+model Party {
+  id         String @id @default(cuid())
+  campaignId String
+  name       String
+
+  campaign     Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  characters   Character[]
+  grants       KnowledgeGrant[] @relation("GrantParty")
+  revealEvents RevealEvent[]    @relation("RevealParty")
+
+  @@index([campaignId])
+}
+
+/// A player's PC — the knowledge-owner viewpoint. Sheet fields are display-only.
+model Character {
+  id           String  @id @default(cuid())
+  campaignId   String
+  membershipId String
+  partyId      String?
+  name         String
+
+  // light, display-only sheet — no dice/HP/combat logic
+  ancestry  String?
+  class     String?
+  level     Int             @default(1)
+  pronouns  String?
+  status    CharacterStatus @default(ACTIVE)
+  avatarUrl String?
+  bio       String?
+  stats     Json? // ability scores etc., purely for display
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaign   Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  party      Party?     @relation(fields: [partyId], references: [id], onDelete: SetNull)
+
+  grants       KnowledgeGrant[] @relation("GrantCharacter")
+  revealEvents RevealEvent[]    @relation("RevealCharacter")
+
+  @@index([campaignId])
+  @@index([membershipId])
+  @@index([partyId])
+}
+
+/// A game session. Empty until Phase 2 (capture) — created now so SESSION
+/// provenance and the Auth.js `Session` naming collision are both handled early.
+model GameSession {
+  id         String            @id @default(cuid())
+  campaignId String
+  number     Int
+  title      String?
+  occurredAt DateTime?
+  status     GameSessionStatus @default(COMPLETE)
+  createdAt  DateTime          @default(now())
+
+  campaign       Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  knowledgeUnits KnowledgeUnit[]
+
+  @@unique([campaignId, number])
+  @@index([campaignId])
+}
+
+// ─── The memory (the spine) ──────────────────────────────────────────────────
+
+/// The atom of campaign memory. A RELATIONSHIP unit links two others via
+/// subject/object, so the relationship graph rides on the same filter for free.
+model KnowledgeUnit {
+  id             String          @id @default(cuid())
+  campaignId     String
+  type           KnowledgeType
+  source         KnowledgeSource
+  origin         KnowledgeOrigin @default(PLAYED)
+  baseVisibility BaseVisibility
+  title          String
+  content        String
+
+  // provenance
+  gameSessionId String?
+
+  // relationships-as-knowledge (self references)
+  subjectId String?
+  objectId  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaign    Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  gameSession GameSession? @relation(fields: [gameSessionId], references: [id], onDelete: SetNull)
+
+  subject   KnowledgeUnit?  @relation("SubjectRel", fields: [subjectId], references: [id], onDelete: SetNull)
+  subjectOf KnowledgeUnit[] @relation("SubjectRel")
+  object    KnowledgeUnit?  @relation("ObjectRel", fields: [objectId], references: [id], onDelete: SetNull)
+  objectOf  KnowledgeUnit[] @relation("ObjectRel")
+
+  grants       KnowledgeGrant[]
+  revealEvents RevealEvent[]
+
+  @@index([campaignId, baseVisibility])
+  @@index([campaignId, type])
+  @@index([gameSessionId])
+  @@index([subjectId])
+  @@index([objectId])
+}
+
+/// A targeted reveal — the CURRENT state the filter reads. A DM_ONLY unit with a
+/// grant to a character/party becomes visible to exactly them.
+model KnowledgeGrant {
+  id                     String   @id @default(cuid())
+  knowledgeUnitId        String
+  // The target IS the scope: exactly one of characterId / partyId is set.
+  // No redundant `scope` column to fall out of sync with the target.
+  // "Exactly one" is enforced in the grant-creation helper (Phase 1).
+  characterId            String?
+  partyId                String?
+  revealedByMembershipId String
+  revealedAt             DateTime @default(now())
+
+  knowledgeUnit KnowledgeUnit @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
+  character     Character?    @relation("GrantCharacter", fields: [characterId], references: [id], onDelete: Cascade)
+  party         Party?        @relation("GrantParty", fields: [partyId], references: [id], onDelete: Cascade)
+  revealedBy    Membership    @relation("GrantRevealedBy", fields: [revealedByMembershipId], references: [id])
+
+  // a unit can be granted to a given character or party at most once
+  @@unique([knowledgeUnitId, characterId])
+  @@unique([knowledgeUnitId, partyId])
+  @@index([knowledgeUnitId])
+  @@index([characterId])
+  @@index([partyId])
+}
+
+/// Append-only audit of every visibility change — the history behind
+/// "reveal in pieces," and the source for the DM dashboard's reveal log.
+model RevealEvent {
+  id              String          @id @default(cuid())
+  knowledgeUnitId String
+  action          RevealAction
+  scope           GrantScope?
+  characterId     String?
+  partyId         String?
+  fromVisibility  BaseVisibility?
+  toVisibility    BaseVisibility?
+  byMembershipId  String
+  note            String?
+  createdAt       DateTime        @default(now())
+
+  knowledgeUnit KnowledgeUnit @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
+  character     Character?    @relation("RevealCharacter", fields: [characterId], references: [id], onDelete: SetNull)
+  party         Party?        @relation("RevealParty", fields: [partyId], references: [id], onDelete: SetNull)
+  by            Membership    @relation("RevealBy", fields: [byMembershipId], references: [id])
+
+  @@index([knowledgeUnitId])
+}
