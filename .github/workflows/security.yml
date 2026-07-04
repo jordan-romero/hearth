@@ -1,0 +1,57 @@
+name: Security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so newly-disclosed issues are caught even without a push.
+    - cron: "0 6 * * 1"
+
+# Cancel superseded runs on the same ref to save minutes.
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Secret scanning: catch committed API keys, DB passwords, tokens ─────────
+  secrets:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history for a complete scan
+      - name: Run gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest \
+            detect --source=/repo --redact --verbose --exit-code=1
+
+  # ── SAST: static analysis for insecure code patterns (free CodeQL stand-in) ──
+  sast:
+    name: static analysis (semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install semgrep
+      - name: Run semgrep
+        run: semgrep scan --config=p/default --config=p/typescript --error
+
+  # ── Dependency audit: fail on known-vulnerable packages ─────────────────────
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Audit (fail on high/critical)
+        run: pnpm audit --audit-level=high
