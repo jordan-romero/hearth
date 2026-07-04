@@ -11,6 +11,10 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       prefix-development: "chore(dev-deps)"
+    # Wait a few days before opening PRs for a freshly-published version — dodges
+    # the "malicious release, yanked within hours" supply-chain window.
+    cooldown:
+      default-days: 7
     groups:
       # Batch routine minor/patch bumps so a solo maintainer isn't buried.
       production-minor-patch:

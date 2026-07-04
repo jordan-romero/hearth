@@ -39,7 +39,10 @@ jobs:
           python-version: "3.12"
       - run: pip install semgrep
       - name: Run semgrep
-        run: semgrep scan --config=p/default --config=p/typescript --error
+        # Code-security SAST rulesets. Supply-chain / CI-config hardening is done
+        # deliberately in config (pnpm build-trust, Dependabot cooldown, etc.)
+        # rather than gated by p/default's noisy package-manager rules.
+        run: semgrep scan --config=p/security-audit --config=p/typescript --config=p/javascript --error
 
   # ── Dependency audit: fail on known-vulnerable packages ─────────────────────
   audit:
@@ -53,5 +56,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Audit (fail on high/critical)
-        run: pnpm audit --audit-level=high
+      - name: Audit production deps (fail on high/critical)
+        # Only shipping deps gate the build; dev-tool advisories (e.g. the
+        # vite/vitest dev server) are tracked by Dependabot but never reach prod.
+        run: pnpm audit --prod --audit-level=high
