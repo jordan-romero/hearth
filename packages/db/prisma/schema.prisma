@@ -95,11 +95,13 @@ model Campaign {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  memberships    Membership[]
-  parties        Party[]
-  characters     Character[]
-  gameSessions   GameSession[]
-  knowledgeUnits KnowledgeUnit[]
+  memberships     Membership[]
+  parties         Party[]
+  characters      Character[]
+  gameSessions    GameSession[]
+  knowledgeUnits  KnowledgeUnit[]
+  sourceDocuments SourceDocument[]
+  documentChunks  DocumentChunk[]
 }
 
 /// A person. Auth.js will extend this table later; minimal for Phase 0.
@@ -383,4 +385,70 @@ model SessionAttendance {
 
   @@unique([gameSessionId, discordUserId])
   @@index([gameSessionId])
+}
+
+// ─── DM inputs (Phase 3) ─────────────────────────────────────────────────────
+
+enum SourceType {
+  UPLOAD // DM dragged a file in — we hold the raw (documents bucket)
+  DISCORD // ingested from a Discord channel/attachment
+  DRIVE
+  NOTION
+  ONENOTE
+}
+
+enum DocumentStatus {
+  PENDING // created, not yet parsed
+  PARSING
+  PARSED // chunked + embedded, ready
+  FAILED
+}
+
+/// A DM-provided source — an uploaded file OR a synced/linked original — plus its
+/// provenance. Doubles as the DM's "library" (a list of everything they've fed in).
+/// Its text is split into DocumentChunks for retrieval.
+model SourceDocument {
+  id          String         @id @default(cuid())
+  campaignId  String
+  name        String
+  sourceType  SourceType     @default(UPLOAD)
+  // Uploaded raw file lives in the `documents` bucket (storagePath); a synced source
+  // instead keeps a link back to the original (sourceUrl) — never both.
+  storagePath String?
+  sourceUrl   String?
+  mimeType    String?
+  status      DocumentStatus @default(PENDING)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  campaign Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  chunks   DocumentChunk[]
+
+  @@index([campaignId])
+}
+
+/// One chunk of a SourceDocument's text, embedded for semantic search (the RAG layer).
+/// Visibility defaults to DM_ONLY (the DM's private prep); a player-visible source (e.g.
+/// a public Discord channel) sets EVERYONE. Reveal to players via a chunk- or
+/// document-level grant — that polymorphic grant/reveal ships with Phase 3's reveal bite;
+/// see docs/data-model.md. Retrieval filters chunks by the SAME permission rules as units.
+model DocumentChunk {
+  id               String         @id @default(cuid())
+  sourceDocumentId String
+  campaignId       String
+  chunkIndex       Int
+  text             String
+  baseVisibility   BaseVisibility @default(DM_ONLY)
+
+  // Voyage 1024-dim, same as KnowledgeUnit; similarity search via raw SQL ($queryRaw).
+  embedding Unsupported("vector(1024)")?
+
+  createdAt DateTime @default(now())
+
+  sourceDocument SourceDocument @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+  campaign       Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceDocumentId, chunkIndex])
+  @@index([campaignId, baseVisibility])
+  @@index([sourceDocumentId])
 }
