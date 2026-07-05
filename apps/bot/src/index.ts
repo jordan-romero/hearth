@@ -3,6 +3,7 @@
 // an answer can never leak to the channel.
 
 import {
+  ChatInputCommandInteraction,
   Client,
   Events,
   GatewayIntentBits,
@@ -14,6 +15,7 @@ import {
 import { prisma } from "@hearth/db";
 import type { Viewer } from "@hearth/core";
 import { ask } from "@hearth/agents";
+import { startRecording, stopRecording } from "./capture.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -38,19 +40,31 @@ const askCommand = new SlashCommandBuilder()
       .setRequired(true),
   );
 
+const recordCommand = new SlashCommandBuilder()
+  .setName("record")
+  .setDescription("Start recording the session in your voice channel.");
+
+const stopCommand = new SlashCommandBuilder()
+  .setName("stop")
+  .setDescription("Stop recording and file the session into the memory.");
+
 async function registerCommands(): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
-  const body = [askCommand.toJSON()];
+  const body = [
+    askCommand.toJSON(),
+    recordCommand.toJSON(),
+    stopCommand.toJSON(),
+  ];
   if (GUILD_ID) {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
       body,
     });
-    // Clear any global command of the same name so it doesn't show as a duplicate.
+    // Clear any global commands of the same name so they don't show as duplicates.
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
-    console.log(`Registered /ask to guild ${GUILD_ID}`);
+    console.log(`Registered commands to guild ${GUILD_ID}`);
   } else {
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body });
-    console.log("Registered /ask globally (can take ~1h to appear)");
+    console.log("Registered commands globally (can take ~1h to appear)");
   }
 }
 
@@ -79,16 +93,10 @@ async function resolveViewer(discordUserId: string): Promise<Viewer | null> {
   };
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-
-client.once(Events.ClientReady, (c) =>
-  console.log(`🔥 Hearth online as ${c.user.tag}`),
-);
-
-client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand() || interaction.commandName !== "ask") {
-    return;
-  }
+/** /ask — answer from the memory, filtered to what the asker's character knows. */
+async function handleAsk(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
   const question = interaction.options.getString("question", true);
 
   // Ephemeral: only the asker sees the answer — nothing leaks to the table.
@@ -111,6 +119,39 @@ client.on(Events.InteractionCreate, async (interaction) => {
     await interaction
       .editReply("Something went wrong reaching the memory.")
       .catch(() => {});
+  }
+}
+
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+});
+
+client.once(Events.ClientReady, (c) =>
+  console.log(`🔥 Hearth online as ${c.user.tag}`),
+);
+
+// A single unhandled 'error' event will crash the process otherwise (spike lesson).
+client.on(Events.Error, (err) => console.error("Discord client error:", err));
+process.on("unhandledRejection", (err) =>
+  console.error("Unhandled rejection:", err),
+);
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  try {
+    switch (interaction.commandName) {
+      case "ask":
+        await handleAsk(interaction);
+        break;
+      case "record":
+        await startRecording(interaction, CAMPAIGN_ID);
+        break;
+      case "stop":
+        await stopRecording(interaction);
+        break;
+    }
+  } catch (err) {
+    console.error(`/${interaction.commandName} failed:`, err);
   }
 });
 
