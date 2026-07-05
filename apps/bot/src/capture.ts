@@ -155,8 +155,8 @@ export async function startRecording(
       selfDeaf: false, // must hear to receive
       selfMute: true,
     });
-    // DIAGNOSTIC: log every voice-connection state change, so we can see if it
-    // reaches Ready and stays there (vs. dropping / reconnecting) on the host.
+    // Voice-connection lifecycle — low-frequency, and the first thing to check if
+    // capture ever goes quiet (does it reach Ready and stay, or drop/reconnect?).
     connection.on("stateChange", (oldState, newState) => {
       console.log(`🔊 voice: ${oldState.status} → ${newState.status}`);
     });
@@ -164,12 +164,12 @@ export async function startRecording(
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
 
     connection.receiver.speaking.on("start", (userId) => {
-      // DIAGNOSTIC: if this never fires while someone talks, Discord's voice
-      // packets aren't reaching us (the host isn't delivering inbound UDP).
-      console.log(`🎤 speaking start: ${userId}`);
       void captureBurst(connection.receiver, userId, state);
     });
 
+    console.log(
+      `🔴 recording started — session ${gameSession.number} in "${channel.name}"`,
+    );
     await interaction.editReply(
       `🔴 Recording session ${gameSession.number} in **${channel.name}** — play on, then \`/stop\`.`,
     );
@@ -224,9 +224,8 @@ async function captureBurst(
 
   const pcmData = Buffer.concat(chunks);
   if (pcmData.length === 0) {
-    // DIAGNOSTIC: speaking fired but no audio decoded — packets arrived empty or
-    // the opus stream produced nothing.
-    console.log(`🎤 burst ${userId}: 0 bytes decoded`);
+    // Speaking fired but nothing decoded — worth a warning (empty/undecodable audio).
+    console.warn(`⚠️  burst from ${userId} decoded to 0 bytes — dropped`);
     return;
   }
   const data = wavFromPcm(stereoToMono(pcmData));
@@ -303,6 +302,12 @@ export async function stopRecording(
     where: { id: state.recordingId },
     data: { status: "TRANSCRIBING", endedAt: new Date() },
   });
+  const clipCount = await prisma.audioClip.count({
+    where: { recordingId: state.recordingId },
+  });
+  console.log(
+    `⏹ recording stopped — ${clipCount} clip(s) captured (recording ${state.recordingId})`,
+  );
   // Now that the recording has stopped, extraction is eligible. If the last clip was
   // already transcribed, this fires it immediately; otherwise the worker fires it when
   // the final clip lands. (Both paths dedupe via the stately queue's singletonKey.)
