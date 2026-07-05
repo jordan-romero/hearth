@@ -1,7 +1,6 @@
 // The Hearth worker — consumes async jobs (transcription, extraction) off the
 // shared pg-boss queue. Runs alongside the bot; deploys to Railway as its own service.
 
-import { PgBoss } from "pg-boss";
 import {
   getQueue,
   getClip,
@@ -9,6 +8,7 @@ import {
   extractSession,
   embedTexts,
   toVectorLiteral,
+  maybeEnqueueExtraction,
   TRANSCRIBE_QUEUE,
   EXTRACT_QUEUE,
   type TranscribeJob,
@@ -58,12 +58,12 @@ async function main(): Promise<void> {
       }
 
       // Mark processed (text OR silence) so completion can be detected, then fire
-      // extraction the moment the recording's last clip lands.
+      // extraction IFF the recording has stopped and this was the last clip.
       await prisma.audioClip.update({
         where: { id: audioClipId },
         data: { transcribedAt: new Date() },
       });
-      await maybeEnqueueExtract(boss, recordingId);
+      await maybeEnqueueExtraction(recordingId);
     }
   });
 
@@ -87,9 +87,11 @@ async function runExtraction(recordingId: string): Promise<void> {
     console.warn(`[extract] recording ${recordingId} not found`);
     return;
   }
-  if (rec.status === "DONE") {
+  if (rec.status !== "TRANSCRIBING") {
+    // Only a stopped-but-unextracted recording is eligible (guards DONE / a stray
+    // job that somehow fired while still CAPTURING).
     console.log(
-      `[extract] recording ${recordingId} already extracted — skipping`,
+      `[extract] recording ${recordingId} not ready (status ${rec.status}) — skipping`,
     );
     return;
   }
@@ -171,20 +173,6 @@ async function finalize(
     where: { id: gameSessionId },
     data: { status: "COMPLETE" },
   });
-}
-
-/** Enqueue extraction once every clip in the recording has been processed.
- * singletonKey = recordingId dedupes the race when several clips finish together. */
-async function maybeEnqueueExtract(
-  boss: PgBoss,
-  recordingId: string,
-): Promise<void> {
-  const pending = await prisma.audioClip.count({
-    where: { recordingId, transcribedAt: null },
-  });
-  if (pending > 0) return;
-  const job: ExtractJob = { recordingId };
-  await boss.send(EXTRACT_QUEUE, job, { singletonKey: recordingId });
 }
 
 main().catch((err) => {

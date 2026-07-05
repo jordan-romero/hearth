@@ -14,15 +14,15 @@ lands later. A handful of cheap forward-looking fields are included early (marke
 
 ## A · Identity & tenancy
 
-| Entity                                       | Purpose                                                  | Phase |
-| -------------------------------------------- | -------------------------------------------------------- | ----- |
-| `User`                                       | A person (Auth.js owns this table)                       | 0/1   |
-| `Account`, `WebSession`, `VerificationToken` | Auth.js adapter tables                                   | 1     |
+| Entity                                       | Purpose                                                    | Phase |
+| -------------------------------------------- | ---------------------------------------------------------- | ----- |
+| `User`                                       | A person (Auth.js owns this table)                         | 0/1   |
+| `Account`, `WebSession`, `VerificationToken` | Auth.js adapter tables                                     | 1     |
 | `Campaign`                                   | Tenant root; owns everything; holds `theme` + `gameSystem` | 0     |
-| `Membership`                                 | User × Campaign, `role` = DM \| PLAYER                   | 0     |
-| `Party`                                      | A group of characters (latent for single-table)          | 0     |
-| `Character`                                  | A PC; light display sheet; belongs to Membership + Party | 0     |
-| `CampaignDiscord`                            | guildId, voiceChannelId, textChannelId ↔ campaign        | 1/2   |
+| `Membership`                                 | User × Campaign, `role` = DM \| PLAYER                     | 0     |
+| `Party`                                      | A group of characters (latent for single-table)            | 0     |
+| `Character`                                  | A PC; light display sheet; belongs to Membership + Party   | 0     |
+| `CampaignDiscord`                            | guildId, voiceChannelId, textChannelId ↔ campaign          | 1/2   |
 
 > ⚑ **Naming fix baked in at Phase 0:** Auth.js's own model is literally named
 > `Session`. Our game session is therefore **`GameSession`** everywhere, so the two

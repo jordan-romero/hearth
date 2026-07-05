@@ -8,7 +8,11 @@
 // not bytes, so WAV costs the same to transcribe — and decoding with opusscript is
 // pure-JS, which keeps the bot free of native addons that fight every deploy.
 
-import type { ChatInputCommandInteraction, GuildMember } from "discord.js";
+import {
+  MessageFlags,
+  type ChatInputCommandInteraction,
+  type GuildMember,
+} from "discord.js";
 import {
   EndBehaviorType,
   entersState,
@@ -21,6 +25,7 @@ import { prisma } from "@hearth/db";
 import {
   getQueue,
   putClip,
+  maybeEnqueueExtraction,
   TRANSCRIBE_QUEUE,
   type TranscribeJob,
 } from "@hearth/agents";
@@ -103,15 +108,18 @@ export async function startRecording(
   if (!guildId || !channel) {
     await interaction.reply({
       content: "Join a voice channel first, then `/record`.",
-      flags: 64, // ephemeral
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
   if (active.has(guildId)) {
-    await interaction.reply({ content: "Already recording.", flags: 64 });
+    await interaction.reply({
+      content: "Already recording.",
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
-  await interaction.deferReply({ flags: 64 });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   // A new game session + its recording container.
   const last = await prisma.gameSession.findFirst({
@@ -139,22 +147,38 @@ export async function startRecording(
   };
   active.set(guildId, state);
 
-  const connection = joinVoiceChannel({
-    channelId: channel.id,
-    guildId,
-    adapterCreator: channel.guild.voiceAdapterCreator,
-    selfDeaf: false, // must hear to receive
-    selfMute: true,
-  });
-  await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+  try {
+    const connection = joinVoiceChannel({
+      channelId: channel.id,
+      guildId,
+      adapterCreator: channel.guild.voiceAdapterCreator,
+      selfDeaf: false, // must hear to receive
+      selfMute: true,
+    });
+    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
 
-  connection.receiver.speaking.on("start", (userId) => {
-    void captureBurst(connection.receiver, userId, state);
-  });
+    connection.receiver.speaking.on("start", (userId) => {
+      void captureBurst(connection.receiver, userId, state);
+    });
 
-  await interaction.editReply(
-    `🔴 Recording session ${gameSession.number} in **${channel.name}** — play on, then \`/stop\`.`,
-  );
+    await interaction.editReply(
+      `🔴 Recording session ${gameSession.number} in **${channel.name}** — play on, then \`/stop\`.`,
+    );
+  } catch (err) {
+    // If joining/awaiting the voice connection fails, undo everything — otherwise the
+    // guild stays "Already recording", the connection leaks, and the recording is
+    // orphaned in CAPTURING forever.
+    console.error("startRecording: voice connection failed:", err);
+    getVoiceConnection(guildId)?.destroy();
+    active.delete(guildId);
+    await prisma.recording.update({
+      where: { id: recording.id },
+      data: { status: "FAILED", endedAt: new Date() },
+    });
+    await interaction
+      .editReply("Couldn't join your voice channel — try `/record` again.")
+      .catch(() => {});
+  }
 }
 
 /** Capture one speaking burst → mono WAV clip → store → AudioClip → enqueue. */
@@ -253,7 +277,10 @@ export async function stopRecording(
   const guildId = interaction.guildId;
   const state = guildId ? active.get(guildId) : undefined;
   if (!guildId || !state) {
-    await interaction.reply({ content: "Not recording.", flags: 64 });
+    await interaction.reply({
+      content: "Not recording.",
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
   getVoiceConnection(guildId)?.destroy();
@@ -262,8 +289,12 @@ export async function stopRecording(
     where: { id: state.recordingId },
     data: { status: "TRANSCRIBING", endedAt: new Date() },
   });
+  // Now that the recording has stopped, extraction is eligible. If the last clip was
+  // already transcribed, this fires it immediately; otherwise the worker fires it when
+  // the final clip lands. (Both paths dedupe via the stately queue's singletonKey.)
+  await maybeEnqueueExtraction(state.recordingId);
   await interaction.reply({
     content: "⏹ Stopped — transcribing the session into the memory.",
-    flags: 64,
+    flags: MessageFlags.Ephemeral,
   });
 }
