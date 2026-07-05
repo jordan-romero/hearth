@@ -94,21 +94,23 @@ client.on(Events.InteractionCreate, async (interaction) => {
   // Ephemeral: only the asker sees the answer — nothing leaks to the table.
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const viewer = await resolveViewer(interaction.user.id);
-  if (!viewer) {
-    await interaction.editReply(
-      "You're not linked to a character in this campaign yet.",
-    );
-    return;
-  }
-
   try {
+    const viewer = await resolveViewer(interaction.user.id);
+    if (!viewer) {
+      await interaction.editReply(
+        "You're not linked to a character in this campaign yet.",
+      );
+      return;
+    }
     const { answer } = await ask(viewer, question);
     const reply = answer.length > 1900 ? `${answer.slice(0, 1900)}…` : answer;
     await interaction.editReply(reply);
   } catch (err) {
-    console.error("ask() failed:", err);
-    await interaction.editReply("Something went wrong reaching the memory.");
+    console.error("/ask failed:", err);
+    // Never let the fallback itself throw and leave the interaction hanging.
+    await interaction
+      .editReply("Something went wrong reaching the memory.")
+      .catch(() => {});
   }
 });
 
