@@ -13,3 +13,11 @@ export interface TranscribeJob {
   startMs: number;
   durationMs: number;
 }
+
+export const EXTRACT_QUEUE = "extract";
+
+/** A fully-transcribed recording, queued for extraction into campaign memory.
+ * Enqueued once (pg-boss singletonKey = recordingId) when the last clip lands. */
+export interface ExtractJob {
+  recordingId: string;
+}

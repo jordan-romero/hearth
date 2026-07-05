@@ -3,7 +3,7 @@
 // pg-boss uses LISTEN/NOTIFY, so it connects on the DIRECT URL (not the pooler).
 
 import { PgBoss } from "pg-boss";
-import { TRANSCRIBE_QUEUE } from "./jobs.js";
+import { TRANSCRIBE_QUEUE, EXTRACT_QUEUE } from "./jobs.js";
 
 let boss: PgBoss | undefined;
 
@@ -16,6 +16,9 @@ export async function getQueue(): Promise<PgBoss> {
   instance.on("error", (err) => console.error("pg-boss error:", err));
   await instance.start();
   await instance.createQueue(TRANSCRIBE_QUEUE); // idempotent
+  // `stately` = at most one extract job per singletonKey (recordingId) per state, so
+  // the completion race can't enqueue (or run) duplicate extractions for a recording.
+  await instance.createQueue(EXTRACT_QUEUE, { policy: "stately" });
   boss = instance;
   return boss;
 }

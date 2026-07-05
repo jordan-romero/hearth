@@ -326,15 +326,18 @@ model Recording {
 
 /// One speaking burst's retained audio (compressed, in Supabase Storage).
 model AudioClip {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   recordingId   String
   characterId   String? // resolved speaker; null if unmapped
   discordUserId String // raw speaker id (provenance / fallback)
   storagePath   String // Supabase Storage object path
   startMs       Int // offset from session start
   durationMs    Int
-  codec         String   @default("opus")
-  createdAt     DateTime @default(now())
+  codec         String    @default("opus")
+  // Set when the worker has processed this clip (text OR silence). A recording is
+  // fully transcribed — and extraction can fire — once no clip has this null.
+  transcribedAt DateTime?
+  createdAt     DateTime  @default(now())
 
   recording Recording          @relation(fields: [recordingId], references: [id], onDelete: Cascade)
   character Character?         @relation(fields: [characterId], references: [id], onDelete: SetNull)
