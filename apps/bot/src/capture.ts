@@ -155,9 +155,18 @@ export async function startRecording(
       selfDeaf: false, // must hear to receive
       selfMute: true,
     });
+    // DIAGNOSTIC: log every voice-connection state change, so we can see if it
+    // reaches Ready and stays there (vs. dropping / reconnecting) on the host.
+    connection.on("stateChange", (oldState, newState) => {
+      console.log(`🔊 voice: ${oldState.status} → ${newState.status}`);
+    });
+
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
 
     connection.receiver.speaking.on("start", (userId) => {
+      // DIAGNOSTIC: if this never fires while someone talks, Discord's voice
+      // packets aren't reaching us (the host isn't delivering inbound UDP).
+      console.log(`🎤 speaking start: ${userId}`);
       void captureBurst(connection.receiver, userId, state);
     });
 
@@ -214,7 +223,12 @@ async function captureBurst(
   state.capturing.delete(userId);
 
   const pcmData = Buffer.concat(chunks);
-  if (pcmData.length === 0) return;
+  if (pcmData.length === 0) {
+    // DIAGNOSTIC: speaking fired but no audio decoded — packets arrived empty or
+    // the opus stream produced nothing.
+    console.log(`🎤 burst ${userId}: 0 bytes decoded`);
+    return;
+  }
   const data = wavFromPcm(stereoToMono(pcmData));
   const durationMs = Date.now() - state.startedAtMs - startMs;
   const characterId = state.speakerMap.get(userId) ?? null;
