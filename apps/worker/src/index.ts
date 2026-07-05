@@ -1,18 +1,56 @@
 // The Hearth worker — consumes async jobs (transcription, extraction) off the
 // shared pg-boss queue. Runs alongside the bot; deploys to Railway as its own service.
 
-import { getQueue, TRANSCRIBE_QUEUE, type TranscribeJob } from "@hearth/agents";
+import {
+  getQueue,
+  getClip,
+  transcribeClip,
+  TRANSCRIBE_QUEUE,
+  type TranscribeJob,
+} from "@hearth/agents";
+import { prisma } from "@hearth/db";
 
 async function main(): Promise<void> {
   const boss = await getQueue();
 
-  // Bite 3 fills this in: getClip(storageKey) → Deepgram → TranscriptSegment.
+  // clip → Deepgram → TranscriptSegment. The transcript for a session is later just
+  // these segments ordered by startMs. A thrown handler lets pg-boss retry the job.
   await boss.work<TranscribeJob>(TRANSCRIBE_QUEUE, async (jobs) => {
     for (const job of jobs) {
-      const { audioClipId, discordUserId, durationMs } = job.data;
-      console.log(
-        `[transcribe] clip ${audioClipId} from ${discordUserId} (${durationMs}ms)`,
-      );
+      const {
+        recordingId,
+        audioClipId,
+        storageKey,
+        discordUserId,
+        characterId,
+        startMs,
+        durationMs,
+      } = job.data;
+
+      const audio = await getClip(storageKey);
+      const text = await transcribeClip(audio);
+      if (!text) {
+        console.log(`[transcribe] clip ${audioClipId}: (silence, skipped)`);
+        continue;
+      }
+
+      // Upsert on the unique audioClipId so a retried job never double-writes.
+      await prisma.transcriptSegment.upsert({
+        where: { audioClipId },
+        create: {
+          recordingId,
+          audioClipId,
+          characterId,
+          discordUserId,
+          startMs,
+          endMs: startMs + durationMs,
+          text,
+        },
+        update: { text, endMs: startMs + durationMs },
+      });
+
+      const preview = text.length > 60 ? `${text.slice(0, 60)}…` : text;
+      console.log(`[transcribe] clip ${audioClipId}: "${preview}"`);
     }
   });
 

@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
+    "@deepgram/sdk": "^5.5.0",
     "@hearth/core": "workspace:*",
     "@hearth/db": "workspace:*",
     "pg-boss": "^12.25.1"

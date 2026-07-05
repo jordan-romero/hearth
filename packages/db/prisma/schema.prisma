@@ -85,11 +85,15 @@ enum GameSessionStatus {
 // ─── Identity & tenancy ──────────────────────────────────────────────────────
 
 model Campaign {
-  id        String   @id @default(cuid())
-  name      String
-  theme     String   @default("firelight") // preset key; see the design track
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String   @id @default(cuid())
+  name       String
+  // Which TTRPG this table plays — a preset key, not an enum, so new systems don't
+  // need a migration. Drives ask() terminology (DM/GM/Keeper) and, later, scopes the
+  // rules-lookup corpus. "2014 vs 2024" is just two values → two SRD corpora.
+  gameSystem String   @default("dnd-2014")
+  theme      String   @default("firelight") // preset key; see the design track
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   memberships    Membership[]
   parties        Party[]

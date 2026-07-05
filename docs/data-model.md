@@ -18,7 +18,7 @@ lands later. A handful of cheap forward-looking fields are included early (marke
 | -------------------------------------------- | -------------------------------------------------------- | ----- |
 | `User`                                       | A person (Auth.js owns this table)                       | 0/1   |
 | `Account`, `WebSession`, `VerificationToken` | Auth.js adapter tables                                   | 1     |
-| `Campaign`                                   | Tenant root; owns everything; holds `theme`              | 0     |
+| `Campaign`                                   | Tenant root; owns everything; holds `theme` + `gameSystem` | 0     |
 | `Membership`                                 | User × Campaign, `role` = DM \| PLAYER                   | 0     |
 | `Party`                                      | A group of characters (latent for single-table)          | 0     |
 | `Character`                                  | A PC; light display sheet; belongs to Membership + Party | 0     |
