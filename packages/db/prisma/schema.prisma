@@ -170,8 +170,11 @@ model Character {
   membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
   party      Party?     @relation(fields: [partyId], references: [id], onDelete: SetNull)
 
-  grants       KnowledgeGrant[] @relation("GrantCharacter")
-  revealEvents RevealEvent[]    @relation("RevealCharacter")
+  grants             KnowledgeGrant[]    @relation("GrantCharacter")
+  revealEvents       RevealEvent[]       @relation("RevealCharacter")
+  audioClips         AudioClip[]
+  transcriptSegments TranscriptSegment[]
+  sessionAttendance  SessionAttendance[]
 
   @@index([campaignId])
   @@index([membershipId])
@@ -189,8 +192,10 @@ model GameSession {
   status     GameSessionStatus @default(COMPLETE)
   createdAt  DateTime          @default(now())
 
-  campaign       Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign       Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   knowledgeUnits KnowledgeUnit[]
+  recording      Recording?
+  attendance     SessionAttendance[]
 
   @@unique([campaignId, number])
   @@index([campaignId])
@@ -289,4 +294,85 @@ model RevealEvent {
   by            Membership    @relation("RevealBy", fields: [byMembershipId], references: [id])
 
   @@index([knowledgeUnitId])
+}
+
+// ─── Capture (Phase 2) ───────────────────────────────────────────────────────
+
+enum RecordingStatus {
+  CAPTURING
+  TRANSCRIBING
+  DONE
+  FAILED
+}
+
+/// One recording per game session — the container, plus the derived playback mix.
+model Recording {
+  id             String          @id @default(cuid())
+  gameSessionId  String          @unique
+  status         RecordingStatus @default(CAPTURING)
+  startedAt      DateTime        @default(now())
+  endedAt        DateTime?
+  mixStoragePath String? // offline ffmpeg mix for session playback (Phase 5)
+  createdAt      DateTime        @default(now())
+
+  gameSession GameSession         @relation(fields: [gameSessionId], references: [id], onDelete: Cascade)
+  clips       AudioClip[]
+  segments    TranscriptSegment[]
+}
+
+/// One speaking burst's retained audio (compressed, in Supabase Storage).
+model AudioClip {
+  id            String   @id @default(cuid())
+  recordingId   String
+  characterId   String? // resolved speaker; null if unmapped
+  discordUserId String // raw speaker id (provenance / fallback)
+  storagePath   String // Supabase Storage object path
+  startMs       Int // offset from session start
+  durationMs    Int
+  codec         String   @default("opus")
+  createdAt     DateTime @default(now())
+
+  recording Recording          @relation(fields: [recordingId], references: [id], onDelete: Cascade)
+  character Character?         @relation(fields: [characterId], references: [id], onDelete: SetNull)
+  segment   TranscriptSegment?
+
+  @@index([recordingId])
+  @@index([characterId])
+}
+
+/// The transcript of one speaking burst — the source for SESSION knowledge units.
+/// The session transcript is these, ordered by startMs (no audio stitching).
+model TranscriptSegment {
+  id            String   @id @default(cuid())
+  recordingId   String
+  audioClipId   String?  @unique
+  characterId   String?
+  discordUserId String
+  startMs       Int
+  endMs         Int
+  text          String
+  createdAt     DateTime @default(now())
+
+  recording Recording  @relation(fields: [recordingId], references: [id], onDelete: Cascade)
+  audioClip AudioClip? @relation(fields: [audioClipId], references: [id], onDelete: SetNull)
+  character Character? @relation(fields: [characterId], references: [id], onDelete: SetNull)
+
+  @@index([recordingId, startMs])
+  @@index([characterId])
+}
+
+/// Who was present in the session's voice channel (split-party + spotlight later).
+model SessionAttendance {
+  id            String    @id @default(cuid())
+  gameSessionId String
+  characterId   String?
+  discordUserId String
+  joinedAt      DateTime  @default(now())
+  leftAt        DateTime?
+
+  gameSession GameSession @relation(fields: [gameSessionId], references: [id], onDelete: Cascade)
+  character   Character?  @relation(fields: [characterId], references: [id], onDelete: SetNull)
+
+  @@unique([gameSessionId, discordUserId])
+  @@index([gameSessionId])
 }
