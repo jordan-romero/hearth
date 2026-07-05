@@ -20,6 +20,7 @@
     "@deepgram/sdk": "^5.5.0",
     "@hearth/core": "workspace:*",
     "@hearth/db": "workspace:*",
+    "@supabase/supabase-js": "^2.110.0",
     "pg-boss": "^12.25.1"
   },
   "devDependencies": {

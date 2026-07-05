@@ -16,6 +16,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "db:generate": "pnpm --filter @hearth/db generate",
+    "db:generate:prod": "pnpm --filter @hearth/db generate:prod",
     "db:migrate": "pnpm --filter @hearth/db migrate"
   },
   "devDependencies": {

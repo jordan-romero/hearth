@@ -35,14 +35,27 @@ interface ActiveRecording {
 
 const active = new Map<string, ActiveRecording>(); // guildId → recording
 
-const SAMPLE_RATE = 48000; // Discord voice is always 48kHz stereo
-const CHANNELS = 2;
+const SAMPLE_RATE = 48000; // Discord voice is always 48kHz
+const DECODE_CHANNELS = 2; // Discord's Opus decodes to stereo…
+const OUTPUT_CHANNELS = 1; // …but each clip is one speaker, so store mono (half the bytes)
 const BIT_DEPTH = 16;
 
-/** Wrap raw PCM (s16le) in a 44-byte WAV header so Deepgram can read it directly. */
+/** Downmix interleaved stereo s16le to mono by averaging the two channels. */
+function stereoToMono(stereo: Buffer): Buffer {
+  const frames = Math.floor(stereo.length / 4); // 2 channels × 2 bytes/sample
+  const mono = Buffer.alloc(frames * 2);
+  for (let i = 0; i < frames; i++) {
+    const l = stereo.readInt16LE(i * 4);
+    const r = stereo.readInt16LE(i * 4 + 2);
+    mono.writeInt16LE((l + r) >> 1, i * 2);
+  }
+  return mono;
+}
+
+/** Wrap raw mono PCM (s16le) in a 44-byte WAV header so Deepgram reads it directly. */
 function wavFromPcm(pcm: Buffer): Buffer {
-  const byteRate = SAMPLE_RATE * CHANNELS * (BIT_DEPTH / 8);
-  const blockAlign = CHANNELS * (BIT_DEPTH / 8);
+  const byteRate = SAMPLE_RATE * OUTPUT_CHANNELS * (BIT_DEPTH / 8);
+  const blockAlign = OUTPUT_CHANNELS * (BIT_DEPTH / 8);
   const header = Buffer.alloc(44);
   header.write("RIFF", 0);
   header.writeUInt32LE(36 + pcm.length, 4);
@@ -50,7 +63,7 @@ function wavFromPcm(pcm: Buffer): Buffer {
   header.write("fmt ", 12);
   header.writeUInt32LE(16, 16); // fmt chunk size
   header.writeUInt16LE(1, 20); // audio format: PCM
-  header.writeUInt16LE(CHANNELS, 22);
+  header.writeUInt16LE(OUTPUT_CHANNELS, 22);
   header.writeUInt32LE(SAMPLE_RATE, 24);
   header.writeUInt32LE(byteRate, 28);
   header.writeUInt16LE(blockAlign, 32);
@@ -144,7 +157,7 @@ export async function startRecording(
   );
 }
 
-/** Capture one speaking burst → Ogg/Opus clip → store → AudioClip → enqueue. */
+/** Capture one speaking burst → mono WAV clip → store → AudioClip → enqueue. */
 async function captureBurst(
   receiver: import("@discordjs/voice").VoiceReceiver,
   userId: string,
@@ -159,7 +172,7 @@ async function captureBurst(
   });
   const decoder = new opus.Decoder({
     rate: SAMPLE_RATE,
-    channels: CHANNELS,
+    channels: DECODE_CHANNELS,
     frameSize: 960,
   });
 
@@ -178,7 +191,7 @@ async function captureBurst(
 
   const pcmData = Buffer.concat(chunks);
   if (pcmData.length === 0) return;
-  const data = wavFromPcm(pcmData);
+  const data = wavFromPcm(stereoToMono(pcmData));
   const durationMs = Date.now() - state.startedAtMs - startMs;
   const characterId = state.speakerMap.get(userId) ?? null;
 
