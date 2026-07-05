@@ -9,7 +9,7 @@
 // with retrieval, to keep this first migration clean on Supabase.
 
 generator client {
-  provider = "prisma-client"          // Prisma 7 generator (no binary engine)
+  provider = "prisma-client" // Prisma 7 generator (no binary engine)
   output   = "../src/generated/prisma" // generates into the repo, not node_modules
   runtime  = "nodejs"
 }
@@ -29,7 +29,7 @@ enum MemberRole {
 
 /// Where a piece of knowledge came from — drives the two-tier permission rule.
 enum KnowledgeSource {
-  SESSION  // happened at the table — fair game to the campaign
+  SESSION // happened at the table — fair game to the campaign
   DM_ADDED // authored/uploaded by the DM — gated until revealed
 }
 
@@ -56,7 +56,7 @@ enum KnowledgeType {
   LORE
   ITEM
   RELATIONSHIP // links two other units via subject/object
-  THREAD       // an open question / dangling plot
+  THREAD // an open question / dangling plot
 }
 
 enum GrantScope {
@@ -100,10 +100,13 @@ model Campaign {
 
 /// A person. Auth.js will extend this table later; minimal for Phase 0.
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
+  id            String   @id @default(cuid())
+  email         String   @unique
+  name          String?
+  // Links a Discord account to this person, so the bot can resolve who's asking.
+  // Set manually now; later populated automatically by Discord login / DM roster.
+  discordUserId String?  @unique
+  createdAt     DateTime @default(now())
 
   memberships Membership[]
 }
@@ -206,6 +209,10 @@ model KnowledgeUnit {
   baseVisibility BaseVisibility
   title          String
   content        String
+
+  // Semantic-search embedding (Voyage, 1024-dim). Written on create; similarity
+  // search runs via raw SQL ($queryRaw) — Prisma can't express pgvector's `<=>`.
+  embedding Unsupported("vector(1024)")?
 
   // provenance
   gameSessionId String?
