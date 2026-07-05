@@ -6,7 +6,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Viewer } from "@hearth/core";
 import { retrieveForViewer, type RetrievedUnit } from "./retrieve.js";
 
-const MODEL = "claude-sonnet-5";
+// Live Q&A runs on Haiku — it's grounded answer-from-context, not deep reasoning,
+// and Haiku is ~3x cheaper (see the pricing model). Extraction stays on Sonnet.
+const MODEL = "claude-haiku-4-5";
 
 const SYSTEM = `You are the living memory of a Dungeons & Dragons campaign, answering a member of the table.
 Use ONLY the knowledge entries provided in the user's message.

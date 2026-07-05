@@ -1,30 +1,18 @@
-// The Hearth worker — consumes async jobs (transcription, extraction) off a
-// pg-boss queue. Runs alongside the bot; deploys to Railway as its own service.
+// The Hearth worker — consumes async jobs (transcription, extraction) off the
+// shared pg-boss queue. Runs alongside the bot; deploys to Railway as its own service.
 
-import { PgBoss } from "pg-boss";
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is not set`);
-  return value;
-}
-
-// pg-boss uses LISTEN/NOTIFY, which does NOT pass through pgbouncer's transaction
-// pooler — so the worker connects on the DIRECT (5432) URL, not the pooled one.
-const boss = new PgBoss(requireEnv("DIRECT_URL"));
-boss.on("error", (err) => console.error("pg-boss error:", err));
-
-/** Queue names (the bot's enqueue side will import these in Bite 2). */
-export const TRANSCRIBE_QUEUE = "transcribe";
+import { getQueue, TRANSCRIBE_QUEUE, type TranscribeJob } from "@hearth/agents";
 
 async function main(): Promise<void> {
-  await boss.start();
-  await boss.createQueue(TRANSCRIBE_QUEUE);
+  const boss = await getQueue();
 
-  // Bite 3 fills this in: pull the clip from Storage → Deepgram → TranscriptSegment.
-  await boss.work(TRANSCRIBE_QUEUE, async (jobs) => {
+  // Bite 3 fills this in: getClip(storageKey) → Deepgram → TranscriptSegment.
+  await boss.work<TranscribeJob>(TRANSCRIBE_QUEUE, async (jobs) => {
     for (const job of jobs) {
-      console.log(`[transcribe] job ${job.id}`, job.data);
+      const { audioClipId, discordUserId, durationMs } = job.data;
+      console.log(
+        `[transcribe] clip ${audioClipId} from ${discordUserId} (${durationMs}ms)`,
+      );
     }
   });
 

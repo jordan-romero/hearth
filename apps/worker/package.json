@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hearth/agents": "workspace:*",
     "@hearth/db": "workspace:*",
     "pg-boss": "^12.25.1"
   },

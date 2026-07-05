@@ -62,9 +62,6 @@ importers:
       prism-media:
         specifier: ^1.3.5
         version: 1.3.5(opusscript@0.0.8)
-      wav:
-        specifier: ^1.0.2
-        version: 1.0.2
     devDependencies:
       dotenv-cli:
         specifier: ^8.0.0
@@ -75,6 +72,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@hearth/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
       '@hearth/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -100,6 +100,9 @@ importers:
       '@hearth/db':
         specifier: workspace:*
         version: link:../db
+      pg-boss:
+        specifier: ^12.25.1
+        version: 12.25.1
     devDependencies:
       dotenv-cli:
         specifier: ^8.0.0
@@ -1142,18 +1145,6 @@ packages:
     resolution: {integrity: sha512-7oFy703dxfY3/NLxC1fh2SUCQ0H9rmAY+5EpDVfXjUTTs+HEwR2nYaqLv+GWcTsumwxPfiz6CzCNkwXwBUwqCA==}
     engines: {node: 18 || 20 || >=22}
 
-  buffer-alloc-unsafe@1.1.0:
-    resolution: {integrity: sha512-TEM2iMIEQdJ2yjPJoSIsldnleVaAk1oW3DBVUykyOLsEsFmEc9kn+SFFPz+gl54KQNxlDnAwCXosOS9Okx2xAg==}
-
-  buffer-alloc@1.2.0:
-    resolution: {integrity: sha512-CFsHQgjtW1UChdXgbyJGtnm+O/uLQeZdtbDo8mfUgYXCHSM1wgrVxXm6bSyrUuErEb+4sYVGCzASBRot7zyrow==}
-
-  buffer-fill@1.0.0:
-    resolution: {integrity: sha512-T7zexNBwiiaCOGDg9xNX9PBmjrubblRkENuptryuI64URkXDFum9il/JGL8Lm8wYfAXpredVXXZz7eMHilimiQ==}
-
-  buffer-from@1.1.2:
-    resolution: {integrity: sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ==}
-
   c12@3.3.4:
     resolution: {integrity: sha512-cM0ApFQSBXuourJejzwv/AuPRvAxordTyParRVcHjjtXirtkzM0uK2L9TTn9s0cXZbG7E55jCivRQzoxYmRAlA==}
     peerDependencies:
@@ -1185,9 +1176,6 @@ packages:
   confbox@0.2.4:
     resolution: {integrity: sha512-ysOGlgTFbN2/Y6Cg3Iye8YKulHw+R2fNXHrgSmXISQdMnomY6eNDprVdW9R5xBguEqI954+S6709UyiO7B+6OQ==}
 
-  core-util-is@1.0.3:
-    resolution: {integrity: sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ==}
-
   cron-parser@5.6.1:
     resolution: {integrity: sha512-QBm4o1PwZiuY7KFbVvW7FLC8bozy7YWzv+Fz6KRS7sQghzcbDZCGxr/Bc5b6TQreAoSwuWVP491dIcK0THCX6A==}
     engines: {node: '>=18'}
@@ -1198,14 +1186,6 @@ packages:
 
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
-
-  debug@2.6.9:
-    resolution: {integrity: sha512-bC7ElrdJaJnPbAP+1EotYvqZsb3ecl5wi6Bfi6BJTUcNowp6cvspg0jXznRTKDjm/E7AdgFBVeAPVMNcKGsHMA==}
-    peerDependencies:
-      supports-color: '*'
-    peerDependenciesMeta:
-      supports-color:
-        optional: true
 
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
@@ -1444,9 +1424,6 @@ packages:
     resolution: {integrity: sha512-JmXMZ6wuvDmLiHEml9ykzqO6lwFbof0GG4IkcGaENdCRDDmMVnny7s5HsIgHCbaq0w2MyPhDqkhTUgS2LU2PHA==}
     engines: {node: '>=0.8.19'}
 
-  inherits@2.0.4:
-    resolution: {integrity: sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==}
-
   is-extglob@2.1.1:
     resolution: {integrity: sha512-SbKbANkN603Vi4jEZv49LeVJMn4yGwsbzZworEoyEiutsN3nJYdbO36zfhGJ6QEDpOZIFkDtnq5JRxmvl3jsoQ==}
     engines: {node: '>=0.10.0'}
@@ -1457,9 +1434,6 @@ packages:
 
   is-property@1.0.2:
     resolution: {integrity: sha512-Ks/IoX00TtClbGQr4TWXemAnktAQvYB7HzcCxDGqEZU6oCmb2INHuOoKxbtR+HFkmYWBKv/dOZtGRiAjDhj92g==}
-
-  isarray@0.0.1:
-    resolution: {integrity: sha512-D2S+3GLxWH+uhrNEcoh/fnmYeP8E8/zHl644d/jdA0g2uyXvy3sb0qxotE+ne0LtccHknQzWwZEzhak7oJ0COQ==}
 
   isexe@2.0.0:
     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
@@ -1536,9 +1510,6 @@ packages:
 
   minimist@1.2.8:
     resolution: {integrity: sha512-2yyAR8qBkN3YuheJanUpWC5U3bb5osDywNB8RzDVlDwDHbocAJveqqj1u8+SVD7jkWT4yvsHCpWqqWqAxb0zCA==}
-
-  ms@2.0.0:
-    resolution: {integrity: sha512-Tpp60P6IUJDTuOq/5Z8cdskzJujfwqfOTkrwIwj7IRISpnkJnT6SyJ4PCPnGMoFjC9ddhal5KVIYtAt97ix05A==}
 
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
@@ -1737,9 +1708,6 @@ packages:
     resolution: {integrity: sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ==}
     engines: {node: '>=0.10.0'}
 
-  readable-stream@1.1.14:
-    resolution: {integrity: sha512-+MeVjFf4L44XUkhM1eYbD8fyEsxcV81pqMSR5gblfcLCHfZvbrqy4/qYHE+/R5HoBUT11WV5O08Cr1n3YXkWVQ==}
-
   readdirp@5.0.0:
     resolution: {integrity: sha512-9u/XQ1pvrQtYyMpZe7DXKv2p5CNvyVwzUB6uhLAnQwHMSgKMBR62lc7AHljaeteeHXn11XTAaLLUVZYVZyuRBQ==}
     engines: {node: '>= 20.19.0'}
@@ -1816,12 +1784,6 @@ packages:
 
   std-env@3.10.0:
     resolution: {integrity: sha512-5GS12FdOZNliM5mAOxFRg7Ir0pWz8MdpYm6AY6VPkGpbA7ZzmbzNcBJQ0GPvvyWgcY7QAhCgf9Uy89I03faLkg==}
-
-  stream-parser@0.3.1:
-    resolution: {integrity: sha512-bJ/HgKq41nlKvlhccD5kaCr/P+Hu0wPNKPJOH7en+YrJu/9EgqUF+88w5Jb6KNcjOFMhfX4B2asfeAtIGuHObQ==}
-
-  string_decoder@0.10.31:
-    resolution: {integrity: sha512-ev2QzSzWPYmy9GuqfIVildA4OdcGLeFZQrq5ys6RtiuF+RQQiZWr8TZNyAcuVXyQRYfEO+MsoB/1BuQVhOJuoQ==}
 
   strip-literal@3.1.0:
     resolution: {integrity: sha512-8r3mkIM/2+PpjHoOtiAW8Rg3jJLHaV7xPwG+YRGrv6FP0wwk/toTpATxWYOW0BKdWwl82VT2tFYi5DlROa0Mxg==}
@@ -1977,9 +1939,6 @@ packages:
         optional: true
       jsdom:
         optional: true
-
-  wav@1.0.2:
-    resolution: {integrity: sha512-viHtz3cDd/Tcr/HbNqzQCofKdF6kWUymH9LGDdskfWFoIy/HJ+RTihgjEcHfnsy1PO4e9B+y4HwgTwMrByquhg==}
 
   which@2.0.2:
     resolution: {integrity: sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA==}
@@ -2863,17 +2822,6 @@ snapshots:
     dependencies:
       balanced-match: 4.0.4
 
-  buffer-alloc-unsafe@1.1.0: {}
-
-  buffer-alloc@1.2.0:
-    dependencies:
-      buffer-alloc-unsafe: 1.1.0
-      buffer-fill: 1.0.0
-
-  buffer-fill@1.0.0: {}
-
-  buffer-from@1.1.2: {}
-
   c12@3.3.4:
     dependencies:
       chokidar: 5.0.0
@@ -2911,8 +2859,6 @@ snapshots:
 
   confbox@0.2.4: {}
 
-  core-util-is@1.0.3: {}
-
   cron-parser@5.6.1:
     dependencies:
       luxon: 3.7.2
@@ -2924,10 +2870,6 @@ snapshots:
       which: 2.0.2
 
   csstype@3.2.3: {}
-
-  debug@2.6.9:
-    dependencies:
-      ms: 2.0.0
 
   debug@4.4.3:
     dependencies:
@@ -3199,8 +3141,6 @@ snapshots:
 
   imurmurhash@0.1.4: {}
 
-  inherits@2.0.4: {}
-
   is-extglob@2.1.1: {}
 
   is-glob@4.0.3:
@@ -3208,8 +3148,6 @@ snapshots:
       is-extglob: 2.1.1
 
   is-property@1.0.2: {}
-
-  isarray@0.0.1: {}
 
   isexe@2.0.0: {}
 
@@ -3272,8 +3210,6 @@ snapshots:
       brace-expansion: 5.0.7
 
   minimist@1.2.8: {}
-
-  ms@2.0.0: {}
 
   ms@2.1.3: {}
 
@@ -3450,13 +3386,6 @@ snapshots:
 
   react@19.2.7: {}
 
-  readable-stream@1.1.14:
-    dependencies:
-      core-util-is: 1.0.3
-      inherits: 2.0.4
-      isarray: 0.0.1
-      string_decoder: 0.10.31
-
   readdirp@5.0.0: {}
 
   remeda@2.33.4: {}
@@ -3535,14 +3464,6 @@ snapshots:
       fast-sha256: 1.3.0
 
   std-env@3.10.0: {}
-
-  stream-parser@0.3.1:
-    dependencies:
-      debug: 2.6.9
-    transitivePeerDependencies:
-      - supports-color
-
-  string_decoder@0.10.31: {}
 
   strip-literal@3.1.0:
     dependencies:
@@ -3687,16 +3608,6 @@ snapshots:
       - sugarss
       - supports-color
       - terser
-
-  wav@1.0.2:
-    dependencies:
-      buffer-alloc: 1.2.0
-      buffer-from: 1.1.2
-      debug: 2.6.9
-      readable-stream: 1.1.14
-      stream-parser: 0.3.1
-    transitivePeerDependencies:
-      - supports-color
 
   which@2.0.2:
     dependencies:
