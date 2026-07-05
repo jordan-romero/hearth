@@ -5,3 +5,4 @@ export * from "./jobs.js";
 export * from "./storage.js";
 export * from "./queue.js";
 export * from "./transcribe.js";
+export * from "./extract.js";

@@ -194,6 +194,7 @@ model GameSession {
   title      String?
   occurredAt DateTime?
   status     GameSessionStatus @default(COMPLETE)
+  recap      String? // prose summary written by extraction; also feeds the timeline
   createdAt  DateTime          @default(now())
 
   campaign       Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
