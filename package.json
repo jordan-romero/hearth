@@ -5,7 +5,7 @@
   "description": "Hearth — a D&D campaign memory you can talk to, permission-filtered per player.",
   "packageManager": "pnpm@10.12.1",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22"
   },
   "scripts": {
     "build": "turbo run build",
