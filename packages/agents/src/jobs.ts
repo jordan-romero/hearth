@@ -21,3 +21,10 @@ export const EXTRACT_QUEUE = "extract";
 export interface ExtractJob {
   recordingId: string;
 }
+
+export const INGEST_QUEUE = "ingest";
+
+/** A stored SourceDocument, queued for parse → chunk → embed (the RAG layer). */
+export interface IngestJob {
+  sourceDocumentId: string;
+}

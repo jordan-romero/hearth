@@ -17,7 +17,8 @@ dist/
 packages/db/prisma/*.db
 packages/db/src/generated/
 
-# local dev clip storage (prod uses Supabase Storage)
+# local dev object storage (prod uses Supabase Storage)
+.hearth-storage/
 .hearth-recordings/
 
 # os / editor

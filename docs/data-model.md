@@ -56,10 +56,24 @@ lands later. A handful of cheap forward-looking fields are included early (marke
 
 ## D · DM inputs
 
-| Entity            | Purpose                                                                                            | Phase |
-| ----------------- | -------------------------------------------------------------------------------------------------- | ----- |
-| `SourceDocument`  | Uploaded file (pdf/text/image), storage ref, status → `DM_ADDED` provenance                        | 3     |
-| _(NPC generator)_ | Writes `KnowledgeUnit` with `origin = GENERATED`, linked to its `GenerationRun` — **no new table** | 3     |
+| Entity            | Purpose                                                                                                                                              | Phase |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| `SourceDocument`  | A DM source (uploaded file OR synced/linked original): `sourceType`, `storagePath?`/`sourceUrl?`, `status`. The DM's library + `DM_ADDED` provenance | 3 ✅  |
+| `DocumentChunk`   | One embedded chunk of a doc's text — the **RAG layer**. `baseVisibility` (DM_ONLY default; EVERYONE for player-visible sources); filtered like units | 3 ✅  |
+| _(NPC generator)_ | Writes `KnowledgeUnit` with `origin = GENERATED`, linked to its `GenerationRun` — **no new table**                                                   | 3     |
+
+> **Corpus ingestion, source-agnostic.** A whole doc corpus (upload → Discord → Notion →
+> Drive) fans out per-file through the queue: parse → chunk → **embed every chunk** (cheap,
+> lossless RAG) → **extract `DM_ADDED` units selectively** (Claude, cost-gated). Raw kept
+> for uploads (the `documents` bucket); synced sources keep a link back. Everything is
+> `DM_ONLY` by default → hidden from players, revealed on cue.
+>
+> **Reveal is polymorphic (built in the Phase 3 reveal bite).** `KnowledgeGrant` /
+> `RevealEvent` gain optional `documentChunkId` / `sourceDocumentId` alongside
+> `knowledgeUnitId` (exactly one target). So a reveal can open a **unit** (a fact), a
+> **chunk** (a passage), or a **whole document** (the "party finds a dossier" case — one
+> grant opens all its chunks). The permission filter checks unit/chunk `baseVisibility`
+> plus grants at all three levels.
 
 ## E · Derived artifacts (generated, permission-scoped)
 

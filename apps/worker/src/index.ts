@@ -9,10 +9,13 @@ import {
   embedTexts,
   toVectorLiteral,
   maybeEnqueueExtraction,
+  ingestDocument,
   TRANSCRIBE_QUEUE,
   EXTRACT_QUEUE,
+  INGEST_QUEUE,
   type TranscribeJob,
   type ExtractJob,
+  type IngestJob,
 } from "@hearth/agents";
 import { prisma } from "@hearth/db";
 
@@ -71,6 +74,13 @@ async function main(): Promise<void> {
   await boss.work<ExtractJob>(EXTRACT_QUEUE, async (jobs) => {
     for (const job of jobs) {
       await runExtraction(job.data.recordingId);
+    }
+  });
+
+  // A stored DM document → parsed → chunked → embedded (the RAG layer).
+  await boss.work<IngestJob>(INGEST_QUEUE, async (jobs) => {
+    for (const job of jobs) {
+      await ingestDocument(job.data.sourceDocumentId);
     }
   });
 

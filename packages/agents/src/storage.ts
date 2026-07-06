@@ -1,10 +1,11 @@
-// Clip storage. Two backends behind one interface (putClip/getClip):
-//   • Supabase Storage — used in prod (bot and worker are separate containers with
-//     no shared disk), enabled when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set.
-//   • Local disk — the zero-config dev fallback, anchored at the repo root so the bot
-//     and worker share one directory regardless of cwd.
-// The bot writes clips (putClip); the worker reads them (getClip). Swapping to S3/R2
-// later means only adding a third branch here — nothing else changes.
+// Object storage. Two backends behind one interface (putObject/getObject), keyed by
+// bucket:
+//   • Supabase Storage — prod (bot and worker are separate containers with no shared
+//     disk), enabled when SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are set.
+//   • Local disk — the zero-config dev fallback, anchored at the repo root so every
+//     process shares one directory regardless of cwd.
+// Buckets: `recordings` (audio clips) and `documents` (DM source files). Swapping to
+// S3/R2 later means only touching putObject/getObject — nothing else changes.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -13,8 +14,12 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const BUCKET = process.env.HEARTH_STORAGE_BUCKET ?? "recordings";
 const useSupabase = Boolean(SUPABASE_URL && SUPABASE_KEY);
+
+export const RECORDINGS_BUCKET =
+  process.env.HEARTH_STORAGE_BUCKET ?? "recordings";
+export const DOCUMENTS_BUCKET =
+  process.env.HEARTH_DOCUMENTS_BUCKET ?? "documents";
 
 // ── Supabase Storage backend ─────────────────────────────────────────────────
 let sb: SupabaseClient | undefined;
@@ -27,46 +32,63 @@ function client(): SupabaseClient {
   return sb;
 }
 
-async function putSupabase(key: string, data: Buffer): Promise<string> {
-  const { error } = await client()
-    .storage.from(BUCKET)
-    .upload(key, data, { contentType: "audio/wav", upsert: true });
-  if (error)
-    throw new Error(`storage upload failed (${key}): ${error.message}`);
-  return key;
-}
-
-async function getSupabase(key: string): Promise<Buffer> {
-  const { data, error } = await client().storage.from(BUCKET).download(key);
-  if (error || !data)
-    throw new Error(`storage download failed (${key}): ${error?.message}`);
-  return Buffer.from(await data.arrayBuffer());
-}
-
 // ── Local-disk backend (dev) ─────────────────────────────────────────────────
-// Anchor to the repo root (…/packages/agents/{src,dist} → up 3).
+// General storage root, anchored to the repo root (…/packages/agents/{src,dist} → up 3);
+// each bucket is a subdirectory.
 const BASE =
   process.env.HEARTH_STORAGE_DIR ??
-  fileURLToPath(new URL("../../../.hearth-recordings", import.meta.url));
+  fileURLToPath(new URL("../../../.hearth-storage", import.meta.url));
 
-async function putDisk(key: string, data: Buffer): Promise<string> {
-  const full = path.join(BASE, key);
+// ── Public interface ─────────────────────────────────────────────────────────
+/** Store `data` under `bucket`/`key`; returns the key. */
+export async function putObject(
+  bucket: string,
+  key: string,
+  data: Buffer,
+  contentType?: string,
+): Promise<string> {
+  if (useSupabase) {
+    const { error } = await client()
+      .storage.from(bucket)
+      .upload(key, data, { contentType, upsert: true });
+    if (error)
+      throw new Error(
+        `storage upload failed (${bucket}/${key}): ${error.message}`,
+      );
+    return key;
+  }
+  const full = path.join(BASE, bucket, key);
   await fs.promises.mkdir(path.dirname(full), { recursive: true });
   await fs.promises.writeFile(full, data);
   return key;
 }
 
-async function getDisk(key: string): Promise<Buffer> {
-  return fs.promises.readFile(path.join(BASE, key));
+/** Read `bucket`/`key` back. */
+export async function getObject(bucket: string, key: string): Promise<Buffer> {
+  if (useSupabase) {
+    const { data, error } = await client().storage.from(bucket).download(key);
+    if (error || !data)
+      throw new Error(
+        `storage download failed (${bucket}/${key}): ${error?.message}`,
+      );
+    return Buffer.from(await data.arrayBuffer());
+  }
+  return fs.promises.readFile(path.join(BASE, bucket, key));
 }
 
-// ── Public interface ─────────────────────────────────────────────────────────
-/** Store a clip's bytes under `key`; returns the key (the AudioClip.storagePath). */
-export async function putClip(key: string, data: Buffer): Promise<string> {
-  return useSupabase ? putSupabase(key, data) : putDisk(key, data);
-}
-
-/** Read a stored clip's bytes back (for transcription). */
-export async function getClip(key: string): Promise<Buffer> {
-  return useSupabase ? getSupabase(key) : getDisk(key);
-}
+// Per-bucket convenience wrappers.
+/** Store a clip's bytes (bot) — returns the key (AudioClip.storagePath). */
+export const putClip = (key: string, data: Buffer): Promise<string> =>
+  putObject(RECORDINGS_BUCKET, key, data, "audio/wav");
+/** Read a stored clip back (worker). */
+export const getClip = (key: string): Promise<Buffer> =>
+  getObject(RECORDINGS_BUCKET, key);
+/** Store a DM source file — returns the key (SourceDocument.storagePath). */
+export const putDocument = (
+  key: string,
+  data: Buffer,
+  contentType?: string,
+): Promise<string> => putObject(DOCUMENTS_BUCKET, key, data, contentType);
+/** Read a stored source file back (ingestion). */
+export const getDocument = (key: string): Promise<Buffer> =>
+  getObject(DOCUMENTS_BUCKET, key);
