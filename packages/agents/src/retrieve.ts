@@ -45,6 +45,7 @@ interface ChunkRow {
   baseVisibility: FilterableKnowledgeUnit["baseVisibility"];
   text: string;
   docName: string;
+  sourceDocumentId: string;
 }
 
 async function embedQuery(question: string): Promise<string | null> {
@@ -94,7 +95,7 @@ async function searchChunks(
 ): Promise<RetrievedChunk[]> {
   const rows = await prisma.$queryRaw<ChunkRow[]>`
     SELECT c."id", c."campaignId", c."baseVisibility"::text AS "baseVisibility",
-           c."text", d."name" AS "docName"
+           c."text", c."sourceDocumentId", d."name" AS "docName"
     FROM "DocumentChunk" c
     JOIN "SourceDocument" d ON d."id" = c."sourceDocumentId"
     WHERE c."campaignId" = ${viewer.campaignId} AND c."embedding" IS NOT NULL
@@ -102,17 +103,45 @@ async function searchChunks(
     LIMIT ${limit * 3}`;
   if (rows.length === 0) return [];
 
-  const candidates: RetrievedChunk[] = rows.map((r) => ({
-    id: r.id,
-    campaignId: r.campaignId,
-    baseVisibility: r.baseVisibility,
-    // Chunk-level grants land with the reveal bite; until then only baseVisibility
-    // (DM_ONLY vs EVERYONE) and the DM-sees-all rule decide.
-    grantedCharacterIds: [],
-    grantedPartyIds: [],
-    text: r.text,
-    docName: r.docName,
-  }));
+  // A chunk is granted to a viewer if the chunk itself is revealed, OR its whole parent
+  // document is revealed. Load both kinds of grant for the candidate chunks/docs.
+  const docIds = [...new Set(rows.map((r) => r.sourceDocumentId))];
+  const grants = await prisma.knowledgeGrant.findMany({
+    where: {
+      OR: [
+        { documentChunkId: { in: rows.map((r) => r.id) } },
+        { sourceDocumentId: { in: docIds } },
+      ],
+    },
+    select: {
+      documentChunkId: true,
+      sourceDocumentId: true,
+      characterId: true,
+      partyId: true,
+    },
+  });
+
+  const candidates: RetrievedChunk[] = rows.map((r) => {
+    const relevant = grants.filter(
+      (g) =>
+        g.documentChunkId === r.id ||
+        (g.sourceDocumentId !== null &&
+          g.sourceDocumentId === r.sourceDocumentId),
+    );
+    return {
+      id: r.id,
+      campaignId: r.campaignId,
+      baseVisibility: r.baseVisibility,
+      grantedCharacterIds: relevant
+        .filter((g) => g.characterId)
+        .map((g) => g.characterId as string),
+      grantedPartyIds: relevant
+        .filter((g) => g.partyId)
+        .map((g) => g.partyId as string),
+      text: r.text,
+      docName: r.docName,
+    };
+  });
 
   const allowed = new Set(filterKnowledge(viewer, candidates).map((c) => c.id));
   return candidates.filter((c) => allowed.has(c.id)).slice(0, limit);

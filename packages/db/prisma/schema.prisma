@@ -261,24 +261,35 @@ model KnowledgeUnit {
 /// grant to a character/party becomes visible to exactly them.
 model KnowledgeGrant {
   id                     String   @id @default(cuid())
-  knowledgeUnitId        String
+  // The grant targets exactly ONE of: a knowledge unit, a document chunk, or a whole
+  // document (a document grant opens all its chunks — the "party finds a dossier" case).
+  // "Exactly one target, exactly one scope" is enforced in revealTo().
+  knowledgeUnitId        String?
+  documentChunkId        String?
+  sourceDocumentId       String?
   // The target IS the scope: exactly one of characterId / partyId is set.
-  // No redundant `scope` column to fall out of sync with the target.
-  // "Exactly one" is enforced in the grant-creation helper (Phase 1).
   characterId            String?
   partyId                String?
   revealedByMembershipId String
   revealedAt             DateTime @default(now())
 
-  knowledgeUnit KnowledgeUnit @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
-  character     Character?    @relation("GrantCharacter", fields: [characterId], references: [id], onDelete: Cascade)
-  party         Party?        @relation("GrantParty", fields: [partyId], references: [id], onDelete: Cascade)
-  revealedBy    Membership    @relation("GrantRevealedBy", fields: [revealedByMembershipId], references: [id])
+  knowledgeUnit  KnowledgeUnit?  @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
+  documentChunk  DocumentChunk?  @relation(fields: [documentChunkId], references: [id], onDelete: Cascade)
+  sourceDocument SourceDocument? @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+  character      Character?      @relation("GrantCharacter", fields: [characterId], references: [id], onDelete: Cascade)
+  party          Party?          @relation("GrantParty", fields: [partyId], references: [id], onDelete: Cascade)
+  revealedBy     Membership      @relation("GrantRevealedBy", fields: [revealedByMembershipId], references: [id])
 
-  // a unit can be granted to a given character or party at most once
+  // A given target can be granted to a given character or party at most once.
   @@unique([knowledgeUnitId, characterId])
   @@unique([knowledgeUnitId, partyId])
+  @@unique([documentChunkId, characterId])
+  @@unique([documentChunkId, partyId])
+  @@unique([sourceDocumentId, characterId])
+  @@unique([sourceDocumentId, partyId])
   @@index([knowledgeUnitId])
+  @@index([documentChunkId])
+  @@index([sourceDocumentId])
   @@index([characterId])
   @@index([partyId])
 }
@@ -286,24 +297,31 @@ model KnowledgeGrant {
 /// Append-only audit of every visibility change — the history behind
 /// "reveal in pieces," and the source for the DM dashboard's reveal log.
 model RevealEvent {
-  id              String          @id @default(cuid())
-  knowledgeUnitId String
-  action          RevealAction
-  scope           GrantScope?
-  characterId     String?
-  partyId         String?
-  fromVisibility  BaseVisibility?
-  toVisibility    BaseVisibility?
-  byMembershipId  String
-  note            String?
-  createdAt       DateTime        @default(now())
+  id               String          @id @default(cuid())
+  // Same polymorphic target as KnowledgeGrant (unit | chunk | document).
+  knowledgeUnitId  String?
+  documentChunkId  String?
+  sourceDocumentId String?
+  action           RevealAction
+  scope            GrantScope?
+  characterId      String?
+  partyId          String?
+  fromVisibility   BaseVisibility?
+  toVisibility     BaseVisibility?
+  byMembershipId   String
+  note             String?
+  createdAt        DateTime        @default(now())
 
-  knowledgeUnit KnowledgeUnit @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
-  character     Character?    @relation("RevealCharacter", fields: [characterId], references: [id], onDelete: SetNull)
-  party         Party?        @relation("RevealParty", fields: [partyId], references: [id], onDelete: SetNull)
-  by            Membership    @relation("RevealBy", fields: [byMembershipId], references: [id])
+  knowledgeUnit  KnowledgeUnit?  @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
+  documentChunk  DocumentChunk?  @relation(fields: [documentChunkId], references: [id], onDelete: SetNull)
+  sourceDocument SourceDocument? @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  character      Character?      @relation("RevealCharacter", fields: [characterId], references: [id], onDelete: SetNull)
+  party          Party?          @relation("RevealParty", fields: [partyId], references: [id], onDelete: SetNull)
+  by             Membership      @relation("RevealBy", fields: [byMembershipId], references: [id])
 
   @@index([knowledgeUnitId])
+  @@index([documentChunkId])
+  @@index([sourceDocumentId])
 }
 
 // ─── Capture (Phase 2) ───────────────────────────────────────────────────────
@@ -427,9 +445,11 @@ model SourceDocument {
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
-  campaign       Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign       Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   chunks         DocumentChunk[]
   knowledgeUnits KnowledgeUnit[]
+  grants         KnowledgeGrant[] // document-level reveals (opens all its chunks)
+  reveals        RevealEvent[]
 
   @@index([campaignId])
 }
@@ -452,8 +472,10 @@ model DocumentChunk {
 
   createdAt DateTime @default(now())
 
-  sourceDocument SourceDocument @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
-  campaign       Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  sourceDocument SourceDocument   @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+  campaign       Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  grants         KnowledgeGrant[] // chunk-level reveals
+  reveals        RevealEvent[]
 
   @@unique([sourceDocumentId, chunkIndex])
   @@index([campaignId, baseVisibility])
