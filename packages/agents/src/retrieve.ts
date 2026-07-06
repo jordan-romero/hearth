@@ -23,6 +23,7 @@ export interface RetrievedUnit extends FilterableKnowledgeUnit {
 export interface RetrievedChunk extends FilterableKnowledgeUnit {
   text: string;
   docName: string;
+  sourceDocumentId: string;
 }
 
 export interface RetrievedContext {
@@ -140,6 +141,7 @@ async function searchChunks(
         .map((g) => g.partyId as string),
       text: r.text,
       docName: r.docName,
+      sourceDocumentId: r.sourceDocumentId,
     };
   });
 

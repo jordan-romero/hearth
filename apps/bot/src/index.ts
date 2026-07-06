@@ -3,6 +3,10 @@
 // an answer can never leak to the channel.
 
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonInteraction,
+  ButtonStyle,
   ChatInputCommandInteraction,
   Client,
   Events,
@@ -18,6 +22,8 @@ import {
   ask,
   putDocument,
   getQueue,
+  retrieveContext,
+  revealTo,
   INGEST_QUEUE,
   type IngestJob,
 } from "@hearth/agents";
@@ -79,6 +85,24 @@ const uploadCommand = new SlashCommandBuilder()
       ),
   );
 
+const revealCommand = new SlashCommandBuilder()
+  .setName("reveal")
+  .setDescription(
+    "(DM) Reveal something from the memory to a character or party.",
+  )
+  .addStringOption((o) =>
+    o
+      .setName("about")
+      .setDescription("What to reveal — a name or description to search for")
+      .setRequired(true),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("to")
+      .setDescription("A character name, or 'party' for everyone")
+      .setRequired(true),
+  );
+
 const dmModeCommand = new SlashCommandBuilder()
   .setName("dmmode")
   .setDescription("(dev) Toggle viewing the campaign as the DM.");
@@ -90,6 +114,7 @@ async function registerCommands(): Promise<void> {
     recordCommand.toJSON(),
     stopCommand.toJSON(),
     uploadCommand.toJSON(),
+    revealCommand.toJSON(),
   ];
   if (DEV_DM_TOGGLE) body.push(dmModeCommand.toJSON());
   if (GUILD_ID) {
@@ -239,6 +264,157 @@ async function handleDmMode(
   });
 }
 
+function preview(s: string): string {
+  const one = s.replace(/\s+/g, " ").trim();
+  return one.length > 160 ? `${one.slice(0, 160)}…` : one;
+}
+function trimLabel(s: string): string {
+  return s.length > 60 ? `${s.slice(0, 60)}…` : s;
+}
+
+/** Resolve a `/reveal to:` string to a character or the party in this campaign. */
+async function resolveRevealTarget(
+  to: string,
+): Promise<{ characterId?: string; partyId?: string; label: string } | null> {
+  const norm = to.trim().toLowerCase();
+  if (["party", "the party", "everyone", "all", "everybody"].includes(norm)) {
+    const party = await prisma.party.findFirst({
+      where: { campaignId: CAMPAIGN_ID },
+    });
+    return party ? { partyId: party.id, label: "the party" } : null;
+  }
+  const character = await prisma.character.findFirst({
+    where: {
+      campaignId: CAMPAIGN_ID,
+      name: { contains: to.trim(), mode: "insensitive" },
+    },
+  });
+  return character
+    ? { characterId: character.id, label: character.name }
+    : null;
+}
+
+/** /reveal — DM only. Find the best matching fact + document for `about`, then show the DM
+ * exactly what they'd release, with Confirm/Cancel buttons — nothing is granted until they
+ * click. (A one-way action, so it must be previewed first.) */
+async function handleReveal(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const viewer = await resolveViewer(interaction.user.id);
+  if (!viewer || viewer.role !== "DM") {
+    await interaction.editReply(
+      "Only the DM can reveal things from the memory.",
+    );
+    return;
+  }
+  const about = interaction.options.getString("about", true);
+  const to = interaction.options.getString("to", true);
+
+  const target = await resolveRevealTarget(to);
+  if (!target) {
+    await interaction.editReply(
+      `Couldn't find a character or party matching "${to}".`,
+    );
+    return;
+  }
+  const scope = target.characterId
+    ? `c:${target.characterId}`
+    : `p:${target.partyId}`;
+
+  const { units, chunks } = await retrieveContext(viewer, about, {
+    unitLimit: 1,
+    chunkLimit: 1,
+  });
+  const unit = units[0];
+  const chunk = chunks[0];
+  if (!unit && !chunk) {
+    await interaction.editReply(`Nothing in the memory matched "${about}".`);
+    return;
+  }
+
+  const lines = [`**Reveal to ${target.label}** — confirm what to release:`];
+  const buttons: ButtonBuilder[] = [];
+  if (unit) {
+    lines.push(
+      `\n📌 **${unit.title}** (${unit.type})\n> ${preview(unit.content)}`,
+    );
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(`rv:u:${unit.id}:${scope}`)
+        .setLabel(`Reveal: ${trimLabel(unit.title)}`)
+        .setStyle(ButtonStyle.Success),
+    );
+  }
+  if (chunk) {
+    lines.push(
+      `\n📄 **${chunk.docName}** (whole document)\n> ${preview(chunk.text)}`,
+    );
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(`rv:d:${chunk.sourceDocumentId}:${scope}`)
+        .setLabel(`Reveal doc: ${trimLabel(chunk.docName)}`)
+        .setStyle(ButtonStyle.Primary),
+    );
+  }
+  buttons.push(
+    new ButtonBuilder()
+      .setCustomId("rv:x")
+      .setLabel("Cancel")
+      .setStyle(ButtonStyle.Secondary),
+  );
+
+  await interaction.editReply({
+    content: lines.join("\n"),
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)],
+  });
+}
+
+/** Confirm/Cancel button from /reveal — creates the grant only on confirm. */
+async function handleRevealButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const [, kind, targetId, scopeType, scopeId] =
+    interaction.customId.split(":");
+  if (kind === "x") {
+    await interaction.update({ content: "Reveal cancelled.", components: [] });
+    return;
+  }
+  const viewer = await resolveViewer(interaction.user.id);
+  if (!viewer || viewer.role !== "DM") {
+    await interaction.update({
+      content: "Only the DM can confirm a reveal.",
+      components: [],
+    });
+    return;
+  }
+  const membership = await prisma.membership.findFirst({
+    where: {
+      campaignId: CAMPAIGN_ID,
+      user: { discordUserId: interaction.user.id },
+    },
+    select: { id: true },
+  });
+  if (!membership) {
+    await interaction.update({
+      content: "Couldn't resolve you.",
+      components: [],
+    });
+    return;
+  }
+  const revealTarget =
+    kind === "u" ? { unitId: targetId } : { documentId: targetId };
+  const scope =
+    scopeType === "c" ? { characterId: scopeId } : { partyId: scopeId };
+  const { revealed } = await revealTo(revealTarget, scope, membership.id);
+  await interaction.update({
+    content: revealed
+      ? "✅ Revealed — they can ask about it now."
+      : "That was already revealed.",
+    components: [],
+  });
+}
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
@@ -254,8 +430,14 @@ process.on("unhandledRejection", (err) =>
 );
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
   try {
+    if (interaction.isButton()) {
+      if (interaction.customId.startsWith("rv:")) {
+        await handleRevealButton(interaction);
+      }
+      return;
+    }
+    if (!interaction.isChatInputCommand()) return;
     switch (interaction.commandName) {
       case "ask":
         await handleAsk(interaction);
@@ -269,12 +451,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case "upload":
         await handleUpload(interaction);
         break;
+      case "reveal":
+        await handleReveal(interaction);
+        break;
       case "dmmode":
         if (DEV_DM_TOGGLE) await handleDmMode(interaction);
         break;
     }
   } catch (err) {
-    console.error(`/${interaction.commandName} failed:`, err);
+    console.error("interaction failed:", err);
   }
 });
 
