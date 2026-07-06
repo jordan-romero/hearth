@@ -4,7 +4,12 @@
 
 import { PgBoss } from "pg-boss";
 import { prisma } from "@hearth/db";
-import { TRANSCRIBE_QUEUE, EXTRACT_QUEUE, type ExtractJob } from "./jobs.js";
+import {
+  TRANSCRIBE_QUEUE,
+  EXTRACT_QUEUE,
+  INGEST_QUEUE,
+  type ExtractJob,
+} from "./jobs.js";
 
 let boss: PgBoss | undefined;
 
@@ -20,6 +25,7 @@ export async function getQueue(): Promise<PgBoss> {
   // `stately` = at most one extract job per singletonKey (recordingId) per state, so
   // the completion race can't enqueue (or run) duplicate extractions for a recording.
   await instance.createQueue(EXTRACT_QUEUE, { policy: "stately" });
+  await instance.createQueue(INGEST_QUEUE);
   boss = instance;
   return boss;
 }

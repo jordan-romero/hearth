@@ -21,7 +21,8 @@
     "@hearth/core": "workspace:*",
     "@hearth/db": "workspace:*",
     "@supabase/supabase-js": "^2.110.0",
-    "pg-boss": "^12.25.1"
+    "pg-boss": "^12.25.1",
+    "unpdf": "^1.6.2"
   },
   "devDependencies": {
     "dotenv-cli": "^8.0.0",

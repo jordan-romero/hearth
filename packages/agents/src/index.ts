@@ -6,3 +6,6 @@ export * from "./storage.js";
 export * from "./queue.js";
 export * from "./transcribe.js";
 export * from "./extract.js";
+export * from "./parse.js";
+export * from "./chunk.js";
+export * from "./ingest.js";
