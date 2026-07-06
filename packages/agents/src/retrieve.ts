@@ -1,7 +1,9 @@
 // Filter-wrapped semantic retrieval — the backbone of "talk to the memory".
 // Shape (from docs/architecture.md): similarity search (I/O) → map → filter (core).
-// The permission filter is the ONLY gate; there is deliberately no visibility
-// logic in the SQL, so the rule lives in exactly one place (@hearth/core).
+// The permission filter is the ONLY gate; there is deliberately no visibility logic in
+// the SQL, so the rule lives in exactly one place (@hearth/core). It's the same filter
+// for KnowledgeUnits AND DocumentChunks — a chunk maps onto FilterableKnowledgeUnit,
+// so the spine is polymorphic for free (chunk-level grants arrive with the reveal bite).
 
 import { prisma } from "@hearth/db";
 import {
@@ -17,7 +19,18 @@ export interface RetrievedUnit extends FilterableKnowledgeUnit {
   type: string;
 }
 
-interface Row {
+/** A retrieved passage from an ingested DM document (the RAG layer). */
+export interface RetrievedChunk extends FilterableKnowledgeUnit {
+  text: string;
+  docName: string;
+}
+
+export interface RetrievedContext {
+  units: RetrievedUnit[];
+  chunks: RetrievedChunk[];
+}
+
+interface UnitRow {
   id: string;
   campaignId: string;
   baseVisibility: FilterableKnowledgeUnit["baseVisibility"];
@@ -26,37 +39,39 @@ interface Row {
   type: string;
 }
 
-/**
- * Return the units most relevant to `question` that `viewer` is allowed to know.
- * Over-fetches by similarity, then drops everything the filter forbids.
- */
-export async function retrieveForViewer(
-  viewer: Viewer,
-  question: string,
-  limit = 8,
-): Promise<RetrievedUnit[]> {
-  const [queryVec] = await embedTexts([question], "query");
-  if (!queryVec) return [];
-  const vec = toVectorLiteral(queryVec);
+interface ChunkRow {
+  id: string;
+  campaignId: string;
+  baseVisibility: FilterableKnowledgeUnit["baseVisibility"];
+  text: string;
+  docName: string;
+}
 
-  // Campaign-scoped nearest neighbours by cosine distance. Over-fetch (×3) so
-  // that dropping gated units still leaves a good set for the viewer.
-  const rows = await prisma.$queryRaw<Row[]>`
+async function embedQuery(question: string): Promise<string | null> {
+  const [vec] = await embedTexts([question], "query");
+  return vec ? toVectorLiteral(vec) : null;
+}
+
+/** Campaign-scoped nearest KnowledgeUnits, permission-filtered. `vec` is a pgvector literal. */
+async function searchUnits(
+  viewer: Viewer,
+  vec: string,
+  limit: number,
+): Promise<RetrievedUnit[]> {
+  // Over-fetch (×3) so dropping gated units still leaves a good set for the viewer.
+  const rows = await prisma.$queryRaw<UnitRow[]>`
     SELECT "id", "campaignId", "baseVisibility"::text AS "baseVisibility",
            "title", "content", "type"::text AS "type"
     FROM "KnowledgeUnit"
     WHERE "campaignId" = ${viewer.campaignId} AND "embedding" IS NOT NULL
     ORDER BY "embedding" <=> ${vec}::vector
     LIMIT ${limit * 3}`;
-
   if (rows.length === 0) return [];
 
-  // Load grants for the candidates → build the filter's input shape.
   const grants = await prisma.knowledgeGrant.findMany({
     where: { knowledgeUnitId: { in: rows.map((r) => r.id) } },
     select: { knowledgeUnitId: true, characterId: true, partyId: true },
   });
-
   const candidates: RetrievedUnit[] = rows.map((r) => ({
     ...r,
     grantedCharacterIds: grants
@@ -67,7 +82,64 @@ export async function retrieveForViewer(
       .map((g) => g.partyId as string),
   }));
 
-  // ── THE SPINE ── drop everything the viewer may not know, then take the top N.
   const allowed = new Set(filterKnowledge(viewer, candidates).map((u) => u.id));
   return candidates.filter((c) => allowed.has(c.id)).slice(0, limit);
+}
+
+/** Campaign-scoped nearest DocumentChunks, permission-filtered. */
+async function searchChunks(
+  viewer: Viewer,
+  vec: string,
+  limit: number,
+): Promise<RetrievedChunk[]> {
+  const rows = await prisma.$queryRaw<ChunkRow[]>`
+    SELECT c."id", c."campaignId", c."baseVisibility"::text AS "baseVisibility",
+           c."text", d."name" AS "docName"
+    FROM "DocumentChunk" c
+    JOIN "SourceDocument" d ON d."id" = c."sourceDocumentId"
+    WHERE c."campaignId" = ${viewer.campaignId} AND c."embedding" IS NOT NULL
+    ORDER BY c."embedding" <=> ${vec}::vector
+    LIMIT ${limit * 3}`;
+  if (rows.length === 0) return [];
+
+  const candidates: RetrievedChunk[] = rows.map((r) => ({
+    id: r.id,
+    campaignId: r.campaignId,
+    baseVisibility: r.baseVisibility,
+    // Chunk-level grants land with the reveal bite; until then only baseVisibility
+    // (DM_ONLY vs EVERYONE) and the DM-sees-all rule decide.
+    grantedCharacterIds: [],
+    grantedPartyIds: [],
+    text: r.text,
+    docName: r.docName,
+  }));
+
+  const allowed = new Set(filterKnowledge(viewer, candidates).map((c) => c.id));
+  return candidates.filter((c) => allowed.has(c.id)).slice(0, limit);
+}
+
+/** The units most relevant to `question` that `viewer` may know (kept for callers/tests). */
+export async function retrieveForViewer(
+  viewer: Viewer,
+  question: string,
+  limit = 8,
+): Promise<RetrievedUnit[]> {
+  const vec = await embedQuery(question);
+  return vec ? searchUnits(viewer, vec, limit) : [];
+}
+
+/** Retrieve BOTH knowledge units and document chunks for `question`, permission-filtered.
+ * Embeds the question once, then searches both sources. */
+export async function retrieveContext(
+  viewer: Viewer,
+  question: string,
+  opts: { unitLimit?: number; chunkLimit?: number } = {},
+): Promise<RetrievedContext> {
+  const vec = await embedQuery(question);
+  if (!vec) return { units: [], chunks: [] };
+  const [units, chunks] = await Promise.all([
+    searchUnits(viewer, vec, opts.unitLimit ?? 8),
+    searchChunks(viewer, vec, opts.chunkLimit ?? 6),
+  ]);
+  return { units, chunks };
 }

@@ -34,6 +34,12 @@ const CLIENT_ID = requireEnv("DISCORD_CLIENT_ID");
 const GUILD_ID = process.env.DISCORD_GUILD_ID; // optional → instant guild registration
 const CAMPAIGN_ID = process.env.HEARTH_CAMPAIGN_ID ?? "seed-ondera";
 
+// DEV ONLY: with HEARTH_DEV_DM_TOGGLE=1, `/dmmode` lets a member view the campaign as the
+// DM (to test DM_ONLY content). Gated behind the flag so it can never exist in a real
+// multi-tenant deployment, where players must not self-promote.
+const DEV_DM_TOGGLE = process.env.HEARTH_DEV_DM_TOGGLE === "1";
+const dmOverride = new Set<string>(); // discord user ids currently viewing as the DM
+
 const askCommand = new SlashCommandBuilder()
   .setName("ask")
   .setDescription(
@@ -66,6 +72,10 @@ const uploadCommand = new SlashCommandBuilder()
       .setRequired(true),
   );
 
+const dmModeCommand = new SlashCommandBuilder()
+  .setName("dmmode")
+  .setDescription("(dev) Toggle viewing the campaign as the DM.");
+
 async function registerCommands(): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
   const body = [
@@ -74,6 +84,7 @@ async function registerCommands(): Promise<void> {
     stopCommand.toJSON(),
     uploadCommand.toJSON(),
   ];
+  if (DEV_DM_TOGGLE) body.push(dmModeCommand.toJSON());
   if (GUILD_ID) {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
       body,
@@ -104,9 +115,13 @@ async function resolveViewer(discordUserId: string): Promise<Viewer | null> {
   const membership = user?.memberships[0];
   if (!membership) return null;
   const character = membership.characters[0];
+  // Dev DM-view override (see /dmmode) — treat this member as the DM so DM_ONLY content
+  // is visible. Never active unless HEARTH_DEV_DM_TOGGLE=1.
+  const role =
+    DEV_DM_TOGGLE && dmOverride.has(discordUserId) ? "DM" : membership.role;
   return {
     campaignId: CAMPAIGN_ID,
-    role: membership.role,
+    role,
     characterId: character?.id ?? null,
     partyId: character?.partyId ?? null,
   };
@@ -199,6 +214,22 @@ async function handleUpload(
   }
 }
 
+/** /dmmode — DEV ONLY: toggle whether you're treated as the DM (see DM_ONLY content). */
+async function handleDmMode(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const id = interaction.user.id;
+  const on = !dmOverride.has(id);
+  if (on) dmOverride.add(id);
+  else dmOverride.delete(id);
+  await interaction.reply({
+    content: on
+      ? "🎭 DM view **on** — you now see everything in the campaign (DM_ONLY included)."
+      : "🎭 DM view **off** — back to your character's knowledge.",
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
@@ -228,6 +259,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case "upload":
         await handleUpload(interaction);
+        break;
+      case "dmmode":
+        if (DEV_DM_TOGGLE) await handleDmMode(interaction);
         break;
     }
   } catch (err) {
