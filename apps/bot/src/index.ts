@@ -28,6 +28,7 @@ import {
   type IngestJob,
 } from "@hearth/agents";
 import { startRecording, stopRecording } from "./capture.js";
+import { answerEmbed } from "./embeds.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -176,9 +177,10 @@ async function handleAsk(
       );
       return;
     }
-    const { answer } = await ask(viewer, question);
-    const reply = answer.length > 1900 ? `${answer.slice(0, 1900)}…` : answer;
-    await interaction.editReply(reply);
+    const result = await ask(viewer, question);
+    await interaction.editReply({
+      embeds: [answerEmbed(viewer, question, result)],
+    });
   } catch (err) {
     console.error("/ask failed:", err);
     // Never let the fallback itself throw and leave the interaction hanging.
