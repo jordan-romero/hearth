@@ -8,6 +8,7 @@ import { getDocument } from "./storage.js";
 import { extractText } from "./parse.js";
 import { chunkText } from "./chunk.js";
 import { embedTexts, toVectorLiteral } from "./embeddings.js";
+import { extractUnitsFromText } from "./extract.js";
 
 const EMBED_BATCH = 100; // stay well under Voyage's per-request input cap
 
@@ -63,17 +64,68 @@ export async function ingestDocument(sourceDocumentId: string): Promise<void> {
       }
     }
 
+    console.log(
+      `[ingest] "${doc.name}" (${doc.id}): ${created.length} chunks embedded`,
+    );
+
+    // Optionally distill the doc into structured DM_ADDED units (a Claude call). Wrapped
+    // so a failed extraction never loses the chunks we already committed.
+    if (doc.extractUnits) {
+      try {
+        await extractUnitsForDoc(doc.id, doc.campaignId, text);
+      } catch (err) {
+        console.error(`[ingest] unit extraction failed for ${doc.id}:`, err);
+      }
+    }
+
     await prisma.sourceDocument.update({
       where: { id: doc.id },
       data: { status: "PARSED" },
     });
-    console.log(
-      `[ingest] "${doc.name}" (${doc.id}): ${created.length} chunks embedded`,
-    );
   } catch (err) {
     console.error(`[ingest] document ${sourceDocumentId} failed:`, err);
     await prisma.sourceDocument
       .update({ where: { id: sourceDocumentId }, data: { status: "FAILED" } })
       .catch(() => {});
   }
+}
+
+/** Distill a document's text into structured DM_ADDED KnowledgeUnits (DM_ONLY), linked
+ * back to the doc for provenance. Idempotent — replaces this doc's DM_ADDED units. */
+async function extractUnitsForDoc(
+  sourceDocumentId: string,
+  campaignId: string,
+  text: string,
+): Promise<void> {
+  const units = await extractUnitsFromText(text);
+  const created = await prisma.$transaction(async (tx) => {
+    await tx.knowledgeUnit.deleteMany({
+      where: { sourceDocumentId, source: "DM_ADDED" },
+    });
+    if (units.length === 0) return [];
+    return tx.knowledgeUnit.createManyAndReturn({
+      data: units.map((u) => ({
+        campaignId,
+        sourceDocumentId,
+        type: u.type,
+        source: "DM_ADDED" as const,
+        origin: "AUTHORED" as const,
+        baseVisibility: "DM_ONLY" as const,
+        title: u.title,
+        content: u.content,
+      })),
+    });
+  });
+  if (created.length === 0) return;
+
+  const vectors = await embedTexts(
+    created.map((u) => `${u.title}. ${u.content}`),
+    "document",
+  );
+  for (let i = 0; i < created.length; i++) {
+    const vec = vectors[i];
+    if (!vec) continue;
+    await prisma.$executeRaw`UPDATE "KnowledgeUnit" SET embedding = ${toVectorLiteral(vec)}::vector WHERE id = ${created[i]!.id}`;
+  }
+  console.log(`[ingest] +${created.length} DM_ADDED units from document`);
 }

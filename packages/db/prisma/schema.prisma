@@ -227,7 +227,8 @@ model KnowledgeUnit {
   embedding Unsupported("vector(1024)")?
 
   // provenance
-  gameSessionId String?
+  gameSessionId    String?
+  sourceDocumentId String? // set for DM_ADDED units extracted from an uploaded doc
 
   // relationships-as-knowledge (self references)
   subjectId String?
@@ -236,8 +237,9 @@ model KnowledgeUnit {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  campaign    Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  gameSession GameSession? @relation(fields: [gameSessionId], references: [id], onDelete: SetNull)
+  campaign       Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  gameSession    GameSession?    @relation(fields: [gameSessionId], references: [id], onDelete: SetNull)
+  sourceDocument SourceDocument? @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
 
   subject   KnowledgeUnit?  @relation("SubjectRel", fields: [subjectId], references: [id], onDelete: SetNull)
   subjectOf KnowledgeUnit[] @relation("SubjectRel")
@@ -250,6 +252,7 @@ model KnowledgeUnit {
   @@index([campaignId, baseVisibility])
   @@index([campaignId, type])
   @@index([gameSessionId])
+  @@index([sourceDocumentId])
   @@index([subjectId])
   @@index([objectId])
 }
@@ -408,21 +411,25 @@ enum DocumentStatus {
 /// provenance. Doubles as the DM's "library" (a list of everything they've fed in).
 /// Its text is split into DocumentChunks for retrieval.
 model SourceDocument {
-  id          String         @id @default(cuid())
-  campaignId  String
-  name        String
-  sourceType  SourceType     @default(UPLOAD)
+  id           String         @id @default(cuid())
+  campaignId   String
+  name         String
+  sourceType   SourceType     @default(UPLOAD)
   // Uploaded raw file lives in the `documents` bucket (storagePath); a synced source
   // instead keeps a link back to the original (sourceUrl) — never both.
-  storagePath String?
-  sourceUrl   String?
-  mimeType    String?
-  status      DocumentStatus @default(PENDING)
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  storagePath  String?
+  sourceUrl    String?
+  mimeType     String?
+  status       DocumentStatus @default(PENDING)
+  // Whether to also extract structured DM_ADDED KnowledgeUnits from this doc (a Claude
+  // call). On for a single manual upload; bulk connectors set it off (cost-gated).
+  extractUnits Boolean        @default(true)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
-  campaign Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  chunks   DocumentChunk[]
+  campaign       Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  chunks         DocumentChunk[]
+  knowledgeUnits KnowledgeUnit[]
 
   @@index([campaignId])
 }

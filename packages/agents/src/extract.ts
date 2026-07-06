@@ -115,3 +115,73 @@ export async function extractSession(transcript: string): Promise<Extraction> {
     ),
   };
 }
+
+const DOC_SYSTEM = `You are the archivist of a tabletop RPG campaign. You are given the text of one of the DM's documents (notes, a handout, lore, an NPC dossier) and must distill it into discrete knowledge units for the campaign's memory.
+
+Produce, via the record_units tool, the distinct facts someone might later ask the memory about — one unit per NPC, location, event, revealed fact, notable item, or open thread/quest. Give each a short title and a self-contained content sentence or two.
+
+Rules:
+- Never invent details not in the document. If something is ambiguous, omit it.
+- Prefer fewer, higher-signal units over many trivial ones.
+- If the document contains nothing of substance, return an empty units list.`;
+
+const UNITS_TOOL: Anthropic.Tool = {
+  name: "record_units",
+  description: "Record the knowledge units extracted from the document.",
+  input_schema: {
+    type: "object",
+    properties: {
+      units: {
+        type: "array",
+        description: "Discrete knowledge atoms extracted from the document.",
+        items: {
+          type: "object",
+          properties: {
+            type: {
+              type: "string",
+              enum: [...EXTRACTABLE_TYPES],
+              description: "The kind of knowledge atom.",
+            },
+            title: {
+              type: "string",
+              description: "Short label (a name or phrase).",
+            },
+            content: {
+              type: "string",
+              description: "Self-contained fact, one or two sentences.",
+            },
+          },
+          required: ["type", "title", "content"],
+        },
+      },
+    },
+    required: ["units"],
+  },
+};
+
+/** Extract discrete knowledge units from a document's text (no recap). */
+export async function extractUnitsFromText(
+  text: string,
+): Promise<ExtractedUnit[]> {
+  const client = new Anthropic(); // reads ANTHROPIC_API_KEY
+  const msg = await client.messages.create({
+    model: MODEL,
+    max_tokens: 8192,
+    system: DOC_SYSTEM,
+    tools: [UNITS_TOOL],
+    tool_choice: { type: "tool", name: UNITS_TOOL.name },
+    messages: [{ role: "user", content: `Document:\n\n${text}` }],
+  });
+
+  const block = msg.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+  );
+  if (!block)
+    throw new Error("extractUnitsFromText: model returned no tool_use block");
+
+  const input = block.input as { units?: ExtractedUnit[] };
+  const validTypes = new Set<string>(EXTRACTABLE_TYPES);
+  return (input.units ?? []).filter(
+    (u) => u.title?.trim() && u.content?.trim() && validTypes.has(u.type),
+  );
+}

@@ -70,6 +70,13 @@ const uploadCommand = new SlashCommandBuilder()
       .setName("file")
       .setDescription("A .txt, .md, or .pdf to ingest")
       .setRequired(true),
+  )
+  .addBooleanOption((o) =>
+    o
+      .setName("extract")
+      .setDescription(
+        "Also pull out structured facts (NPCs, places…). Default: yes.",
+      ),
   );
 
 const dmModeCommand = new SlashCommandBuilder()
@@ -178,6 +185,7 @@ async function handleUpload(
     }
     const data = Buffer.from(await res.arrayBuffer());
 
+    const extractUnits = interaction.options.getBoolean("extract") ?? true;
     const doc = await prisma.sourceDocument.create({
       data: {
         campaignId: CAMPAIGN_ID,
@@ -185,6 +193,7 @@ async function handleUpload(
         sourceType: "UPLOAD",
         mimeType: attachment.contentType ?? null,
         status: "PENDING",
+        extractUnits,
       },
     });
     // Tenant-scoped key: {campaignId}/{docId}/{safe-name}.
