@@ -14,7 +14,13 @@ import {
 } from "discord.js";
 import { prisma } from "@hearth/db";
 import type { Viewer } from "@hearth/core";
-import { ask } from "@hearth/agents";
+import {
+  ask,
+  putDocument,
+  getQueue,
+  INGEST_QUEUE,
+  type IngestJob,
+} from "@hearth/agents";
 import { startRecording, stopRecording } from "./capture.js";
 
 function requireEnv(name: string): string {
@@ -48,12 +54,25 @@ const stopCommand = new SlashCommandBuilder()
   .setName("stop")
   .setDescription("Stop recording and file the session into the memory.");
 
+const uploadCommand = new SlashCommandBuilder()
+  .setName("upload")
+  .setDescription(
+    "Add a document to the campaign memory (DM notes, handouts, lore).",
+  )
+  .addAttachmentOption((o) =>
+    o
+      .setName("file")
+      .setDescription("A .txt, .md, or .pdf to ingest")
+      .setRequired(true),
+  );
+
 async function registerCommands(): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
   const body = [
     askCommand.toJSON(),
     recordCommand.toJSON(),
     stopCommand.toJSON(),
+    uploadCommand.toJSON(),
   ];
   if (GUILD_ID) {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
@@ -122,6 +141,64 @@ async function handleAsk(
   }
 }
 
+/** /upload — ingest a document into the DM_ADDED corpus (parse → chunk → embed). */
+async function handleUpload(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(interaction.user.id);
+    if (!viewer) {
+      await interaction.editReply("You're not part of this campaign.");
+      return;
+    }
+    // Real multi-tenancy will gate this to the DM; for the single-tenant demo any
+    // member may upload (content is DM_ONLY regardless).
+
+    const attachment = interaction.options.getAttachment("file", true);
+    const res = await fetch(attachment.url);
+    if (!res.ok) {
+      await interaction.editReply("Couldn't download that file — try again.");
+      return;
+    }
+    const data = Buffer.from(await res.arrayBuffer());
+
+    const doc = await prisma.sourceDocument.create({
+      data: {
+        campaignId: CAMPAIGN_ID,
+        name: attachment.name,
+        sourceType: "UPLOAD",
+        mimeType: attachment.contentType ?? null,
+        status: "PENDING",
+      },
+    });
+    // Tenant-scoped key: {campaignId}/{docId}/{safe-name}.
+    const safeName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const key = `${CAMPAIGN_ID}/${doc.id}/${safeName}`;
+    await putDocument(key, data, attachment.contentType ?? undefined);
+    await prisma.sourceDocument.update({
+      where: { id: doc.id },
+      data: { storagePath: key },
+    });
+
+    const boss = await getQueue();
+    const job: IngestJob = { sourceDocumentId: doc.id };
+    await boss.send(INGEST_QUEUE, job);
+
+    console.log(
+      `📄 upload: "${attachment.name}" (${data.length} bytes) → ${doc.id} queued`,
+    );
+    await interaction.editReply(
+      `📄 Uploaded **${attachment.name}** — parsing it into the memory.`,
+    );
+  } catch (err) {
+    console.error("/upload failed:", err);
+    await interaction
+      .editReply("Something went wrong ingesting that file.")
+      .catch(() => {});
+  }
+}
+
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
@@ -148,6 +225,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case "stop":
         await stopRecording(interaction);
+        break;
+      case "upload":
+        await handleUpload(interaction);
         break;
     }
   } catch (err) {
