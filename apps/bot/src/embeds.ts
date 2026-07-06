@@ -51,3 +51,18 @@ export function answerEmbed(
   }
   return embed;
 }
+
+/** The announcement embed when the DM reveals something — "discovered" (newly shown), the
+ * counterpart to /ask's "remembers". `subjectLabel` is "You" (DM'd to one player) or "The
+ * party" (posted to the reveals channel). The reveal IS the announcement, so the content
+ * rides along. */
+export function revealEmbed(
+  subjectLabel: string,
+  itemTitle: string,
+  body: string,
+): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(BRAND.player)
+    .setTitle(`✨ ${subjectLabel} discovered…`)
+    .setDescription(truncate(`**${itemTitle}**\n${body}`, 4096));
+}
