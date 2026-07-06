@@ -19,18 +19,28 @@ export interface AnswerLike {
   sources: { title: string; type: string }[];
 }
 
-/** The themed embed for an /ask answer — colored by who's asking, question as context,
- * answer as the body, deduped sources in the footer. The no-knowledge line rides through
- * here too (it just has no sources), so it reads as intentional rather than an error. */
+/** In-world title naming WHO is recalling. `/ask` is "remembering" (you already knew it);
+ * reveals will be "discovering" (newly shown) in their own builder. The DM is the keeper of
+ * the whole record, so they get the chronicle rather than a character name. */
+function recallTitle(role: string, characterName: string | null): string {
+  if (role === "DM") return "🔥 Hearth recalls…";
+  return `🧠 ${characterName ?? "Your character"} remembers…`;
+}
+
+/** The themed embed for an /ask answer — colored by who's asking, an in-world "{who}
+ * remembers" title, the question as context, answer as body, deduped sources in the footer.
+ * The no-knowledge line rides through here too (it just has no sources), so it reads as
+ * intentional rather than an error. */
 export function answerEmbed(
   viewer: Viewer,
+  characterName: string | null,
   question: string,
   result: AnswerLike,
 ): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setColor(viewer.role === "DM" ? BRAND.dm : BRAND.player)
     .setAuthor({ name: truncate(`❓ ${question}`, 256) })
-    .setTitle("🔮 The Memory Speaks")
+    .setTitle(recallTitle(viewer.role, characterName))
     .setDescription(truncate(result.answer, 4096));
 
   const sources = [...new Set(result.sources.map((s) => s.title))];

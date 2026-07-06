@@ -131,8 +131,14 @@ async function registerCommands(): Promise<void> {
   }
 }
 
+/** A resolved viewer plus the display name of their character (for in-world presentation).
+ * The core `Viewer` stays pure — the name rides alongside only for the bot's UI. */
+type ResolvedViewer = Viewer & { characterName: string | null };
+
 /** Resolve the Discord author to a permission viewer within the campaign. */
-async function resolveViewer(discordUserId: string): Promise<Viewer | null> {
+async function resolveViewer(
+  discordUserId: string,
+): Promise<ResolvedViewer | null> {
   const user = await prisma.user.findUnique({
     where: { discordUserId },
     include: {
@@ -157,6 +163,7 @@ async function resolveViewer(discordUserId: string): Promise<Viewer | null> {
     role,
     characterId: character?.id ?? null,
     partyId: character?.partyId ?? null,
+    characterName: character?.name ?? null,
   };
 }
 
@@ -179,7 +186,7 @@ async function handleAsk(
     }
     const result = await ask(viewer, question);
     await interaction.editReply({
-      embeds: [answerEmbed(viewer, question, result)],
+      embeds: [answerEmbed(viewer, viewer.characterName, question, result)],
     });
   } catch (err) {
     console.error("/ask failed:", err);
