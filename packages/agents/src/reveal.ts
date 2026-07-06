@@ -46,25 +46,30 @@ export async function revealTo(
     revealedByMembershipId: byMembershipId,
   };
 
+  // The grant and its audit event must land together: if the event write failed after the
+  // grant committed, a retry would hit the unique constraint below and silently drop the
+  // RevealEvent — losing an entry from the append-only log. One transaction keeps them
+  // consistent (a mid-way failure rolls the grant back too, so the retry re-creates both).
   try {
-    await prisma.knowledgeGrant.create({ data: grant });
+    await prisma.$transaction(async (tx) => {
+      await tx.knowledgeGrant.create({ data: grant });
+      await tx.revealEvent.create({
+        data: {
+          knowledgeUnitId: target.unitId ?? null,
+          documentChunkId: target.chunkId ?? null,
+          sourceDocumentId: target.documentId ?? null,
+          action: "REVEAL",
+          scope: scope.characterId ? "CHARACTER" : "PARTY",
+          characterId: scope.characterId ?? null,
+          partyId: scope.partyId ?? null,
+          byMembershipId,
+        },
+      });
+    });
   } catch (err) {
     // Unique violation = already revealed to this target/scope → no-op.
     if ((err as { code?: string }).code === "P2002") return { revealed: false };
     throw err;
   }
-
-  await prisma.revealEvent.create({
-    data: {
-      knowledgeUnitId: target.unitId ?? null,
-      documentChunkId: target.chunkId ?? null,
-      sourceDocumentId: target.documentId ?? null,
-      action: "REVEAL",
-      scope: scope.characterId ? "CHARACTER" : "PARTY",
-      characterId: scope.characterId ?? null,
-      partyId: scope.partyId ?? null,
-      byMembershipId,
-    },
-  });
   return { revealed: true };
 }

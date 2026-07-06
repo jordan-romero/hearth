@@ -3,6 +3,10 @@
 // which lands the SourceDocument in FAILED rather than silently ingesting nothing.
 
 import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
+import mammoth from "mammoth";
+
+const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 function extOf(name: string): string {
   return name.toLowerCase().split(".").pop() ?? "";
@@ -19,6 +23,7 @@ export async function extractText(
     mimeType?.startsWith("text/") ||
     ["txt", "md", "markdown", "text"].includes(ext);
   const isPdf = mimeType === "application/pdf" || ext === "pdf";
+  const isDocx = mimeType === DOCX_MIME || ext === "docx";
 
   if (isText) return data.toString("utf8");
   if (isPdf) {
@@ -26,6 +31,12 @@ export async function extractText(
     const { text } = await extractPdfText(pdf, { mergePages: true });
     return text;
   }
-  // docx (mammoth), images (OCR), spreadsheets → later; for now, be explicit.
+  if (isDocx) {
+    // mammoth is pure-JS (no native deps) → deploys anywhere. We only need the text,
+    // not the styled HTML, so extractRawText is the right, lighter call.
+    const { value } = await mammoth.extractRawText({ buffer: data });
+    return value;
+  }
+  // Legacy .doc, images (OCR), spreadsheets → later; for now, be explicit.
   throw new Error(`unsupported document type: ${mimeType ?? ext} (${name})`);
 }

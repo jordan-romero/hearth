@@ -199,8 +199,13 @@ async function handleUpload(
       await interaction.editReply("You're not part of this campaign.");
       return;
     }
-    // Real multi-tenancy will gate this to the DM; for the single-tenant demo any
-    // member may upload (content is DM_ONLY regardless).
+    // Documents are the DM's campaign material — only the DM curates the memory.
+    if (viewer.role !== "DM") {
+      await interaction.editReply(
+        "Only the DM can add documents to the campaign memory.",
+      );
+      return;
+    }
 
     const attachment = interaction.options.getAttachment("file", true);
     const res = await fetch(attachment.url);
