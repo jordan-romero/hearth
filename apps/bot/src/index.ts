@@ -25,11 +25,12 @@ import {
   getQueue,
   retrieveContext,
   revealTo,
+  addJournalNote,
   INGEST_QUEUE,
   type IngestJob,
 } from "@hearth/agents";
 import { startRecording, stopRecording } from "./capture.js";
-import { answerEmbed, revealEmbed } from "./embeds.js";
+import { answerEmbed, revealEmbed, journalEmbed } from "./embeds.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -113,6 +114,18 @@ const revealCommand = new SlashCommandBuilder()
       .addChannelTypes(ChannelType.GuildText),
   );
 
+const journalCommand = new SlashCommandBuilder()
+  .setName("journal")
+  .setDescription(
+    "Record a private note only your character (and the DM) can see.",
+  )
+  .addStringOption((o) =>
+    o
+      .setName("entry")
+      .setDescription("What do you want to remember?")
+      .setRequired(true),
+  );
+
 const dmModeCommand = new SlashCommandBuilder()
   .setName("dmmode")
   .setDescription("(dev) Toggle viewing the campaign as the DM.");
@@ -125,6 +138,7 @@ async function registerCommands(): Promise<void> {
     stopCommand.toJSON(),
     uploadCommand.toJSON(),
     revealCommand.toJSON(),
+    journalCommand.toJSON(),
   ];
   if (DEV_DM_TOGGLE) body.push(dmModeCommand.toJSON());
   if (GUILD_ID) {
@@ -142,7 +156,10 @@ async function registerCommands(): Promise<void> {
 
 /** A resolved viewer plus the display name of their character (for in-world presentation).
  * The core `Viewer` stays pure — the name rides alongside only for the bot's UI. */
-type ResolvedViewer = Viewer & { characterName: string | null };
+type ResolvedViewer = Viewer & {
+  characterName: string | null;
+  membershipId: string;
+};
 
 /** Resolve the Discord author to a permission viewer within the campaign. */
 async function resolveViewer(
@@ -173,6 +190,7 @@ async function resolveViewer(
     characterId: character?.id ?? null,
     partyId: character?.partyId ?? null,
     characterName: character?.name ?? null,
+    membershipId: membership.id,
   };
 }
 
@@ -202,6 +220,41 @@ async function handleAsk(
     // Never let the fallback itself throw and leave the interaction hanging.
     await interaction
       .editReply("Something went wrong reaching the memory.")
+      .catch(() => {});
+  }
+}
+
+/** /journal — a player records a private note, visible only to their character (and the DM). */
+async function handleJournal(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(interaction.user.id);
+    if (!viewer) {
+      await interaction.editReply("You're not part of this campaign.");
+      return;
+    }
+    if (!viewer.characterId) {
+      await interaction.editReply(
+        "Your journal is tied to a character — the DM keeps notes with `/upload`.",
+      );
+      return;
+    }
+    const entry = interaction.options.getString("entry", true);
+    const note = await addJournalNote(
+      CAMPAIGN_ID,
+      viewer.membershipId,
+      viewer.characterId,
+      entry,
+    );
+    await interaction.editReply({
+      embeds: [journalEmbed(viewer.characterName, note.content)],
+    });
+  } catch (err) {
+    console.error("/journal failed:", err);
+    await interaction
+      .editReply("Something went wrong saving that to your journal.")
       .catch(() => {});
   }
 }
@@ -574,6 +627,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case "reveal":
         await handleReveal(interaction);
+        break;
+      case "journal":
+        await handleJournal(interaction);
         break;
       case "dmmode":
         if (DEV_DM_TOGGLE) await handleDmMode(interaction);

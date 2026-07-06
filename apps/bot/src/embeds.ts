@@ -66,3 +66,16 @@ export function revealEmbed(
     .setTitle(`✨ ${subjectLabel} discovered…`)
     .setDescription(truncate(`**${itemTitle}**\n${body}`, 4096));
 }
+
+/** Confirmation shown after a player records a `/journal` entry. */
+export function journalEmbed(
+  characterName: string | null,
+  content: string,
+): EmbedBuilder {
+  const whose = characterName ? `${characterName}'s` : "Your";
+  return new EmbedBuilder()
+    .setColor(BRAND.player)
+    .setAuthor({ name: `📔 Noted in ${whose} journal` })
+    .setDescription(truncate(content, 4096))
+    .setFooter({ text: "Only you and the DM can see this." });
+}
