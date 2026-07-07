@@ -4,6 +4,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { Viewer } from "@hearth/core";
+import { prisma } from "@hearth/db";
 import { retrieveContext } from "./retrieve.js";
 import { noKnowledgeReply } from "./no-knowledge.js";
 
@@ -36,16 +37,46 @@ export interface AskResult {
   sources: { title: string; type: string }[];
 }
 
+/** Log an ask for history + in-house eval. Best-effort — never breaks answering. */
+async function logAsk(
+  viewer: Viewer,
+  question: string,
+  result: AskResult,
+  askedByMembershipId?: string,
+): Promise<void> {
+  try {
+    await prisma.askLog.create({
+      data: {
+        campaignId: viewer.campaignId,
+        askedByMembershipId: askedByMembershipId ?? null,
+        characterId: viewer.characterId,
+        role: viewer.role,
+        question,
+        answer: result.answer,
+        sources: result.sources,
+      },
+    });
+  } catch (err) {
+    console.error("askLog write failed:", err);
+  }
+}
+
 export async function ask(
   viewer: Viewer,
   question: string,
+  opts: { askedByMembershipId?: string } = {},
 ): Promise<AskResult> {
   const { units, chunks } = await retrieveContext(viewer, question);
 
   // Nothing retrieved → nothing to ground on. Skip the model and return a canned line
   // (no cost, no chance of the LLM hinting that hidden knowledge exists).
   if (units.length === 0 && chunks.length === 0) {
-    return { answer: noKnowledgeReply(viewer.role), sources: [] };
+    const result: AskResult = {
+      answer: noKnowledgeReply(viewer.role),
+      sources: [],
+    };
+    await logAsk(viewer, question, result, opts.askedByMembershipId);
+    return result;
   }
 
   const unitLines = units.map(
@@ -81,11 +112,13 @@ export async function ask(
     .join("")
     .trim();
 
-  return {
+  const result: AskResult = {
     answer,
     sources: [
       ...units.map((u) => ({ title: u.title, type: u.type })),
       ...chunks.map((c) => ({ title: c.docName, type: "DOCUMENT" })),
     ],
   };
+  await logAsk(viewer, question, result, opts.askedByMembershipId);
+  return result;
 }

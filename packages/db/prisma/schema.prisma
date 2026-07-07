@@ -104,6 +104,7 @@ model Campaign {
   sourceDocuments SourceDocument[]
   documentChunks  DocumentChunk[]
   assets          Asset[]
+  askLogs         AskLog[]
 }
 
 /// A person. Auth.js will extend this table later; minimal for Phase 0.
@@ -505,4 +506,26 @@ model Asset {
   campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
   @@index([campaignId, kind])
+}
+
+/// A logged /ask — question, answer, and who asked — so a player can later review their ask
+/// history (web report) and so the responses can be evaluated in-house. Attribution ids are
+/// plain columns (no FK to Membership/Character) to keep those models uncluttered; only the
+/// campaign link cascades. `sources` is the JSON list the answer drew on. Written best-effort.
+model AskLog {
+  id                  String   @id @default(cuid())
+  campaignId          String
+  askedByMembershipId String?
+  characterId         String?
+  role                String
+  question            String
+  answer              String
+  sources             Json
+  gameSessionId       String?
+  createdAt           DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, createdAt])
+  @@index([campaignId, characterId])
 }

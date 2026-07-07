@@ -132,20 +132,20 @@ export async function generateNpc(
 
 /** Persist an accepted NPC as a GENERATED, DM_ONLY KnowledgeUnit (+ its matched portrait key),
  * embedded for retrieval. Shared so the bot and a future web "accept" both save identically.
- * NOTE: the DM-only secret rides in the content today — splitting it into its own unit for
- * safe partial reveal (reveal the NPC, not the secret) is a follow-up. */
+ * The DM-only SECRET is stored as a SEPARATE unit (linked via subjectId), so the DM can reveal
+ * the NPC to players without leaking the secret — the secret unit stays DM_ONLY. */
 export async function saveNpc(
   campaignId: string,
   draft: NpcDraft,
   imageStoragePath?: string,
-): Promise<{ id: string }> {
+): Promise<{ id: string; secretId?: string }> {
+  // The NPC unit — everything EXCEPT the secret, so revealing it to players is safe.
   const content = [
     `${draft.race} ${draft.role}. ${draft.appearance}`,
     `Demeanor: ${draft.demeanor}`,
     `Voice: ${draft.voice}`,
     `Ties: ${draft.ties}`,
     `Hook: ${draft.hook}`,
-    `DM secret: ${draft.secret}`,
   ].join("\n");
 
   const unit = await prisma.knowledgeUnit.create({
@@ -160,10 +160,34 @@ export async function saveNpc(
       imageStoragePath: imageStoragePath ?? null,
     },
   });
-
   const [vec] = await embedTexts([`${draft.name}. ${content}`], "document");
   if (vec) {
     await prisma.$executeRaw`UPDATE "KnowledgeUnit" SET embedding = ${toVectorLiteral(vec)}::vector WHERE id = ${unit.id}`;
   }
-  return { id: unit.id };
+
+  // The secret — its own DM_ONLY unit, linked to the NPC. Never revealed alongside the NPC.
+  let secretId: string | undefined;
+  if (draft.secret?.trim()) {
+    const secret = await prisma.knowledgeUnit.create({
+      data: {
+        campaignId,
+        type: "FACT",
+        source: "DM_ADDED",
+        origin: "GENERATED",
+        baseVisibility: "DM_ONLY",
+        title: `Secret — ${draft.name}`,
+        content: draft.secret.trim(),
+        subjectId: unit.id,
+      },
+    });
+    secretId = secret.id;
+    const [svec] = await embedTexts(
+      [`Secret about ${draft.name}. ${draft.secret.trim()}`],
+      "document",
+    );
+    if (svec) {
+      await prisma.$executeRaw`UPDATE "KnowledgeUnit" SET embedding = ${toVectorLiteral(svec)}::vector WHERE id = ${secret.id}`;
+    }
+  }
+  return { id: unit.id, secretId };
 }

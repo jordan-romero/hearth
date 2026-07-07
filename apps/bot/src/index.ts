@@ -255,7 +255,9 @@ async function handleAsk(
       );
       return;
     }
-    const result = await ask(viewer, question);
+    const result = await ask(viewer, question, {
+      askedByMembershipId: viewer.membershipId,
+    });
     await interaction.editReply({
       embeds: [
         answerEmbed(
