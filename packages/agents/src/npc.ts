@@ -12,6 +12,15 @@ import { embedTexts, toVectorLiteral } from "./embeddings.js";
 
 const MODEL = "claude-sonnet-5";
 
+/** In-place Fisher–Yates shuffle (uniform — unlike sort(() => random)). Returns the array. */
+function shuffle<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j]!, arr[i]!];
+  }
+  return arr;
+}
+
 export interface NpcDraft {
   name: string;
   race: string;
@@ -96,10 +105,7 @@ export async function generateNpc(
   // Over-fetch, then randomly sample a subset so regenerations see a DIFFERENT slice of the
   // world each time — otherwise the same top units come back and NPCs converge on the same ties.
   const pool = await retrieveForViewer(dmViewer, groundingQuery, 24);
-  const sampled = pool
-    .map((u) => u)
-    .sort(() => Math.random() - 0.5)
-    .slice(0, 8);
+  const sampled = shuffle(pool.slice()).slice(0, 8);
   const context =
     sampled.map((u) => `- ${u.title} (${u.type}): ${u.content}`).join("\n") ||
     "(the campaign memory is still sparse — invent freely but coherently)";
@@ -163,6 +169,10 @@ export async function saveNpc(
   const [vec] = await embedTexts([`${draft.name}. ${content}`], "document");
   if (vec) {
     await prisma.$executeRaw`UPDATE "KnowledgeUnit" SET embedding = ${toVectorLiteral(vec)}::vector WHERE id = ${unit.id}`;
+  } else {
+    console.warn(
+      `saveNpc: NPC ${unit.id} saved without an embedding (won't be retrievable)`,
+    );
   }
 
   // The secret — its own DM_ONLY unit, linked to the NPC. Never revealed alongside the NPC.
@@ -187,6 +197,8 @@ export async function saveNpc(
     );
     if (svec) {
       await prisma.$executeRaw`UPDATE "KnowledgeUnit" SET embedding = ${toVectorLiteral(svec)}::vector WHERE id = ${secret.id}`;
+    } else {
+      console.warn(`saveNpc: secret ${secret.id} saved without an embedding`);
     }
   }
   return { id: unit.id, secretId };
