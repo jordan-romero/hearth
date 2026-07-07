@@ -159,6 +159,7 @@ async function registerCommands(): Promise<void> {
 type ResolvedViewer = Viewer & {
   characterName: string | null;
   membershipId: string;
+  theme: string;
 };
 
 /** Resolve the Discord author to a permission viewer within the campaign. */
@@ -172,6 +173,7 @@ async function resolveViewer(
         where: { campaignId: CAMPAIGN_ID },
         include: {
           characters: { where: { campaignId: CAMPAIGN_ID }, take: 1 },
+          campaign: { select: { theme: true } },
         },
       },
     },
@@ -191,6 +193,7 @@ async function resolveViewer(
     partyId: character?.partyId ?? null,
     characterName: character?.name ?? null,
     membershipId: membership.id,
+    theme: membership.campaign.theme,
   };
 }
 
@@ -213,7 +216,15 @@ async function handleAsk(
     }
     const result = await ask(viewer, question);
     await interaction.editReply({
-      embeds: [answerEmbed(viewer, viewer.characterName, question, result)],
+      embeds: [
+        answerEmbed(
+          viewer,
+          viewer.characterName,
+          question,
+          result,
+          viewer.theme,
+        ),
+      ],
     });
   } catch (err) {
     console.error("/ask failed:", err);
@@ -249,7 +260,7 @@ async function handleJournal(
       entry,
     );
     await interaction.editReply({
-      embeds: [journalEmbed(viewer.characterName, note.content)],
+      embeds: [journalEmbed(viewer.characterName, note.content, viewer.theme)],
     });
   } catch (err) {
     console.error("/journal failed:", err);
@@ -480,6 +491,7 @@ async function announceReveal(
   scopeType: string,
   scopeId: string,
   chanId: string,
+  theme: string,
 ): Promise<string> {
   let itemTitle: string;
   let body: string;
@@ -509,14 +521,14 @@ async function announceReveal(
       if (!discordUserId)
         return "— revealed (couldn't find the player to notify)";
       const user = await client.users.fetch(discordUserId);
-      await user.send({ embeds: [revealEmbed("You", itemTitle, body)] });
+      await user.send({ embeds: [revealEmbed("You", itemTitle, body, theme)] });
       return `— sent privately to ${character?.name ?? "them"}`;
     }
     if (!chanId) return "— revealed (no announce channel set)";
     const channel = await client.channels.fetch(chanId);
     if (channel && channel.isTextBased() && !channel.isDMBased()) {
       await channel.send({
-        embeds: [revealEmbed("The party", itemTitle, body)],
+        embeds: [revealEmbed("The party", itemTitle, body, theme)],
       });
       return `— announced in <#${chanId}>`;
     }
@@ -582,6 +594,7 @@ async function handleRevealButton(
     scopeType!,
     scopeId!,
     chanId ?? "",
+    viewer.theme,
   );
   await interaction.editReply({
     content: `✅ Revealed ${note}`,

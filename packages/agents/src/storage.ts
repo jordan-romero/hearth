@@ -20,6 +20,8 @@ export const RECORDINGS_BUCKET =
   process.env.HEARTH_STORAGE_BUCKET ?? "recordings";
 export const DOCUMENTS_BUCKET =
   process.env.HEARTH_DOCUMENTS_BUCKET ?? "documents";
+export const PORTRAITS_BUCKET =
+  process.env.HEARTH_PORTRAITS_BUCKET ?? "portraits";
 
 // ── Supabase Storage backend ─────────────────────────────────────────────────
 let sb: SupabaseClient | undefined;
@@ -92,3 +94,9 @@ export const putDocument = (
 /** Read a stored source file back (ingestion). */
 export const getDocument = (key: string): Promise<Buffer> =>
   getObject(DOCUMENTS_BUCKET, key);
+/** Store an NPC portrait/token — returns the key (Asset.storagePath). */
+export const putPortrait = (key: string, data: Buffer): Promise<string> =>
+  putObject(PORTRAITS_BUCKET, key, data, "image/png");
+/** Read a stored portrait back (NPC card + matching). */
+export const getPortrait = (key: string): Promise<Buffer> =>
+  getObject(PORTRAITS_BUCKET, key);
