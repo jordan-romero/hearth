@@ -126,6 +126,30 @@ export function npcEmbed(
   return embed;
 }
 
+/** The player-facing NPC card, for sharing to a channel — NO DM secret, no ties/hook (those
+ * are DM planning notes). Just who the party sees and how they carry themselves. */
+export function npcShareEmbed(
+  npc: NpcCard,
+  theme: string = DEFAULT_THEME,
+  thumbnailFilename?: string,
+): EmbedBuilder {
+  const dash = (s: string) => truncate(s?.trim() || "—", 1024);
+  const embed = new EmbedBuilder()
+    .setColor(themeColor(theme, "PLAYER"))
+    .setAuthor({ name: "✨ You encounter…" })
+    .setTitle(truncate(npc.name, 256))
+    .setDescription(
+      truncate(`**${npc.race} · ${npc.role}**\n${npc.appearance}`, 4096),
+    )
+    .addFields(
+      { name: "Demeanor", value: dash(npc.demeanor), inline: true },
+      { name: "Manner", value: dash(npc.voice), inline: true },
+    );
+  if (thumbnailFilename)
+    embed.setThumbnail(`attachment://${thumbnailFilename}`);
+  return embed;
+}
+
 /** Confirmation shown after a player records a `/journal` entry. */
 export function journalEmbed(
   characterName: string | null,

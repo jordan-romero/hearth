@@ -14,9 +14,13 @@ import {
   Events,
   GatewayIntentBits,
   MessageFlags,
+  ModalBuilder,
+  type ModalSubmitInteraction,
   REST,
   Routes,
   SlashCommandBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } from "discord.js";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@hearth/db";
@@ -39,7 +43,13 @@ import {
   type PortraitMatch,
 } from "@hearth/agents";
 import { startRecording, stopRecording } from "./capture.js";
-import { answerEmbed, revealEmbed, journalEmbed, npcEmbed } from "./embeds.js";
+import {
+  answerEmbed,
+  revealEmbed,
+  journalEmbed,
+  npcEmbed,
+  npcShareEmbed,
+} from "./embeds.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -146,6 +156,14 @@ const npcCommand = new SlashCommandBuilder()
       .setDescription(
         "Optional brief — role, race, vibe, where they fit. Leave blank to surprise you.",
       ),
+  )
+  .addChannelOption((o) =>
+    o
+      .setName("in")
+      .setDescription(
+        "Channel to share the NPC in (defaults to the reveals channel)",
+      )
+      .addChannelTypes(ChannelType.GuildText),
   );
 
 const dmModeCommand = new SlashCommandBuilder()
@@ -632,6 +650,7 @@ interface NpcDraftState {
   draft: NpcDraft;
   portrait: PortraitMatch | null;
   prompt?: string;
+  channelId: string; // where "Share" posts the player-facing card
 }
 const npcDrafts = new Map<string, NpcDraftState>();
 
@@ -684,8 +703,16 @@ async function npcDraftReply(draftId: string, theme: string) {
       .setLabel("Accept & save")
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
+      .setCustomId(`npc:edit:${draftId}`)
+      .setLabel("Edit")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
       .setCustomId(`npc:regen:${draftId}`)
       .setLabel("Regenerate")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`npc:share:${draftId}`)
+      .setLabel("Share to channel")
       .setStyle(ButtonStyle.Secondary),
   );
   return {
@@ -712,13 +739,14 @@ async function handleNpc(
       return;
     }
     const prompt = interaction.options.getString("prompt") ?? undefined;
+    const channelId = resolveRevealChannelId(interaction);
     const draft = await generateNpc(CAMPAIGN_ID, prompt);
     const portrait = await matchPortrait(
       portraitQuery(draft.race, draft.role, draft.appearance),
       CAMPAIGN_ID,
     );
     const draftId = randomUUID();
-    npcDrafts.set(draftId, { draft, portrait, prompt });
+    npcDrafts.set(draftId, { draft, portrait, prompt, channelId });
     const payload = await npcDraftReply(draftId, viewer.theme);
     if (payload) await interaction.editReply(payload);
   } catch (err) {
@@ -751,6 +779,12 @@ async function handleNpcButton(interaction: ButtonInteraction): Promise<void> {
     return;
   }
 
+  // Edit opens a modal, which MUST be the interaction's first response (no defer before it).
+  if (action === "edit") {
+    await interaction.showModal(npcEditModal(draftId, entry.draft));
+    return;
+  }
+
   await interaction.deferUpdate();
   if (action === "regen") {
     const draft = await generateNpc(CAMPAIGN_ID, entry.prompt);
@@ -758,7 +792,7 @@ async function handleNpcButton(interaction: ButtonInteraction): Promise<void> {
       portraitQuery(draft.race, draft.role, draft.appearance),
       CAMPAIGN_ID,
     );
-    npcDrafts.set(draftId, { draft, portrait, prompt: entry.prompt });
+    npcDrafts.set(draftId, { ...entry, draft, portrait });
     const payload = await npcDraftReply(draftId, viewer.theme);
     if (payload) await interaction.editReply(payload);
     return;
@@ -794,7 +828,128 @@ async function handleNpcButton(interaction: ButtonInteraction): Promise<void> {
       attachments: [],
       files,
     });
+    return;
   }
+  if (action === "share") {
+    // Post the PLAYER-facing card (no secret) to the channel, and save the NPC (DM-only).
+    const name = safeFileName(entry.draft.name);
+    const files: AttachmentBuilder[] = [];
+    let thumb: string | undefined;
+    if (entry.portrait) {
+      try {
+        const bytes = await getPortrait(entry.portrait.storagePath);
+        thumb = `${name}.png`;
+        files.push(new AttachmentBuilder(bytes, { name: thumb }));
+      } catch (err) {
+        console.error("npc portrait fetch failed:", err);
+      }
+    }
+    let note = "couldn't reach that channel";
+    try {
+      const channel = entry.channelId
+        ? await client.channels.fetch(entry.channelId)
+        : null;
+      if (channel && channel.isTextBased() && !channel.isDMBased()) {
+        await channel.send({
+          embeds: [npcShareEmbed(entry.draft, viewer.theme, thumb)],
+          files,
+        });
+        note = `shared in <#${entry.channelId}>`;
+      }
+    } catch (err) {
+      console.error("npc share failed:", err);
+      note =
+        (err as { code?: number }).code === 50001
+          ? "I can't post in that channel — grant me View Channel + Send Messages + Embed Links"
+          : "couldn't post to that channel";
+    }
+    await saveNpc(CAMPAIGN_ID, entry.draft, entry.portrait?.storagePath);
+    npcDrafts.delete(draftId);
+    await interaction.editReply({
+      content: `✅ Saved **${entry.draft.name}** — ${note}. Players don't see the DM secret.`,
+      embeds: [],
+      components: [],
+      attachments: [],
+      files: [],
+    });
+  }
+}
+
+/** The 5-field edit modal (Discord caps modals at 5 inputs) — the highest-value fields to
+ * tweak. Changing race/appearance re-matches the portrait on submit. */
+function npcEditModal(draftId: string, d: NpcDraft): ModalBuilder {
+  const row = (
+    id: string,
+    label: string,
+    value: string,
+    style: TextInputStyle,
+    max: number,
+  ) =>
+    new ActionRowBuilder<TextInputBuilder>().addComponents(
+      new TextInputBuilder()
+        .setCustomId(id)
+        .setLabel(label)
+        .setStyle(style)
+        .setValue((value ?? "").slice(0, max))
+        .setMaxLength(max)
+        .setRequired(true),
+    );
+  return new ModalBuilder()
+    .setCustomId(`npcedit:${draftId}`)
+    .setTitle("Edit NPC")
+    .addComponents(
+      row("name", "Name", d.name, TextInputStyle.Short, 100),
+      row("race", "Race", d.race, TextInputStyle.Short, 60),
+      row(
+        "appearance",
+        "Appearance (drives the portrait)",
+        d.appearance,
+        TextInputStyle.Paragraph,
+        1000,
+      ),
+      row("hook", "Hook", d.hook, TextInputStyle.Paragraph, 1000),
+      row("secret", "DM secret", d.secret, TextInputStyle.Paragraph, 1000),
+    );
+}
+
+/** Edit-modal submit — apply the tweaks, re-match the portrait, re-render the draft. */
+async function handleNpcEditSubmit(
+  interaction: ModalSubmitInteraction,
+): Promise<void> {
+  const draftId = interaction.customId.split(":")[1];
+  const viewer = await resolveViewer(interaction.user.id);
+  if (!viewer || viewer.role !== "DM") {
+    await interaction.reply({
+      content: "Only the DM can do that.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  const entry = draftId ? npcDrafts.get(draftId) : undefined;
+  if (!entry || !draftId) {
+    await interaction.reply({
+      content: "That NPC draft expired — run `/npc` again.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  const g = (id: string) => interaction.fields.getTextInputValue(id).trim();
+  const draft: NpcDraft = {
+    ...entry.draft,
+    name: g("name"),
+    race: g("race"),
+    appearance: g("appearance"),
+    hook: g("hook"),
+    secret: g("secret"),
+  };
+  const portrait = await matchPortrait(
+    portraitQuery(draft.race, draft.role, draft.appearance),
+    CAMPAIGN_ID,
+  );
+  npcDrafts.set(draftId, { ...entry, draft, portrait });
+  await interaction.deferUpdate();
+  const payload = await npcDraftReply(draftId, viewer.theme);
+  if (payload) await interaction.editReply(payload);
 }
 
 const client = new Client({
@@ -818,6 +973,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await handleRevealButton(interaction);
       } else if (interaction.customId.startsWith("npc:")) {
         await handleNpcButton(interaction);
+      }
+      return;
+    }
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId.startsWith("npcedit:")) {
+        await handleNpcEditSubmit(interaction);
       }
       return;
     }
