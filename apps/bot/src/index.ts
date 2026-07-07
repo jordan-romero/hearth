@@ -651,6 +651,7 @@ interface NpcDraftState {
   portrait: PortraitMatch | null;
   prompt?: string;
   channelId: string; // where "Share" posts the player-facing card
+  saved?: boolean; // true once Accepted — Share is only offered after saving
 }
 const npcDrafts = new Map<string, NpcDraftState>();
 
@@ -697,6 +698,7 @@ async function npcDraftReply(draftId: string, theme: string) {
       console.error("npc portrait fetch failed:", err);
     }
   }
+  // Share is intentionally absent here — it's offered only after Accept & save.
   const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(`npc:accept:${draftId}`)
@@ -711,9 +713,9 @@ async function npcDraftReply(draftId: string, theme: string) {
       .setLabel("Regenerate")
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
-      .setCustomId(`npc:share:${draftId}`)
-      .setLabel("Share to channel")
-      .setStyle(ButtonStyle.Secondary),
+      .setCustomId(`npc:dismiss:${draftId}`)
+      .setLabel("Dismiss")
+      .setStyle(ButtonStyle.Danger),
   );
   return {
     embeds: [npcEmbed(draft, portrait?.label ?? null, theme, thumb)],
@@ -784,6 +786,16 @@ async function handleNpcButton(interaction: ButtonInteraction): Promise<void> {
     await interaction.showModal(npcEditModal(draftId, entry.draft));
     return;
   }
+  if (action === "dismiss") {
+    npcDrafts.delete(draftId);
+    await interaction.update({
+      content: "🗑️ Draft discarded.",
+      embeds: [],
+      components: [],
+      files: [],
+    });
+    return;
+  }
 
   await interaction.deferUpdate();
   if (action === "regen") {
@@ -799,7 +811,7 @@ async function handleNpcButton(interaction: ButtonInteraction): Promise<void> {
   }
   if (action === "accept") {
     await saveNpc(CAMPAIGN_ID, entry.draft, entry.portrait?.storagePath);
-    npcDrafts.delete(draftId);
+    entry.saved = true; // keep the draft so Share can use it now that it's saved
     const name = safeFileName(entry.draft.name);
     const files: AttachmentBuilder[] = [
       new AttachmentBuilder(
@@ -821,29 +833,42 @@ async function handleNpcButton(interaction: ButtonInteraction): Promise<void> {
         console.error("npc portrait fetch failed:", err);
       }
     }
+    // Now that it's saved, offer Share.
+    const shareRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`npc:share:${draftId}`)
+        .setLabel("Share to channel")
+        .setStyle(ButtonStyle.Secondary),
+    );
     await interaction.editReply({
-      content: `✅ Saved **${entry.draft.name}** to the memory (DM-only). Download below for your notes and board.`,
+      content: `✅ Saved **${entry.draft.name}** to the memory (DM-only). Your copies are below — share it with the party when you're ready.`,
       embeds: [],
-      components: [],
+      components: [shareRow],
       attachments: [],
       files,
     });
     return;
   }
   if (action === "share") {
-    // Post the PLAYER-facing card (no secret) to the channel, and save the NPC (DM-only).
+    // Only after Accept & save. Post the PLAYER-facing card (no secret) to the channel; the NPC
+    // is already saved, so we don't re-save. Re-attach the DM's downloads for convenience.
+    if (!entry.saved) {
+      await interaction.editReply({
+        content: "Accept & save the NPC first, then share it with the party.",
+      });
+      return;
+    }
     const name = safeFileName(entry.draft.name);
-    const files: AttachmentBuilder[] = [];
-    let thumb: string | undefined;
+    let portraitBytes: Buffer | undefined;
     if (entry.portrait) {
       try {
-        const bytes = await getPortrait(entry.portrait.storagePath);
-        thumb = `${name}.png`;
-        files.push(new AttachmentBuilder(bytes, { name: thumb }));
+        portraitBytes = await getPortrait(entry.portrait.storagePath);
       } catch (err) {
         console.error("npc portrait fetch failed:", err);
       }
     }
+    const thumb = portraitBytes ? `${name}.png` : undefined;
+
     let note = "couldn't reach that channel";
     try {
       const channel = entry.channelId
@@ -852,7 +877,9 @@ async function handleNpcButton(interaction: ButtonInteraction): Promise<void> {
       if (channel && channel.isTextBased() && !channel.isDMBased()) {
         await channel.send({
           embeds: [npcShareEmbed(entry.draft, viewer.theme, thumb)],
-          files,
+          files: portraitBytes
+            ? [new AttachmentBuilder(portraitBytes, { name: thumb! })]
+            : [],
         });
         note = `shared in <#${entry.channelId}>`;
       }
@@ -863,14 +890,27 @@ async function handleNpcButton(interaction: ButtonInteraction): Promise<void> {
           ? "I can't post in that channel — grant me View Channel + Send Messages + Embed Links"
           : "couldn't post to that channel";
     }
-    await saveNpc(CAMPAIGN_ID, entry.draft, entry.portrait?.storagePath);
-    npcDrafts.delete(draftId);
+
+    const downloads: AttachmentBuilder[] = [
+      new AttachmentBuilder(
+        Buffer.from(
+          npcCardMarkdown(entry.draft, entry.portrait?.label ?? null),
+          "utf8",
+        ),
+        { name: `${name}.md` },
+      ),
+    ];
+    if (portraitBytes) {
+      downloads.push(
+        new AttachmentBuilder(portraitBytes, { name: `${name}.png` }),
+      );
+    }
     await interaction.editReply({
-      content: `✅ Saved **${entry.draft.name}** — ${note}. Players don't see the DM secret.`,
+      content: `✅ **${entry.draft.name}** — ${note}. Players don't see the DM secret. Your copies:`,
       embeds: [],
       components: [],
       attachments: [],
-      files: [],
+      files: downloads,
     });
   }
 }

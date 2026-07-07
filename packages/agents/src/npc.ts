@@ -26,7 +26,9 @@ export interface NpcDraft {
 
 const SYSTEM = `You are the loremaster of a tabletop RPG campaign, inventing a single NPC for the Dungeon Master.
 
-You are given (1) an optional brief from the DM and (2) excerpts from the campaign's existing memory. Ground the NPC in that world: where it fits, reference real locations, factions, and existing NPCs by name so it feels native to THIS campaign, not generic fantasy. Honor the DM's brief where given; invent tastefully where it's silent.
+The DM's brief is the SPECIFICATION — match the race, gender, role, and any traits it names EXACTLY. (If the brief is empty, invent someone who fits the campaign.)
+
+You are also given excerpts from the campaign's memory. Those excerpts are the SOURCE OF TRUTH about this world: treat their names, places, factions, and events as authoritative and NEVER contradict them. You may draw on your general knowledge of fantasy and tabletop RPGs to flesh the character out, but whenever it touches this campaign's world, the provided material wins. Where it fits NATURALLY, weave in a connection to a real location, faction, or NPC from the excerpts so the character feels native to this world — but DON'T force it: most NPCs are ordinary people with their own lives, not tied to the main plot. Vary origins, names, and affiliations widely; never cluster every NPC around the same few factions or places.
 
 Produce exactly one NPC via the record_npc tool:
 - name, race, role — who they are.
@@ -37,7 +39,7 @@ Produce exactly one NPC via the record_npc tool:
 - hook — a reason the party would care; a thread they could pull.
 - secret — something the DM knows that the NPC hides (DM-only).
 
-Keep each field tight. Do not invent world facts that contradict the provided memory.`;
+Invent a NEW, distinct character — never reproduce or lightly reskin an NPC already present in the provided memory. Keep each field tight. Do not invent world facts that contradict the provided memory.`;
 
 const NPC_TOOL: Anthropic.Tool = {
   name: "record_npc",
@@ -91,9 +93,15 @@ export async function generateNpc(
   };
   const groundingQuery =
     prompt?.trim() || "notable people, factions, and places in the campaign";
-  const units = await retrieveForViewer(dmViewer, groundingQuery, 12);
+  // Over-fetch, then randomly sample a subset so regenerations see a DIFFERENT slice of the
+  // world each time — otherwise the same top units come back and NPCs converge on the same ties.
+  const pool = await retrieveForViewer(dmViewer, groundingQuery, 24);
+  const sampled = pool
+    .map((u) => u)
+    .sort(() => Math.random() - 0.5)
+    .slice(0, 8);
   const context =
-    units.map((u) => `- ${u.title} (${u.type}): ${u.content}`).join("\n") ||
+    sampled.map((u) => `- ${u.title} (${u.type}): ${u.content}`).join("\n") ||
     "(the campaign memory is still sparse — invent freely but coherently)";
 
   const brief = prompt?.trim()
