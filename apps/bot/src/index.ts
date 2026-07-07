@@ -4,6 +4,7 @@
 
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonInteraction,
   ButtonStyle,
@@ -13,24 +14,44 @@ import {
   Events,
   GatewayIntentBits,
   MessageFlags,
+  ModalBuilder,
+  type ModalSubmitInteraction,
   REST,
   Routes,
   SlashCommandBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } from "discord.js";
+import { randomUUID } from "node:crypto";
 import { prisma } from "@hearth/db";
 import type { Viewer } from "@hearth/core";
 import {
   ask,
   putDocument,
   getQueue,
+  getPortrait,
   retrieveContext,
   revealTo,
   addJournalNote,
+  generateNpc,
+  matchPortrait,
+  portraitQuery,
+  saveNpc,
   INGEST_QUEUE,
   type IngestJob,
+  type NpcDraft,
+  type PortraitMatch,
 } from "@hearth/agents";
 import { startRecording, stopRecording } from "./capture.js";
-import { answerEmbed, revealEmbed, journalEmbed } from "./embeds.js";
+import {
+  answerEmbed,
+  revealEmbed,
+  journalEmbed,
+  npcEmbed,
+  npcShareEmbed,
+  npcCardMarkdown,
+  safeFileName,
+} from "./embeds.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -126,6 +147,27 @@ const journalCommand = new SlashCommandBuilder()
       .setRequired(true),
   );
 
+const npcCommand = new SlashCommandBuilder()
+  .setName("npc")
+  .setDescription(
+    "(DM) Generate an NPC, grounded in your campaign, with a matched portrait.",
+  )
+  .addStringOption((o) =>
+    o
+      .setName("prompt")
+      .setDescription(
+        "Optional brief — role, race, vibe, where they fit. Leave blank to surprise you.",
+      ),
+  )
+  .addChannelOption((o) =>
+    o
+      .setName("in")
+      .setDescription(
+        "Channel to share the NPC in (defaults to the reveals channel)",
+      )
+      .addChannelTypes(ChannelType.GuildText),
+  );
+
 const dmModeCommand = new SlashCommandBuilder()
   .setName("dmmode")
   .setDescription("(dev) Toggle viewing the campaign as the DM.");
@@ -139,6 +181,7 @@ async function registerCommands(): Promise<void> {
     uploadCommand.toJSON(),
     revealCommand.toJSON(),
     journalCommand.toJSON(),
+    npcCommand.toJSON(),
   ];
   if (DEV_DM_TOGGLE) body.push(dmModeCommand.toJSON());
   if (GUILD_ID) {
@@ -159,6 +202,7 @@ async function registerCommands(): Promise<void> {
 type ResolvedViewer = Viewer & {
   characterName: string | null;
   membershipId: string;
+  theme: string;
 };
 
 /** Resolve the Discord author to a permission viewer within the campaign. */
@@ -172,6 +216,7 @@ async function resolveViewer(
         where: { campaignId: CAMPAIGN_ID },
         include: {
           characters: { where: { campaignId: CAMPAIGN_ID }, take: 1 },
+          campaign: { select: { theme: true } },
         },
       },
     },
@@ -191,6 +236,7 @@ async function resolveViewer(
     partyId: character?.partyId ?? null,
     characterName: character?.name ?? null,
     membershipId: membership.id,
+    theme: membership.campaign.theme,
   };
 }
 
@@ -211,9 +257,19 @@ async function handleAsk(
       );
       return;
     }
-    const result = await ask(viewer, question);
+    const result = await ask(viewer, question, {
+      askedByMembershipId: viewer.membershipId,
+    });
     await interaction.editReply({
-      embeds: [answerEmbed(viewer, viewer.characterName, question, result)],
+      embeds: [
+        answerEmbed(
+          viewer,
+          viewer.characterName,
+          question,
+          result,
+          viewer.theme,
+        ),
+      ],
     });
   } catch (err) {
     console.error("/ask failed:", err);
@@ -249,7 +305,7 @@ async function handleJournal(
       entry,
     );
     await interaction.editReply({
-      embeds: [journalEmbed(viewer.characterName, note.content)],
+      embeds: [journalEmbed(viewer.characterName, note.content, viewer.theme)],
     });
   } catch (err) {
     console.error("/journal failed:", err);
@@ -480,6 +536,7 @@ async function announceReveal(
   scopeType: string,
   scopeId: string,
   chanId: string,
+  theme: string,
 ): Promise<string> {
   let itemTitle: string;
   let body: string;
@@ -509,14 +566,14 @@ async function announceReveal(
       if (!discordUserId)
         return "— revealed (couldn't find the player to notify)";
       const user = await client.users.fetch(discordUserId);
-      await user.send({ embeds: [revealEmbed("You", itemTitle, body)] });
+      await user.send({ embeds: [revealEmbed("You", itemTitle, body, theme)] });
       return `— sent privately to ${character?.name ?? "them"}`;
     }
     if (!chanId) return "— revealed (no announce channel set)";
     const channel = await client.channels.fetch(chanId);
     if (channel && channel.isTextBased() && !channel.isDMBased()) {
       await channel.send({
-        embeds: [revealEmbed("The party", itemTitle, body)],
+        embeds: [revealEmbed("The party", itemTitle, body, theme)],
       });
       return `— announced in <#${chanId}>`;
     }
@@ -582,11 +639,385 @@ async function handleRevealButton(
     scopeType!,
     scopeId!,
     chanId ?? "",
+    viewer.theme,
   );
   await interaction.editReply({
     content: `✅ Revealed ${note}`,
     components: [],
   });
+}
+
+// ─── /npc — generate an NPC, match a portrait, review as a draft ─────────────
+// Drafts live in memory (transient — the DM accepts/regenerates within minutes). Keyed by a
+// random id carried in the button customIds. Lost on restart, which is fine for a draft.
+interface NpcDraftState {
+  draft: NpcDraft;
+  portrait: PortraitMatch | null;
+  prompt?: string;
+  channelId: string; // where "Share" posts the player-facing card
+  saved?: boolean; // true once Accepted — Share is only offered after saving
+  touchedAt: number; // for the TTL sweep — refreshed on every interaction
+}
+const npcDrafts = new Map<string, NpcDraftState>();
+
+// Bound the draft map: sweep out drafts untouched for a while so accepted-but-never-shared
+// (or abandoned) drafts don't leak. Drafts are transient by nature.
+const NPC_DRAFT_TTL_MS = 30 * 60_000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, e] of npcDrafts) {
+    if (now - e.touchedAt > NPC_DRAFT_TTL_MS) npcDrafts.delete(id);
+  }
+}, 10 * 60_000).unref();
+
+/** Build the draft reply: the card embed with the matched portrait as a thumbnail (also a
+ * downloadable attachment) + Accept / Regenerate buttons. */
+async function npcDraftReply(draftId: string, theme: string) {
+  const entry = npcDrafts.get(draftId);
+  if (!entry) return null;
+  const { draft, portrait } = entry;
+
+  const files: AttachmentBuilder[] = [];
+  let thumb: string | undefined;
+  if (portrait) {
+    try {
+      const bytes = await getPortrait(portrait.storagePath);
+      thumb = `${safeFileName(draft.name)}.png`;
+      files.push(new AttachmentBuilder(bytes, { name: thumb }));
+    } catch (err) {
+      console.error("npc portrait fetch failed:", err);
+    }
+  }
+  // Share is intentionally absent here — it's offered only after Accept & save.
+  const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`npc:accept:${draftId}`)
+      .setLabel("Accept & save")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`npc:edit:${draftId}`)
+      .setLabel("Edit")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`npc:regen:${draftId}`)
+      .setLabel("Regenerate")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`npc:dismiss:${draftId}`)
+      .setLabel("Dismiss")
+      .setStyle(ButtonStyle.Danger),
+  );
+  return {
+    embeds: [npcEmbed(draft, portrait?.label ?? null, theme, thumb)],
+    files,
+    attachments: [],
+    components: [buttons],
+  };
+}
+
+/** /npc — DM only. Generate a grounded NPC + matched portrait, shown as a draft to review. */
+async function handleNpc(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(interaction.user.id);
+    if (!viewer) {
+      await interaction.editReply("You're not part of this campaign.");
+      return;
+    }
+    if (viewer.role !== "DM") {
+      await interaction.editReply("Only the DM can generate NPCs.");
+      return;
+    }
+    const prompt = interaction.options.getString("prompt") ?? undefined;
+    const channelId = resolveRevealChannelId(interaction);
+    const draft = await generateNpc(CAMPAIGN_ID, prompt);
+    const portrait = await matchPortrait(
+      portraitQuery(draft.race, draft.role, draft.appearance),
+      CAMPAIGN_ID,
+    );
+    const draftId = randomUUID();
+    npcDrafts.set(draftId, {
+      draft,
+      portrait,
+      prompt,
+      channelId,
+      touchedAt: Date.now(),
+    });
+    const payload = await npcDraftReply(draftId, viewer.theme);
+    if (payload) await interaction.editReply(payload);
+  } catch (err) {
+    console.error("/npc failed:", err);
+    await interaction
+      .editReply("Something went wrong generating that NPC.")
+      .catch(() => {});
+  }
+}
+
+/** Accept / Regenerate button from /npc. */
+async function handleNpcButton(interaction: ButtonInteraction): Promise<void> {
+  const [, action, draftId] = interaction.customId.split(":");
+  const viewer = await resolveViewer(interaction.user.id);
+  if (!viewer || viewer.role !== "DM") {
+    await interaction.reply({
+      content: "Only the DM can do that.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  const entry = draftId ? npcDrafts.get(draftId) : undefined;
+  if (!entry || !draftId) {
+    await interaction.update({
+      content: "That NPC draft expired — run `/npc` again.",
+      embeds: [],
+      components: [],
+      files: [],
+    });
+    return;
+  }
+
+  // Edit opens a modal, which MUST be the interaction's first response (no defer before it).
+  if (action === "edit") {
+    await interaction.showModal(npcEditModal(draftId, entry.draft));
+    return;
+  }
+  if (action === "dismiss") {
+    npcDrafts.delete(draftId);
+    await interaction.update({
+      content: "🗑️ Draft discarded.",
+      embeds: [],
+      components: [],
+      files: [],
+    });
+    return;
+  }
+
+  // Ack, then run the deferred work inside ONE try/catch — a throw in generate/match/save/fetch
+  // must not leave the DM's interaction spinning with no reply.
+  await interaction.deferUpdate();
+  try {
+    await runNpcButtonAction(interaction, action ?? "", draftId, entry, viewer);
+  } catch (err) {
+    console.error("npc button action failed:", err);
+    await interaction
+      .editReply({
+        content: "Something went wrong with that — try again.",
+        embeds: [],
+        components: [],
+      })
+      .catch(() => {});
+  }
+}
+
+/** The deferred /npc button actions (regen / accept / share). Extracted so handleNpcButton
+ * can wrap them in a single try/catch. */
+async function runNpcButtonAction(
+  interaction: ButtonInteraction,
+  action: string,
+  draftId: string,
+  entry: NpcDraftState,
+  viewer: ResolvedViewer,
+): Promise<void> {
+  if (action === "regen") {
+    const draft = await generateNpc(CAMPAIGN_ID, entry.prompt);
+    const portrait = await matchPortrait(
+      portraitQuery(draft.race, draft.role, draft.appearance),
+      CAMPAIGN_ID,
+    );
+    npcDrafts.set(draftId, {
+      ...entry,
+      draft,
+      portrait,
+      touchedAt: Date.now(),
+    });
+    const payload = await npcDraftReply(draftId, viewer.theme);
+    if (payload) await interaction.editReply(payload);
+    return;
+  }
+  if (action === "accept") {
+    await saveNpc(CAMPAIGN_ID, entry.draft, entry.portrait?.storagePath);
+    entry.saved = true; // keep the draft so Share can use it now that it's saved
+    entry.touchedAt = Date.now(); // and refresh it so the TTL sweep doesn't drop it pre-Share
+    const name = safeFileName(entry.draft.name);
+    const files: AttachmentBuilder[] = [
+      new AttachmentBuilder(
+        Buffer.from(
+          npcCardMarkdown(entry.draft, entry.portrait?.label ?? null),
+          "utf8",
+        ),
+        { name: `${name}.md` },
+      ),
+    ];
+    if (entry.portrait) {
+      try {
+        files.push(
+          new AttachmentBuilder(await getPortrait(entry.portrait.storagePath), {
+            name: `${name}.png`,
+          }),
+        );
+      } catch (err) {
+        console.error("npc portrait fetch failed:", err);
+      }
+    }
+    // Now that it's saved, offer Share.
+    const shareRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`npc:share:${draftId}`)
+        .setLabel("Share to channel")
+        .setStyle(ButtonStyle.Secondary),
+    );
+    await interaction.editReply({
+      content: `✅ Saved **${entry.draft.name}** to the memory (DM-only). Your copies are below — share it with the party when you're ready.`,
+      embeds: [],
+      components: [shareRow],
+      attachments: [],
+      files,
+    });
+    return;
+  }
+  if (action === "share") {
+    // Only after Accept & save. Post the PLAYER-facing card (no secret) to the channel; the NPC
+    // is already saved, so we don't re-save. Re-attach the DM's downloads for convenience.
+    if (!entry.saved) {
+      await interaction.editReply({
+        content: "Accept & save the NPC first, then share it with the party.",
+      });
+      return;
+    }
+    const name = safeFileName(entry.draft.name);
+    let portraitBytes: Buffer | undefined;
+    if (entry.portrait) {
+      try {
+        portraitBytes = await getPortrait(entry.portrait.storagePath);
+      } catch (err) {
+        console.error("npc portrait fetch failed:", err);
+      }
+    }
+    const thumb = portraitBytes ? `${name}.png` : undefined;
+
+    let note = "couldn't reach that channel";
+    try {
+      const channel = entry.channelId
+        ? await client.channels.fetch(entry.channelId)
+        : null;
+      if (channel && channel.isTextBased() && !channel.isDMBased()) {
+        await channel.send({
+          embeds: [npcShareEmbed(entry.draft, viewer.theme, thumb)],
+          files: portraitBytes
+            ? [new AttachmentBuilder(portraitBytes, { name: thumb! })]
+            : [],
+        });
+        note = `shared in <#${entry.channelId}>`;
+      }
+    } catch (err) {
+      console.error("npc share failed:", err);
+      note =
+        (err as { code?: number }).code === 50001
+          ? "I can't post in that channel — grant me View Channel + Send Messages + Embed Links"
+          : "couldn't post to that channel";
+    }
+
+    const downloads: AttachmentBuilder[] = [
+      new AttachmentBuilder(
+        Buffer.from(
+          npcCardMarkdown(entry.draft, entry.portrait?.label ?? null),
+          "utf8",
+        ),
+        { name: `${name}.md` },
+      ),
+    ];
+    if (portraitBytes) {
+      downloads.push(
+        new AttachmentBuilder(portraitBytes, { name: `${name}.png` }),
+      );
+    }
+    npcDrafts.delete(draftId); // shared + saved — nothing more to do with this draft
+    await interaction.editReply({
+      content: `✅ **${entry.draft.name}** — ${note}. Players don't see the DM secret. Your copies:`,
+      embeds: [],
+      components: [],
+      attachments: [],
+      files: downloads,
+    });
+  }
+}
+
+/** The 5-field edit modal (Discord caps modals at 5 inputs) — the highest-value fields to
+ * tweak. Changing race/appearance re-matches the portrait on submit. */
+function npcEditModal(draftId: string, d: NpcDraft): ModalBuilder {
+  const row = (
+    id: string,
+    label: string,
+    value: string,
+    style: TextInputStyle,
+    max: number,
+  ) =>
+    new ActionRowBuilder<TextInputBuilder>().addComponents(
+      new TextInputBuilder()
+        .setCustomId(id)
+        .setLabel(label)
+        .setStyle(style)
+        .setValue((value ?? "").slice(0, max))
+        .setMaxLength(max)
+        .setRequired(true),
+    );
+  return new ModalBuilder()
+    .setCustomId(`npcedit:${draftId}`)
+    .setTitle("Edit NPC")
+    .addComponents(
+      row("name", "Name", d.name, TextInputStyle.Short, 100),
+      row("race", "Race", d.race, TextInputStyle.Short, 60),
+      row(
+        "appearance",
+        "Appearance (drives the portrait)",
+        d.appearance,
+        TextInputStyle.Paragraph,
+        1000,
+      ),
+      row("hook", "Hook", d.hook, TextInputStyle.Paragraph, 1000),
+      row("secret", "DM secret", d.secret, TextInputStyle.Paragraph, 1000),
+    );
+}
+
+/** Edit-modal submit — apply the tweaks, re-match the portrait, re-render the draft. */
+async function handleNpcEditSubmit(
+  interaction: ModalSubmitInteraction,
+): Promise<void> {
+  const draftId = interaction.customId.split(":")[1];
+  const viewer = await resolveViewer(interaction.user.id);
+  if (!viewer || viewer.role !== "DM") {
+    await interaction.reply({
+      content: "Only the DM can do that.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  const entry = draftId ? npcDrafts.get(draftId) : undefined;
+  if (!entry || !draftId) {
+    await interaction.reply({
+      content: "That NPC draft expired — run `/npc` again.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  const g = (id: string) => interaction.fields.getTextInputValue(id).trim();
+  const draft: NpcDraft = {
+    ...entry.draft,
+    name: g("name"),
+    race: g("race"),
+    appearance: g("appearance"),
+    hook: g("hook"),
+    secret: g("secret"),
+  };
+  const portrait = await matchPortrait(
+    portraitQuery(draft.race, draft.role, draft.appearance),
+    CAMPAIGN_ID,
+  );
+  npcDrafts.set(draftId, { ...entry, draft, portrait, touchedAt: Date.now() });
+  await interaction.deferUpdate();
+  const payload = await npcDraftReply(draftId, viewer.theme);
+  if (payload) await interaction.editReply(payload);
 }
 
 const client = new Client({
@@ -608,6 +1039,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isButton()) {
       if (interaction.customId.startsWith("rv:")) {
         await handleRevealButton(interaction);
+      } else if (interaction.customId.startsWith("npc:")) {
+        await handleNpcButton(interaction);
+      }
+      return;
+    }
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId.startsWith("npcedit:")) {
+        await handleNpcEditSubmit(interaction);
       }
       return;
     }
@@ -630,6 +1069,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case "journal":
         await handleJournal(interaction);
+        break;
+      case "npc":
+        await handleNpc(interaction);
         break;
       case "dmmode":
         if (DEV_DM_TOGGLE) await handleDmMode(interaction);

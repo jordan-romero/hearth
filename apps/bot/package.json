@@ -7,6 +7,7 @@
     "dev": "dotenv -e ../../.env -- tsx watch src/index.ts",
     "start": "dotenv -e ../../.env -- tsx src/index.ts",
     "start:prod": "tsx src/index.ts",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -21,6 +22,7 @@
     "tsx": "^4.19.2"
   },
   "devDependencies": {
-    "dotenv-cli": "^8.0.0"
+    "dotenv-cli": "^8.0.0",
+    "vitest": "^3.2.6"
   }
 }

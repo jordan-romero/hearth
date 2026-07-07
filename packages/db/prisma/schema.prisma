@@ -103,6 +103,8 @@ model Campaign {
   knowledgeUnits  KnowledgeUnit[]
   sourceDocuments SourceDocument[]
   documentChunks  DocumentChunk[]
+  assets          Asset[]
+  askLogs         AskLog[]
 }
 
 /// A person. Auth.js will extend this table later; minimal for Phase 0.
@@ -232,6 +234,7 @@ model KnowledgeUnit {
   gameSessionId      String?
   sourceDocumentId   String? // set for DM_ADDED units extracted from an uploaded doc
   authorMembershipId String? // set for PLAYER_NOTE journal entries — who wrote it
+  imageStoragePath   String? // set for GENERATED NPCs — the matched portrait's key
 
   // relationships-as-knowledge (self references)
   subjectId String?
@@ -485,4 +488,44 @@ model DocumentChunk {
   @@unique([sourceDocumentId, chunkIndex])
   @@index([campaignId, baseVisibility])
   @@index([sourceDocumentId])
+}
+
+/// A reusable media asset — NPC portraits/tokens today (maps/handouts later). Embedded for
+/// similarity matching (voyage-multimodal-3, 1024-dim), so a generated NPC can be paired with
+/// its nearest-vibe portrait. `campaignId` null = the shared pool Hearth ships; set = a DM's
+/// own uploads. `kind` is a preset key (not an enum) so new asset kinds need no migration.
+model Asset {
+  id          String                       @id @default(cuid())
+  campaignId  String?
+  kind        String                       @default("portrait")
+  label       String
+  storagePath String                       @unique
+  embedding   Unsupported("vector(1024)")?
+  createdAt   DateTime                     @default(now())
+
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, kind])
+}
+
+/// A logged /ask — question, answer, and who asked — so a player can later review their ask
+/// history (web report) and so the responses can be evaluated in-house. Attribution ids are
+/// plain columns (no FK to Membership/Character) to keep those models uncluttered; only the
+/// campaign link cascades. `sources` is the JSON list the answer drew on. Written best-effort.
+model AskLog {
+  id                  String   @id @default(cuid())
+  campaignId          String
+  askedByMembershipId String?
+  characterId         String?
+  role                String
+  question            String
+  answer              String
+  sources             Json
+  gameSessionId       String?
+  createdAt           DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, createdAt])
+  @@index([campaignId, characterId])
 }

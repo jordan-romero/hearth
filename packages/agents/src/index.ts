@@ -11,3 +11,5 @@ export * from "./chunk.js";
 export * from "./ingest.js";
 export * from "./reveal.js";
 export * from "./journal.js";
+export * from "./portraits.js";
+export * from "./npc.js";
