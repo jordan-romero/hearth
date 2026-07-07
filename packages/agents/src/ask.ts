@@ -5,6 +5,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Viewer } from "@hearth/core";
 import { retrieveContext } from "./retrieve.js";
+import { noKnowledgeReply } from "./no-knowledge.js";
 
 // Live Q&A runs on Haiku — it's grounded answer-from-context, not deep reasoning,
 // and Haiku is ~3x cheaper (see the pricing model). Extraction stays on Sonnet.
@@ -40,6 +41,12 @@ export async function ask(
   question: string,
 ): Promise<AskResult> {
   const { units, chunks } = await retrieveContext(viewer, question);
+
+  // Nothing retrieved → nothing to ground on. Skip the model and return a canned line
+  // (no cost, no chance of the LLM hinting that hidden knowledge exists).
+  if (units.length === 0 && chunks.length === 0) {
+    return { answer: noKnowledgeReply(viewer.role), sources: [] };
+  }
 
   const unitLines = units.map(
     (u, i) => `[U${i + 1}] ${u.title} (${u.type}): ${u.content}`,

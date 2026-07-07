@@ -10,3 +10,4 @@ export * from "./parse.js";
 export * from "./chunk.js";
 export * from "./ingest.js";
 export * from "./reveal.js";
+export * from "./journal.js";

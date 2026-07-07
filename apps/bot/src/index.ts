@@ -7,6 +7,7 @@ import {
   ButtonBuilder,
   ButtonInteraction,
   ButtonStyle,
+  ChannelType,
   ChatInputCommandInteraction,
   Client,
   Events,
@@ -24,10 +25,12 @@ import {
   getQueue,
   retrieveContext,
   revealTo,
+  addJournalNote,
   INGEST_QUEUE,
   type IngestJob,
 } from "@hearth/agents";
 import { startRecording, stopRecording } from "./capture.js";
+import { answerEmbed, revealEmbed, journalEmbed } from "./embeds.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -101,6 +104,26 @@ const revealCommand = new SlashCommandBuilder()
       .setName("to")
       .setDescription("A character name, or 'party' for everyone")
       .setRequired(true),
+  )
+  .addChannelOption((o) =>
+    o
+      .setName("in")
+      .setDescription(
+        "Channel to announce a party reveal in (defaults to the reveals channel)",
+      )
+      .addChannelTypes(ChannelType.GuildText),
+  );
+
+const journalCommand = new SlashCommandBuilder()
+  .setName("journal")
+  .setDescription(
+    "Record a private note only your character (and the DM) can see.",
+  )
+  .addStringOption((o) =>
+    o
+      .setName("entry")
+      .setDescription("What do you want to remember?")
+      .setRequired(true),
   );
 
 const dmModeCommand = new SlashCommandBuilder()
@@ -115,6 +138,7 @@ async function registerCommands(): Promise<void> {
     stopCommand.toJSON(),
     uploadCommand.toJSON(),
     revealCommand.toJSON(),
+    journalCommand.toJSON(),
   ];
   if (DEV_DM_TOGGLE) body.push(dmModeCommand.toJSON());
   if (GUILD_ID) {
@@ -130,8 +154,17 @@ async function registerCommands(): Promise<void> {
   }
 }
 
+/** A resolved viewer plus the display name of their character (for in-world presentation).
+ * The core `Viewer` stays pure — the name rides alongside only for the bot's UI. */
+type ResolvedViewer = Viewer & {
+  characterName: string | null;
+  membershipId: string;
+};
+
 /** Resolve the Discord author to a permission viewer within the campaign. */
-async function resolveViewer(discordUserId: string): Promise<Viewer | null> {
+async function resolveViewer(
+  discordUserId: string,
+): Promise<ResolvedViewer | null> {
   const user = await prisma.user.findUnique({
     where: { discordUserId },
     include: {
@@ -156,6 +189,8 @@ async function resolveViewer(discordUserId: string): Promise<Viewer | null> {
     role,
     characterId: character?.id ?? null,
     partyId: character?.partyId ?? null,
+    characterName: character?.name ?? null,
+    membershipId: membership.id,
   };
 }
 
@@ -176,14 +211,50 @@ async function handleAsk(
       );
       return;
     }
-    const { answer } = await ask(viewer, question);
-    const reply = answer.length > 1900 ? `${answer.slice(0, 1900)}…` : answer;
-    await interaction.editReply(reply);
+    const result = await ask(viewer, question);
+    await interaction.editReply({
+      embeds: [answerEmbed(viewer, viewer.characterName, question, result)],
+    });
   } catch (err) {
     console.error("/ask failed:", err);
     // Never let the fallback itself throw and leave the interaction hanging.
     await interaction
       .editReply("Something went wrong reaching the memory.")
+      .catch(() => {});
+  }
+}
+
+/** /journal — a player records a private note, visible only to their character (and the DM). */
+async function handleJournal(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(interaction.user.id);
+    if (!viewer) {
+      await interaction.editReply("You're not part of this campaign.");
+      return;
+    }
+    if (!viewer.characterId) {
+      await interaction.editReply(
+        "Your journal is tied to a character — the DM keeps notes with `/upload`.",
+      );
+      return;
+    }
+    const entry = interaction.options.getString("entry", true);
+    const note = await addJournalNote(
+      CAMPAIGN_ID,
+      viewer.membershipId,
+      viewer.characterId,
+      entry,
+    );
+    await interaction.editReply({
+      embeds: [journalEmbed(viewer.characterName, note.content)],
+    });
+  } catch (err) {
+    console.error("/journal failed:", err);
+    await interaction
+      .editReply("Something went wrong saving that to your journal.")
       .catch(() => {});
   }
 }
@@ -299,6 +370,17 @@ async function resolveRevealTarget(
     : null;
 }
 
+/** Where a PARTY reveal gets announced: explicit `in:` → the configured default channel
+ * (HEARTH_REVEAL_CHANNEL_ID — becomes a per-campaign setting under multi-tenancy) → the
+ * channel the command was run in. (Character reveals DM the player, so this is unused there.) */
+function resolveRevealChannelId(
+  interaction: ChatInputCommandInteraction,
+): string {
+  const chosen = interaction.options.getChannel("in");
+  if (chosen) return chosen.id;
+  return process.env.HEARTH_REVEAL_CHANNEL_ID ?? interaction.channelId ?? "";
+}
+
 /** /reveal — DM only. Find the best matching fact + document for `about`, then show the DM
  * exactly what they'd release, with Confirm/Cancel buttons — nothing is granted until they
  * click. (A one-way action, so it must be previewed first.) */
@@ -323,9 +405,14 @@ async function handleReveal(
     );
     return;
   }
+  const isParty = !target.characterId;
   const scope = target.characterId
     ? `c:${target.characterId}`
     : `p:${target.partyId}`;
+  // Resolve the announce channel now (for party reveals) and bake it into the button, so the
+  // confirm handler posts exactly where the preview promised. Character reveals DM the player.
+  const channelId = isParty ? resolveRevealChannelId(interaction) : "";
+  const suffix = `${scope}:${channelId}`;
 
   const { units, chunks } = await retrieveContext(viewer, about, {
     unitLimit: 1,
@@ -338,7 +425,15 @@ async function handleReveal(
     return;
   }
 
-  const lines = [`**Reveal to ${target.label}** — confirm what to release:`];
+  const destination = isParty
+    ? channelId
+      ? `📣 Will be announced in <#${channelId}>`
+      : "📣 (no announce channel available — it'll still be revealed)"
+    : `✉️ Will be sent privately to ${target.label}`;
+  const lines = [
+    `**Reveal to ${target.label}** — confirm what to release:`,
+    destination,
+  ];
   const buttons: ButtonBuilder[] = [];
   if (unit) {
     lines.push(
@@ -346,7 +441,7 @@ async function handleReveal(
     );
     buttons.push(
       new ButtonBuilder()
-        .setCustomId(`rv:u:${unit.id}:${scope}`)
+        .setCustomId(`rv:u:${unit.id}:${suffix}`)
         .setLabel(`Reveal: ${trimLabel(unit.title)}`)
         .setStyle(ButtonStyle.Success),
     );
@@ -357,7 +452,7 @@ async function handleReveal(
     );
     buttons.push(
       new ButtonBuilder()
-        .setCustomId(`rv:d:${chunk.sourceDocumentId}:${scope}`)
+        .setCustomId(`rv:d:${chunk.sourceDocumentId}:${suffix}`)
         .setLabel(`Reveal doc: ${trimLabel(chunk.docName)}`)
         .setStyle(ButtonStyle.Primary),
     );
@@ -375,11 +470,71 @@ async function handleReveal(
   });
 }
 
-/** Confirm/Cancel button from /reveal — creates the grant only on confirm. */
+/** After a grant is created, surface it: DM the player (character reveal) or post to the
+ * reveals channel (party reveal) with the ✨ discovered embed — the reveal IS the announcement,
+ * so the content rides along. Returns a short note for the DM's confirmation. The reveal still
+ * stands even if the announcement itself fails (closed DMs, missing channel, …). */
+async function announceReveal(
+  kind: string,
+  targetId: string,
+  scopeType: string,
+  scopeId: string,
+  chanId: string,
+): Promise<string> {
+  let itemTitle: string;
+  let body: string;
+  if (kind === "u") {
+    const u = await prisma.knowledgeUnit.findUnique({
+      where: { id: targetId },
+      select: { title: true, content: true },
+    });
+    itemTitle = u?.title ?? "a memory";
+    body = u?.content ?? "";
+  } else {
+    const d = await prisma.sourceDocument.findUnique({
+      where: { id: targetId },
+      select: { name: true },
+    });
+    itemTitle = d?.name ?? "a document";
+    body = "The whole dossier is now yours — ask about anything in it.";
+  }
+
+  try {
+    if (scopeType === "c") {
+      const character = await prisma.character.findUnique({
+        where: { id: scopeId },
+        include: { membership: { include: { user: true } } },
+      });
+      const discordUserId = character?.membership.user.discordUserId;
+      if (!discordUserId)
+        return "— revealed (couldn't find the player to notify)";
+      const user = await client.users.fetch(discordUserId);
+      await user.send({ embeds: [revealEmbed("You", itemTitle, body)] });
+      return `— sent privately to ${character?.name ?? "them"}`;
+    }
+    if (!chanId) return "— revealed (no announce channel set)";
+    const channel = await client.channels.fetch(chanId);
+    if (channel && channel.isTextBased() && !channel.isDMBased()) {
+      await channel.send({
+        embeds: [revealEmbed("The party", itemTitle, body)],
+      });
+      return `— announced in <#${chanId}>`;
+    }
+    return "— revealed (couldn't reach that channel)";
+  } catch (err) {
+    console.error("reveal announce failed:", err);
+    const missingAccess = (err as { code?: number }).code === 50001;
+    return missingAccess
+      ? "— revealed, but I can't post in that channel — grant me View Channel + Send Messages + Embed Links there"
+      : "— revealed, but the announcement couldn't be delivered";
+  }
+}
+
+/** Confirm/Cancel button from /reveal — creates the grant only on confirm, then announces it. */
 async function handleRevealButton(
   interaction: ButtonInteraction,
 ): Promise<void> {
-  const [, kind, targetId, scopeType, scopeId] =
+  const [, kind, targetId, scopeType, scopeId, chanId] =
     interaction.customId.split(":");
   if (kind === "x") {
     await interaction.update({ content: "Reveal cancelled.", components: [] });
@@ -407,15 +562,29 @@ async function handleRevealButton(
     });
     return;
   }
+  // Ack now — announcing (DB + Discord sends) can take longer than the 3s button window.
+  await interaction.deferUpdate();
   const revealTarget =
     kind === "u" ? { unitId: targetId } : { documentId: targetId };
   const scope =
     scopeType === "c" ? { characterId: scopeId } : { partyId: scopeId };
   const { revealed } = await revealTo(revealTarget, scope, membership.id);
-  await interaction.update({
-    content: revealed
-      ? "✅ Revealed — they can ask about it now."
-      : "That was already revealed.",
+  if (!revealed) {
+    await interaction.editReply({
+      content: "That was already revealed.",
+      components: [],
+    });
+    return;
+  }
+  const note = await announceReveal(
+    kind!,
+    targetId!,
+    scopeType!,
+    scopeId!,
+    chanId ?? "",
+  );
+  await interaction.editReply({
+    content: `✅ Revealed ${note}`,
     components: [],
   });
 }
@@ -458,6 +627,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case "reveal":
         await handleReveal(interaction);
+        break;
+      case "journal":
+        await handleJournal(interaction);
         break;
       case "dmmode":
         if (DEV_DM_TOGGLE) await handleDmMode(interaction);

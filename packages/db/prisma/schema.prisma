@@ -31,6 +31,7 @@ enum MemberRole {
 enum KnowledgeSource {
   SESSION // happened at the table — fair game to the campaign
   DM_ADDED // authored/uploaded by the DM — gated until revealed
+  PLAYER_NOTE // a player's private journal entry — visible to its author (+ DM) only
 }
 
 /// How a DM_ADDED unit originated (provenance/trust). SESSION units are PLAYED.
@@ -131,6 +132,7 @@ model Membership {
   characters     Character[]
   grantsRevealed KnowledgeGrant[] @relation("GrantRevealedBy")
   revealEvents   RevealEvent[]    @relation("RevealBy")
+  authoredNotes  KnowledgeUnit[]  @relation("NoteAuthor")
 
   @@unique([userId, campaignId])
   @@index([campaignId])
@@ -227,8 +229,9 @@ model KnowledgeUnit {
   embedding Unsupported("vector(1024)")?
 
   // provenance
-  gameSessionId    String?
-  sourceDocumentId String? // set for DM_ADDED units extracted from an uploaded doc
+  gameSessionId      String?
+  sourceDocumentId   String? // set for DM_ADDED units extracted from an uploaded doc
+  authorMembershipId String? // set for PLAYER_NOTE journal entries — who wrote it
 
   // relationships-as-knowledge (self references)
   subjectId String?
@@ -237,9 +240,10 @@ model KnowledgeUnit {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  campaign       Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  gameSession    GameSession?    @relation(fields: [gameSessionId], references: [id], onDelete: SetNull)
-  sourceDocument SourceDocument? @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+  campaign         Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  gameSession      GameSession?    @relation(fields: [gameSessionId], references: [id], onDelete: SetNull)
+  sourceDocument   SourceDocument? @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+  authorMembership Membership?     @relation("NoteAuthor", fields: [authorMembershipId], references: [id], onDelete: Cascade)
 
   subject   KnowledgeUnit?  @relation("SubjectRel", fields: [subjectId], references: [id], onDelete: SetNull)
   subjectOf KnowledgeUnit[] @relation("SubjectRel")
@@ -253,6 +257,7 @@ model KnowledgeUnit {
   @@index([campaignId, type])
   @@index([gameSessionId])
   @@index([sourceDocumentId])
+  @@index([authorMembershipId])
   @@index([subjectId])
   @@index([objectId])
 }
