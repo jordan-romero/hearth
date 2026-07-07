@@ -30,13 +30,13 @@ lands later. A handful of cheap forward-looking fields are included early (marke
 
 ## B · The memory — THE SPINE (Phase 0)
 
-| Entity               | Purpose                                                                                                                                                            | Phase |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----- |
+| Entity               | Purpose                                                                                                                                                                                   | Phase |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
 | `KnowledgeUnit`      | The atom: content, `type`, `source`, `origin` ⚑, `baseVisibility`, `campaignId`, `gameSessionId?` ⚑, `sourceDocumentId?`, `authorMembershipId?`, `subjectId?/objectId?` ⚑ (relationships) | 0     |
-| `KnowledgeGrant`     | Targeted reveal → Character \| Party; who/when                                                                                                                     | 0     |
-| `RevealEvent`        | Append-only audit of every visibility change                                                                                                                       | 0     |
-| `KnowledgeEmbedding` | pgvector embedding(s) per unit, by model                                                                                                                           | 1     |
-| `ThreadState`        | 1:1 with a `type=THREAD` unit: `status` (OPEN/RESOLVED), `heat`, `lastAdvancedAt`                                                                                  | 3     |
+| `KnowledgeGrant`     | Targeted reveal → Character \| Party; who/when                                                                                                                                            | 0     |
+| `RevealEvent`        | Append-only audit of every visibility change                                                                                                                                              | 0     |
+| `KnowledgeEmbedding` | pgvector embedding(s) per unit, by model                                                                                                                                                  | 1     |
+| `ThreadState`        | 1:1 with a `type=THREAD` unit: `status` (OPEN/RESOLVED), `heat`, `lastAdvancedAt`                                                                                                         | 3     |
 
 > **Player journal (`/journal`, Phase 3).** A player's private note is a `KnowledgeUnit`
 > with `source = PLAYER_NOTE` and `authorMembershipId` set, `baseVisibility = DM_ONLY` +
