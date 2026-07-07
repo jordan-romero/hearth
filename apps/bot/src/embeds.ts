@@ -81,6 +81,51 @@ export function revealEmbed(
     .setDescription(truncate(`**${itemTitle}**\n${body}`, 4096));
 }
 
+export interface NpcCard {
+  name: string;
+  race: string;
+  role: string;
+  appearance: string;
+  demeanor: string;
+  voice: string;
+  ties: string;
+  hook: string;
+  secret: string;
+}
+
+/** The generated-NPC draft card. DM-facing (gold in firelight), with the matched portrait as
+ * the thumbnail (passed as an `attachment://` filename) and the DM-only secret shown. */
+export function npcEmbed(
+  npc: NpcCard,
+  portraitLabel: string | null,
+  theme: string = DEFAULT_THEME,
+  thumbnailFilename?: string,
+): EmbedBuilder {
+  const dash = (s: string) => truncate(s?.trim() || "—", 1024);
+  const embed = new EmbedBuilder()
+    .setColor(themeColor(theme, "DM"))
+    .setAuthor({ name: "🎭 Generated NPC" })
+    .setTitle(truncate(npc.name, 256))
+    .setDescription(
+      truncate(`**${npc.race} · ${npc.role}**\n${npc.appearance}`, 4096),
+    )
+    .addFields(
+      { name: "Demeanor", value: dash(npc.demeanor), inline: true },
+      { name: "Voice", value: dash(npc.voice), inline: true },
+      { name: "Ties", value: dash(npc.ties) },
+      { name: "Hook", value: dash(npc.hook) },
+      { name: "🔒 DM secret", value: dash(npc.secret) },
+    )
+    .setFooter({
+      text: portraitLabel
+        ? `matched portrait · ${portraitLabel} · origin GENERATED`
+        : "no portrait matched · origin GENERATED",
+    });
+  if (thumbnailFilename)
+    embed.setThumbnail(`attachment://${thumbnailFilename}`);
+  return embed;
+}
+
 /** Confirmation shown after a player records a `/journal` entry. */
 export function journalEmbed(
   characterName: string | null,

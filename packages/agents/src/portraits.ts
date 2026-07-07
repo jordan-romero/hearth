@@ -11,6 +11,17 @@ export interface PortraitMatch {
   label: string;
 }
 
+/** Build a portrait-match query that weights RACE heavily — a tiefling must never match a
+ * human. Race is stated up front and repeated so it dominates role/mood in the embedding. */
+export function portraitQuery(
+  race: string,
+  role: string,
+  appearance: string,
+): string {
+  const r = race.trim();
+  return `A ${r}. ${r} ${role}. ${appearance}. Species: ${r}.`;
+}
+
 /** The portrait whose embedding is nearest `description`. Searches the shared pool
  * (campaignId null) plus the campaign's own uploads. Returns null if nothing is embedded yet. */
 export async function matchPortrait(
