@@ -15,9 +15,9 @@
     "@hearth/agents": "workspace:*",
     "@hearth/core": "workspace:*",
     "@hearth/db": "workspace:*",
-    "discord.js": "^14.16.3",
+    "discord.js": "^14.26.5",
     "libsodium-wrappers": "^0.8.4",
-    "opusscript": "^0.0.8",
+    "opusscript": "^0.1.1",
     "prism-media": "^1.3.5",
     "tsx": "^4.19.2"
   },

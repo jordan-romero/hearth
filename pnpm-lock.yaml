@@ -46,7 +46,7 @@ importers:
     dependencies:
       '@discordjs/voice':
         specifier: ^0.19.2
-        version: 0.19.2(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(opusscript@0.0.8)
+        version: 0.19.2(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(opusscript@0.1.1)
       '@hearth/agents':
         specifier: workspace:*
         version: link:../../packages/agents
@@ -57,17 +57,17 @@ importers:
         specifier: workspace:*
         version: link:../../packages/db
       discord.js:
-        specifier: ^14.16.3
-        version: 14.26.4
+        specifier: ^14.26.5
+        version: 14.26.5
       libsodium-wrappers:
         specifier: ^0.8.4
         version: 0.8.4
       opusscript:
-        specifier: ^0.0.8
-        version: 0.0.8
+        specifier: ^0.1.1
+        version: 0.1.1
       prism-media:
         specifier: ^1.3.5
-        version: 1.3.5(opusscript@0.0.8)
+        version: 1.3.5(opusscript@0.1.1)
       tsx:
         specifier: ^4.19.2
         version: 4.23.0
@@ -88,8 +88,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/db
       pg-boss:
-        specifier: ^12.25.1
-        version: 12.25.1
+        specifier: ^12.26.0
+        version: 12.26.0
       tsx:
         specifier: ^4.19.2
         version: 4.23.0
@@ -101,8 +101,8 @@ importers:
   packages/agents:
     dependencies:
       '@anthropic-ai/sdk':
-        specifier: ^0.110.0
-        version: 0.110.0
+        specifier: ^0.111.0
+        version: 0.111.0
       '@deepgram/sdk':
         specifier: ^5.5.0
         version: 5.5.0
@@ -113,14 +113,14 @@ importers:
         specifier: workspace:*
         version: link:../db
       '@supabase/supabase-js':
-        specifier: ^2.110.0
-        version: 2.110.0
+        specifier: ^2.110.2
+        version: 2.110.2
       mammoth:
         specifier: ^1.12.0
         version: 1.12.0
       pg-boss:
-        specifier: ^12.25.1
-        version: 12.25.1
+        specifier: ^12.26.0
+        version: 12.26.0
       unpdf:
         specifier: ^1.6.2
         version: 1.6.2
@@ -169,8 +169,8 @@ importers:
 
 packages:
 
-  '@anthropic-ai/sdk@0.110.0':
-    resolution: {integrity: sha512-hOP4bNYXDFHDxxiEgzlILXrxZIYCDnhe8sry0RDRKD/QnsEpvZcQpablCdm9X/WuD/YgOiSIkkqsL1mLLlTqJw==}
+  '@anthropic-ai/sdk@0.111.0':
+    resolution: {integrity: sha512-1hUqKi+uJQoS5X90+InwHbFAXMvgq0DnsC5hVLEeSRaODiU5WvmqDAcVCmGS2wC0pN9Z8jtWCbWw7JLzeDdm/Q==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -202,8 +202,8 @@ packages:
     resolution: {integrity: sha512-y4UPwWhH6vChKRkGdMB4odasUbHOUwy7KL+OVwF86PvT6QVOwElx+TiI1/6kcmcEe+g5YRXJFiXSXUdabqZOvQ==}
     engines: {node: '>=16.11.0'}
 
-  '@discordjs/rest@2.6.1':
-    resolution: {integrity: sha512-wwQdgjeaoYFiaG+atbqx6aJDpqW7JHAo0HrQkBTbYzM3/PJ3GweQIpgElNcGZ26DCUOXMyawYd0YF7vtr+fZXg==}
+  '@discordjs/rest@2.6.2':
+    resolution: {integrity: sha512-c5HI3hJuRWWrnpyCZAUYfIUTAEv9weX4tE2UfDqtM3ztizdKE9RFEf3G5IWhPyO+kPldUDpGv02XJAQzdUTC9Q==}
     engines: {node: '>=18'}
 
   '@discordjs/util@1.2.0':
@@ -983,31 +983,31 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
-  '@supabase/auth-js@2.110.0':
-    resolution: {integrity: sha512-Mi288WCTp6wxMFCOu/UgzgHEXODjdl2uVTLqK11eanzGZaldU3RyP8Am+ZbNuVzFP+5+iOvppxzv7N5Ym84xTg==}
+  '@supabase/auth-js@2.110.2':
+    resolution: {integrity: sha512-Qj7a6EDP+AMMQFWqGv+qFa8r6re//dk+qQI5bA0KK+PZmnI3JPu97TDeNt6SMiQ2FkklP79hP2yDFYSnA989OA==}
     engines: {node: '>=22.0.0'}
 
-  '@supabase/functions-js@2.110.0':
-    resolution: {integrity: sha512-Fde5wlY8ZZy+9yqrWlQHo8MacSyUBArBEtN2boB4thJQigPnQD/cc61qZN0n3I1L0gwhWtHYwIMnOBKxSvF6Hw==}
+  '@supabase/functions-js@2.110.2':
+    resolution: {integrity: sha512-ZjjqrXpxM9/rE+eAtZxiK45EWy9EBoJQ322Q5Y75LccYQNh212neHTgXP/o4MIzmH0LNXT8UzvTZtQOfOzyoeQ==}
     engines: {node: '>=22.0.0'}
 
   '@supabase/phoenix@0.4.4':
     resolution: {integrity: sha512-Gt0pqoXuIqX/8dvG0OKp/wMCobXNH3klNbUPBNyOfN0YA1IswrM3HyWFMOPk1Jy+BRaIyDPcFx4jLBwHNmlyfQ==}
 
-  '@supabase/postgrest-js@2.110.0':
-    resolution: {integrity: sha512-ZbC1QZL3jcvBUfVKjJbgRM27G4Mg3Zzqdm44m5pJafe1e52Cli793EOnwQucomBAGEUDd03Nzaf7XV3ji/XexQ==}
+  '@supabase/postgrest-js@2.110.2':
+    resolution: {integrity: sha512-++LBmcIMwCtgO4tISQUmo9+2xkRwHQqS8ZKMCnhXLe9P8k8YQRXuMoh/RiSzQSoev8gqet0W7yOboW0cUxnt0Q==}
     engines: {node: '>=22.0.0'}
 
-  '@supabase/realtime-js@2.110.0':
-    resolution: {integrity: sha512-Wn2AWpneZuDFTkp/65tqctvoh+3JvyTjMam8sTMqVWy5BgkU8zAvFwilPYPPPhkINeKF8NAJKP7FclJ2iGCUMw==}
+  '@supabase/realtime-js@2.110.2':
+    resolution: {integrity: sha512-z3jTOTPgyn6E3r6dVOOQ10He4yAMB2czjFw7xVdX3s16MHElna5rY1gVaePs0NIo6xvtMYbtmOXlFaFt/ePLpg==}
     engines: {node: '>=22.0.0'}
 
-  '@supabase/storage-js@2.110.0':
-    resolution: {integrity: sha512-71+gU3HrhiylAhftY6FmO5PPdcsScnVcS766CVD+vTYK9qTDLbrx8FhgBYbqGm3iV/wkTfzrNJfjGsMeFRkJRQ==}
+  '@supabase/storage-js@2.110.2':
+    resolution: {integrity: sha512-EhsRSwSnmQefKJsAxoRUZ0hvHr92ECM8DDGAKR5z0HdoJx4heI60PjHUTruVNZxKX6XeobLGDyLud020Bw1iwg==}
     engines: {node: '>=22.0.0'}
 
-  '@supabase/supabase-js@2.110.0':
-    resolution: {integrity: sha512-8yI84VJiEVW4zxZpLUmxXmjzQ7O2St9X/ymzlBETDHTURPWG3LmvbSiibq+7dqAJmyoUfxZnSfXeM4HCM8s4XQ==}
+  '@supabase/supabase-js@2.110.2':
+    resolution: {integrity: sha512-r9q9w4ZQ6mOjh36aqUNFSisBF611vzpO8JphBESr2Q1SWvmGFQeI7Jq7Y+PaNMZ6Zszz+S2yTlJStCpnaMSnQg==}
     engines: {node: '>=22.0.0'}
 
   '@turbo/darwin-64@2.10.3':
@@ -1264,8 +1264,8 @@ packages:
   core-util-is@1.0.3:
     resolution: {integrity: sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ==}
 
-  cron-parser@5.6.1:
-    resolution: {integrity: sha512-QBm4o1PwZiuY7KFbVvW7FLC8bozy7YWzv+Fz6KRS7sQghzcbDZCGxr/Bc5b6TQreAoSwuWVP491dIcK0THCX6A==}
+  cron-parser@5.6.2:
+    resolution: {integrity: sha512-yJ/G1LVir6CnlkLI40CsampPLKl1SprGGlUagWtGJxewytRVYezv5xVyzzbT+Pvzx+VIRvZVF7/a0eEMTxdnTA==}
     engines: {node: '>=18'}
 
   cross-spawn@7.0.6:
@@ -1311,8 +1311,11 @@ packages:
   discord-api-types@0.38.49:
     resolution: {integrity: sha512-XnqcWmnFZFAE8ZM8SHAw9DIV8D3Or00rMQ8iQLotrEA2PmXhl+ykaf6L6q4l474hrSUH1JaYcv+iOMRWp2p6Tg==}
 
-  discord.js@14.26.4:
-    resolution: {integrity: sha512-4oBp8tc6Kf8IDBwAHhbsMaAqx1b5fob9SNasZT7V6yyyUydoO5i5fGuX7TmvRtR+q/WgKRnRViRoAWnG7fNyvA==}
+  discord-api-types@0.38.50:
+    resolution: {integrity: sha512-J2n/bpIETX3DQ6AJ7/0xbsTLmYiJQtO/LKcXKC1YDbB56OUwtDbdXOFE8Q4g8jVGHBR2VAy1+D4ngaIgkMNV9w==}
+
+  discord.js@14.26.5:
+    resolution: {integrity: sha512-SGYgjiAs0o8ZzMC97XmFXKONyairJ9YzVda+LvoSKs9YYh2gPtQhY+liaV6H/w72jxYbu9ggiSqAXoF3FLOH4A==}
     engines: {node: '>=18'}
 
   dotenv-cli@8.0.0:
@@ -1709,8 +1712,8 @@ packages:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
     engines: {node: '>= 0.8.0'}
 
-  opusscript@0.0.8:
-    resolution: {integrity: sha512-VSTi1aWFuCkRCVq+tx/BQ5q9fMnQ9pVZ3JU4UHKqTkf0ED3fKEPdr+gKAAl3IA2hj9rrP6iyq3hlcJq3HELtNQ==}
+  opusscript@0.1.1:
+    resolution: {integrity: sha512-mL0fZZOUnXdZ78woRXp18lApwpp0lF5tozJOD1Wut0dgrA9WuQTgSels/CSmFleaAZrJi/nci5KOVtbuxeWoQA==}
 
   p-limit@3.1.0:
     resolution: {integrity: sha512-TYOanM3wGwNGsZN2cVTYPArw454xnXj5qmWF1bEoAc4+cU/ol7GVh7odevjp1FNHduHc3KZMcFduxU5Xc6uJRQ==}
@@ -1745,8 +1748,8 @@ packages:
   perfect-debounce@2.1.0:
     resolution: {integrity: sha512-LjgdTytVFXeUgtHZr9WYViYSM/g8MkcTPYDlPa3cDqMirHjKiSZPYd6DoL7pK8AJQr+uWkQvCjHNdiMqsrJs+g==}
 
-  pg-boss@12.25.1:
-    resolution: {integrity: sha512-qvhIBBLN1OFw6HUl84S4Goe11fyx1yG7H+p8IMWb0K0vQIp8UlHPbhRjrvpI9ttdGJzAkB/0pZ58eRWzsezv+w==}
+  pg-boss@12.26.0:
+    resolution: {integrity: sha512-qMLyokiG2/Ey8U3sptl0We4nRGr1iveHL/lQ7g6n7cI/ubp9HVJZJnfPf6B9jzAbpd55uSdltKL/DMkyBC0ynw==}
     engines: {node: '>=22.12.0'}
     hasBin: true
 
@@ -2216,6 +2219,18 @@ packages:
       utf-8-validate:
         optional: true
 
+  ws@8.21.1:
+    resolution: {integrity: sha512-+0NTnW77fFN/DjQi6k/Sq/Yvk4Sgajw7urW8V+asjXnRgDs9gyGkdb7EzgfhA4goXsRIZKE28fzIXBHEzhuiWw==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   xmlbuilder@10.1.1:
     resolution: {integrity: sha512-OyzrcFLL/nb6fMGHbiRDuPup9ljBycsdCypwuyg5AAHvyWzGfChJpCXMG88AGTIMFhGZ9RccFN1e6lhg3hkwKg==}
     engines: {node: '>=4.0'}
@@ -2238,7 +2253,7 @@ packages:
 
 snapshots:
 
-  '@anthropic-ai/sdk@0.110.0':
+  '@anthropic-ai/sdk@0.111.0':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0
@@ -2257,7 +2272,7 @@ snapshots:
       '@discordjs/formatters': 0.6.2
       '@discordjs/util': 1.2.0
       '@sapphire/shapeshift': 4.0.0
-      discord-api-types: 0.38.49
+      discord-api-types: 0.38.50
       fast-deep-equal: 3.1.3
       ts-mixer: 6.0.4
       tslib: 2.8.1
@@ -2268,30 +2283,30 @@ snapshots:
 
   '@discordjs/formatters@0.6.2':
     dependencies:
-      discord-api-types: 0.38.49
+      discord-api-types: 0.38.50
 
-  '@discordjs/rest@2.6.1':
+  '@discordjs/rest@2.6.2':
     dependencies:
       '@discordjs/collection': 2.1.1
       '@discordjs/util': 1.2.0
       '@sapphire/async-queue': 1.5.5
       '@sapphire/snowflake': 3.5.5
       '@vladfrangu/async_event_emitter': 2.4.7
-      discord-api-types: 0.38.49
+      discord-api-types: 0.38.50
       magic-bytes.js: 1.13.0
       tslib: 2.8.1
       undici: 6.27.0
 
   '@discordjs/util@1.2.0':
     dependencies:
-      discord-api-types: 0.38.49
+      discord-api-types: 0.38.50
 
-  '@discordjs/voice@0.19.2(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(opusscript@0.0.8)':
+  '@discordjs/voice@0.19.2(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)(opusscript@0.1.1)':
     dependencies:
       '@snazzah/davey': 0.1.12(@emnapi/core@1.11.2)(@emnapi/runtime@1.11.2)
       '@types/ws': 8.18.1
       discord-api-types: 0.38.49
-      prism-media: 1.3.5(opusscript@0.0.8)
+      prism-media: 1.3.5(opusscript@0.1.1)
       tslib: 2.8.1
       ws: 8.21.0
     transitivePeerDependencies:
@@ -2307,14 +2322,14 @@ snapshots:
   '@discordjs/ws@1.2.3':
     dependencies:
       '@discordjs/collection': 2.1.1
-      '@discordjs/rest': 2.6.1
+      '@discordjs/rest': 2.6.2
       '@discordjs/util': 1.2.0
       '@sapphire/async-queue': 1.5.5
       '@types/ws': 8.18.1
       '@vladfrangu/async_event_emitter': 2.4.7
-      discord-api-types: 0.38.49
+      discord-api-types: 0.38.50
       tslib: 2.8.1
-      ws: 8.21.0
+      ws: 8.21.1
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
@@ -2867,37 +2882,37 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
-  '@supabase/auth-js@2.110.0':
+  '@supabase/auth-js@2.110.2':
     dependencies:
       tslib: 2.8.1
 
-  '@supabase/functions-js@2.110.0':
+  '@supabase/functions-js@2.110.2':
     dependencies:
       tslib: 2.8.1
 
   '@supabase/phoenix@0.4.4': {}
 
-  '@supabase/postgrest-js@2.110.0':
+  '@supabase/postgrest-js@2.110.2':
     dependencies:
       tslib: 2.8.1
 
-  '@supabase/realtime-js@2.110.0':
+  '@supabase/realtime-js@2.110.2':
     dependencies:
       '@supabase/phoenix': 0.4.4
       tslib: 2.8.1
 
-  '@supabase/storage-js@2.110.0':
+  '@supabase/storage-js@2.110.2':
     dependencies:
       iceberg-js: 0.8.1
       tslib: 2.8.1
 
-  '@supabase/supabase-js@2.110.0':
+  '@supabase/supabase-js@2.110.2':
     dependencies:
-      '@supabase/auth-js': 2.110.0
-      '@supabase/functions-js': 2.110.0
-      '@supabase/postgrest-js': 2.110.0
-      '@supabase/realtime-js': 2.110.0
-      '@supabase/storage-js': 2.110.0
+      '@supabase/auth-js': 2.110.2
+      '@supabase/functions-js': 2.110.2
+      '@supabase/postgrest-js': 2.110.2
+      '@supabase/realtime-js': 2.110.2
+      '@supabase/storage-js': 2.110.2
 
   '@turbo/darwin-64@2.10.3':
     optional: true
@@ -3186,7 +3201,7 @@ snapshots:
 
   core-util-is@1.0.3: {}
 
-  cron-parser@5.6.1:
+  cron-parser@5.6.2:
     dependencies:
       luxon: 3.7.2
 
@@ -3218,16 +3233,18 @@ snapshots:
 
   discord-api-types@0.38.49: {}
 
-  discord.js@14.26.4:
+  discord-api-types@0.38.50: {}
+
+  discord.js@14.26.5:
     dependencies:
       '@discordjs/builders': 1.14.1
       '@discordjs/collection': 1.5.3
       '@discordjs/formatters': 0.6.2
-      '@discordjs/rest': 2.6.1
+      '@discordjs/rest': 2.6.2
       '@discordjs/util': 1.2.0
       '@discordjs/ws': 1.2.3
       '@sapphire/snowflake': 3.5.3
-      discord-api-types: 0.38.49
+      discord-api-types: 0.38.50
       fast-deep-equal: 3.1.3
       lodash.snakecase: 4.1.1
       magic-bytes.js: 1.13.0
@@ -3664,7 +3681,7 @@ snapshots:
       type-check: 0.4.0
       word-wrap: 1.2.5
 
-  opusscript@0.0.8: {}
+  opusscript@0.1.1: {}
 
   p-limit@3.1.0:
     dependencies:
@@ -3688,9 +3705,9 @@ snapshots:
 
   perfect-debounce@2.1.0: {}
 
-  pg-boss@12.25.1:
+  pg-boss@12.26.0:
     dependencies:
-      cron-parser: 5.6.1
+      cron-parser: 5.6.2
       pg: 8.22.0
       serialize-error: 13.0.1
     transitivePeerDependencies:
@@ -3765,9 +3782,9 @@ snapshots:
 
   prettier@3.9.4: {}
 
-  prism-media@1.3.5(opusscript@0.0.8):
+  prism-media@1.3.5(opusscript@0.1.1):
     optionalDependencies:
-      opusscript: 0.0.8
+      opusscript: 0.1.1
 
   prisma@7.8.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3):
     dependencies:
@@ -4119,6 +4136,8 @@ snapshots:
       strip-ansi: 7.2.0
 
   ws@8.21.0: {}
+
+  ws@8.21.1: {}
 
   xmlbuilder@10.1.1: {}
 
