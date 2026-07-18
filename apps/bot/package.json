@@ -23,6 +23,6 @@
   },
   "devDependencies": {
     "dotenv-cli": "^8.0.0",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.10"
   }
 }
