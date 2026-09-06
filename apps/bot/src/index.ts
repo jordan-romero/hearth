@@ -51,6 +51,7 @@ import {
   npcShareEmbed,
   npcCardMarkdown,
   safeFileName,
+  helpEmbed,
 } from "./embeds.js";
 
 function requireEnv(name: string): string {
@@ -168,6 +169,10 @@ const npcCommand = new SlashCommandBuilder()
       .addChannelTypes(ChannelType.GuildText),
   );
 
+const helpCommand = new SlashCommandBuilder()
+  .setName("help")
+  .setDescription("What can Hearth do? List the commands.");
+
 const dmModeCommand = new SlashCommandBuilder()
   .setName("dmmode")
   .setDescription("(dev) Toggle viewing the campaign as the DM.");
@@ -182,6 +187,7 @@ async function registerCommands(): Promise<void> {
     revealCommand.toJSON(),
     journalCommand.toJSON(),
     npcCommand.toJSON(),
+    helpCommand.toJSON(),
   ];
   if (DEV_DM_TOGGLE) body.push(dmModeCommand.toJSON());
   if (GUILD_ID) {
@@ -313,6 +319,17 @@ async function handleJournal(
       .editReply("Something went wrong saving that to your journal.")
       .catch(() => {});
   }
+}
+
+/** /help — list Hearth's commands. Works for anyone; membership not required. */
+async function handleHelp(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const viewer = await resolveViewer(interaction.user.id).catch(() => null);
+  await interaction.reply({
+    embeds: [helpEmbed(viewer?.theme)],
+    flags: MessageFlags.Ephemeral,
+  });
 }
 
 /** /upload — ingest a document into the DM_ADDED corpus (parse → chunk → embed). */
@@ -1072,6 +1089,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case "npc":
         await handleNpc(interaction);
+        break;
+      case "help":
+        await handleHelp(interaction);
         break;
       case "dmmode":
         if (DEV_DM_TOGGLE) await handleDmMode(interaction);
