@@ -69,7 +69,24 @@ function requireEnv(name: string): string {
 
 const TOKEN = requireEnv("DISCORD_BOT_TOKEN");
 const CLIENT_ID = requireEnv("DISCORD_CLIENT_ID");
-const GUILD_ID = process.env.DISCORD_GUILD_ID; // optional → instant guild registration
+const GUILD_ID = process.env.DISCORD_GUILD_ID; // optional → dev-only instant registration
+const GUILD_COMMANDS = process.env.HEARTH_GUILD_COMMANDS === "1";
+
+// Access gate. The bot can be added to any server once it's public, but running commands costs
+// real money (Claude, Voyage, Deepgram) on OUR keys — so only approved servers may use it.
+// HEARTH_ALLOWED_GUILDS is a comma-separated list of guild ids; when it's empty the bot serves
+// every server it's in, which is fine while it's private but must be set before going public.
+const ALLOWED_GUILDS = new Set(
+  (process.env.HEARTH_ALLOWED_GUILDS ?? "")
+    .split(",")
+    .map((g) => g.trim())
+    .filter(Boolean),
+);
+
+function isGuildAllowed(guildId: string | null): boolean {
+  if (ALLOWED_GUILDS.size === 0) return true; // no allowlist configured — open
+  return guildId !== null && ALLOWED_GUILDS.has(guildId);
+}
 
 // DEV ONLY: with HEARTH_DEV_DM_TOGGLE=1, `/dmmode` lets a member view the campaign as the
 // DM (to test DM_ONLY content). Gated behind the flag so it can never exist in a real
@@ -225,16 +242,26 @@ async function registerCommands(): Promise<void> {
     helpCommand.toJSON(),
   ];
   if (DEV_DM_TOGGLE) body.push(dmModeCommand.toJSON());
-  if (GUILD_ID) {
+  // Global registration is the default now that Hearth serves many servers — guild-scoped
+  // commands would only ever appear in ONE server. HEARTH_GUILD_COMMANDS=1 opts local dev into
+  // instant guild registration (global propagation takes ~1h), at the cost of that one server
+  // briefly showing each command twice.
+  if (GUILD_COMMANDS && GUILD_ID) {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
       body,
     });
-    // Clear any global commands of the same name so they don't show as duplicates.
-    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
-    console.log(`Registered commands to guild ${GUILD_ID}`);
+    console.log(`Registered commands to guild ${GUILD_ID} (dev, instant)`);
   } else {
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body });
-    console.log("Registered commands globally (can take ~1h to appear)");
+    // Clear leftovers from a previous guild-scoped run so they don't duplicate the global set.
+    if (GUILD_ID) {
+      await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
+        body: [],
+      });
+    }
+    console.log(
+      "Registered commands globally — every server gets them (can take ~1h to appear)",
+    );
   }
 }
 
@@ -1231,9 +1258,18 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
-client.once(Events.ClientReady, (c) =>
-  console.log(`🔥 Hearth online as ${c.user.tag}`),
-);
+client.once(Events.ClientReady, (c) => {
+  console.log(`🔥 Hearth online as ${c.user.tag}`);
+  if (ALLOWED_GUILDS.size > 0) {
+    console.log(
+      `🔒 allowlist active — ${ALLOWED_GUILDS.size} approved server(s)`,
+    );
+  } else {
+    console.warn(
+      "⚠️  no HEARTH_ALLOWED_GUILDS set — every server this bot is in can use it (and spend our API budget)",
+    );
+  }
+});
 
 // A single unhandled 'error' event will crash the process otherwise (spike lesson).
 client.on(Events.Error, (err) => console.error("Discord client error:", err));
@@ -1243,6 +1279,19 @@ process.on("unhandledRejection", (err) =>
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    // One gate for every command, button, and modal — an unapproved server can't spend
+    // anything, because nothing downstream runs.
+    if (!interaction.isAutocomplete() && !isGuildAllowed(interaction.guildId)) {
+      console.warn(
+        `blocked interaction from unapproved guild ${interaction.guildId ?? "(dm)"}`,
+      );
+      await interaction.reply({
+        content:
+          "Hearth isn't enabled for this server yet. It's in a limited beta — reach out if you'd like access.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
     if (interaction.isButton()) {
       if (interaction.customId.startsWith("rv:")) {
         await handleRevealButton(interaction);
