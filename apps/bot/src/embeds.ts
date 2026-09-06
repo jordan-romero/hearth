@@ -171,6 +171,7 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
         value: [
           "**/ask** `question` — ask the memory; answers are filtered to what your character knows",
           "**/journal** `entry` — save a private note only you and the DM can see",
+          "**/recap** `[minutes]` — what did I miss? Catches you up mid-session, or recaps last time",
         ].join("\n"),
       },
       {
@@ -187,6 +188,20 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
     .setFooter({
       text: "Answers are private (only you see them). Recording captures voice — get everyone's consent.",
     });
+}
+
+/** A catch-up or session recap. Table-audible content, so it carries the player shade. */
+export function recapEmbed(
+  title: string,
+  body: string,
+  footer: string,
+  theme: string = DEFAULT_THEME,
+): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(themeColor(theme, "PLAYER"))
+    .setTitle(truncate(title, 256))
+    .setDescription(truncate(body, 4096))
+    .setFooter({ text: truncate(footer, 2048) });
 }
 
 /** A filesystem/attachment-safe version of a name (for portrait + card downloads). */

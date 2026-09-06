@@ -40,6 +40,7 @@ import {
   saveNpc,
   getActiveSession,
   getLiveTranscript,
+  summarizeRecent,
   resolveCampaignId,
   getCampaignDiscord,
   setupCampaign,
@@ -59,6 +60,7 @@ import {
   npcCardMarkdown,
   safeFileName,
   helpEmbed,
+  recapEmbed,
 } from "./embeds.js";
 
 function requireEnv(name: string): string {
@@ -219,6 +221,17 @@ const joinCommand = new SlashCommandBuilder()
       .setRequired(true),
   );
 
+const recapCommand = new SlashCommandBuilder()
+  .setName("recap")
+  .setDescription("What did I miss? Catch up on the session.")
+  .addIntegerOption((o) =>
+    o
+      .setName("minutes")
+      .setDescription("How far back to catch up (default 10)")
+      .setMinValue(1)
+      .setMaxValue(120),
+  );
+
 const helpCommand = new SlashCommandBuilder()
   .setName("help")
   .setDescription("What can Hearth do? List the commands.");
@@ -237,6 +250,7 @@ async function registerCommands(): Promise<void> {
     revealCommand.toJSON(),
     journalCommand.toJSON(),
     npcCommand.toJSON(),
+    recapCommand.toJSON(),
     setupCommand.toJSON(),
     joinCommand.toJSON(),
     helpCommand.toJSON(),
@@ -469,6 +483,79 @@ async function handleJoin(
     console.error("/join failed:", err);
     await interaction
       .editReply("Something went wrong joining the campaign.")
+      .catch(() => {});
+  }
+}
+
+/** /recap — catch up on the session. While one is being recorded that's a summary of the last
+ * few minutes of live table talk; otherwise it's the stored recap of the last finished session.
+ * Both are table-audible, so there's nothing to permission-filter. */
+async function handleRecap(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
+    if (!viewer) {
+      await interaction.editReply(
+        "You're not part of a campaign here yet — try `/join`.",
+      );
+      return;
+    }
+    const minutes = interaction.options.getInteger("minutes") ?? 10;
+    const live = await getActiveSession(viewer.campaignId);
+
+    if (live) {
+      const transcript = await getLiveTranscript(live.gameSessionId, minutes);
+      if (!transcript) {
+        await interaction.editReply(
+          `Nothing's been transcribed in the last ${minutes} minutes — it may still be catching up.`,
+        );
+        return;
+      }
+      const summary = await summarizeRecent(transcript);
+      await interaction.editReply({
+        embeds: [
+          recapEmbed(
+            `⏪ The last ${minutes} minutes`,
+            summary,
+            `Session ${live.number} · in progress`,
+            viewer.theme,
+          ),
+        ],
+      });
+      return;
+    }
+
+    // No live session — fall back to the last finished session's recap.
+    const last = await prisma.gameSession.findFirst({
+      where: { campaignId: viewer.campaignId, recap: { not: null } },
+      orderBy: { number: "desc" },
+      select: { number: true, title: true, recap: true },
+    });
+    if (!last?.recap) {
+      await interaction.editReply(
+        "No sessions have been recorded yet — the DM can start one with `/record`.",
+      );
+      return;
+    }
+    await interaction.editReply({
+      embeds: [
+        recapEmbed(
+          last.title ?? `Session ${last.number}`,
+          last.recap,
+          `Session ${last.number} · last time`,
+          viewer.theme,
+        ),
+      ],
+    });
+  } catch (err) {
+    console.error("/recap failed:", err);
+    await interaction
+      .editReply("Something went wrong putting that recap together.")
       .catch(() => {});
   }
 }
@@ -1328,6 +1415,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case "npc":
         await handleNpc(interaction);
+        break;
+      case "recap":
+        await handleRecap(interaction);
         break;
       case "setup":
         await handleSetup(interaction);
