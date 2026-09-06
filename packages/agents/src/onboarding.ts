@@ -10,7 +10,8 @@ function placeholderEmail(discordUserId: string): string {
   return `discord-${discordUserId}@hearth.local`;
 }
 
-/** Find or create the Hearth user behind a Discord account. */
+/** Find or create the Hearth user behind a Discord account. Per-table naming lives on the
+ * membership, not here — this name is only a fallback. */
 async function upsertUser(discordUserId: string, displayName: string) {
   const existing = await prisma.user.findUnique({ where: { discordUserId } });
   if (existing) return existing;
@@ -36,6 +37,7 @@ export async function setupCampaign(
   discordUserId: string,
   displayName: string,
   campaignName: string,
+  dmName?: string,
 ): Promise<SetupResult> {
   const link = await prisma.campaignDiscord.findUnique({
     where: { guildId },
@@ -55,8 +57,15 @@ export async function setupCampaign(
     await tx.campaignDiscord.create({
       data: { campaignId: created.id, guildId },
     });
+    // The DM's chosen name labels their lines in every transcript. Stored per-membership, so
+    // DMing a second campaign under a different name can't relabel this one's history.
     await tx.membership.create({
-      data: { userId: user.id, campaignId: created.id, role: "DM" },
+      data: {
+        userId: user.id,
+        campaignId: created.id,
+        role: "DM",
+        displayName: dmName?.trim() || displayName,
+      },
     });
     // Every campaign gets one party, so `/reveal to:party` works from day one.
     await tx.party.create({

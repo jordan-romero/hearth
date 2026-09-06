@@ -25,7 +25,6 @@ import {
 } from "discord.js";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@hearth/db";
-import type { Viewer } from "@hearth/core";
 import {
   ask,
   putDocument,
@@ -42,10 +41,12 @@ import {
   getLiveTranscript,
   summarizeRecent,
   resolveCampaignId,
+  resolveMember,
   getCampaignDiscord,
   setupCampaign,
   joinCampaign,
   INGEST_QUEUE,
+  type ResolvedMember,
   type IngestJob,
   type NpcDraft,
   type PortraitMatch,
@@ -94,7 +95,10 @@ function isGuildAllowed(guildId: string | null): boolean {
 // DM (to test DM_ONLY content). Gated behind the flag so it can never exist in a real
 // multi-tenant deployment, where players must not self-promote.
 const DEV_DM_TOGGLE = process.env.HEARTH_DEV_DM_TOGGLE === "1";
-const dmOverride = new Set<string>(); // discord user ids currently viewing as the DM
+// Discord user ids currently viewing the campaign as the OPPOSITE of their real role — a
+// player checking DM_ONLY content, or (now that the DM is a real role) a DM checking what a
+// player would actually see. Two-way, because both directions are worth testing.
+const roleOverride = new Set<string>();
 
 const askCommand = new SlashCommandBuilder()
   .setName("ask")
@@ -209,6 +213,13 @@ const setupCommand = new SlashCommandBuilder()
       .setName("name")
       .setDescription("What's the campaign called?")
       .setRequired(true),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("dm_name")
+      .setDescription(
+        "What should we call you at the table? (labels your lines in transcripts)",
+      ),
   );
 
 const joinCommand = new SlashCommandBuilder()
@@ -238,7 +249,7 @@ const helpCommand = new SlashCommandBuilder()
 
 const dmModeCommand = new SlashCommandBuilder()
   .setName("dmmode")
-  .setDescription("(dev) Toggle viewing the campaign as the DM.");
+  .setDescription("(dev) Swap between the DM view and a player view.");
 
 async function registerCommands(): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -281,11 +292,7 @@ async function registerCommands(): Promise<void> {
 
 /** A resolved viewer plus the display name of their character (for in-world presentation).
  * The core `Viewer` stays pure — the name rides alongside only for the bot's UI. */
-type ResolvedViewer = Viewer & {
-  characterName: string | null;
-  membershipId: string;
-  theme: string;
-};
+type ResolvedViewer = ResolvedMember;
 
 /** Resolve the Discord author to a permission viewer within the campaign bound to `guildId`.
  * Returns null if the server has no campaign yet (`/setup`) or the user hasn't joined it. */
@@ -296,36 +303,12 @@ async function resolveViewer(
   if (!guildId) return null;
   const campaignId = await resolveCampaignId(guildId);
   if (!campaignId) return null;
-
-  const user = await prisma.user.findUnique({
-    where: { discordUserId },
-    include: {
-      memberships: {
-        where: { campaignId },
-        include: {
-          characters: { where: { campaignId }, take: 1 },
-          campaign: { select: { theme: true } },
-        },
-      },
-    },
-  });
-
-  const membership = user?.memberships[0];
-  if (!membership) return null;
-  const character = membership.characters[0];
-  // Dev DM-view override (see /dmmode) — treat this member as the DM so DM_ONLY content
-  // is visible. Never active unless HEARTH_DEV_DM_TOGGLE=1.
-  const role =
-    DEV_DM_TOGGLE && dmOverride.has(discordUserId) ? "DM" : membership.role;
-  return {
-    campaignId,
-    role,
-    characterId: character?.id ?? null,
-    partyId: character?.partyId ?? null,
-    characterName: character?.name ?? null,
-    membershipId: membership.id,
-    theme: membership.campaign.theme,
-  };
+  const member = await resolveMember(campaignId, discordUserId);
+  if (!member) return null;
+  // Dev-only role swap (see /dmmode) — applied on top of the shared resolution, never inside
+  // it, so the web app can't inherit a development affordance.
+  if (!DEV_DM_TOGGLE || !roleOverride.has(discordUserId)) return member;
+  return { ...member, role: member.role === "DM" ? "PLAYER" : "DM" };
 }
 
 /** /ask — answer from the memory, filtered to what the asker's character knows. */
@@ -429,11 +412,13 @@ async function handleSetup(
       return;
     }
     const name = interaction.options.getString("name", true);
+    const dmName = interaction.options.getString("dm_name") ?? undefined;
     const result = await setupCampaign(
       guildId,
       interaction.user.id,
       interaction.user.username,
       name,
+      dmName,
     );
     if (result.alreadyExisted) {
       await interaction.editReply(
@@ -670,13 +655,17 @@ async function handleDmMode(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   const id = interaction.user.id;
-  const on = !dmOverride.has(id);
-  if (on) dmOverride.add(id);
-  else dmOverride.delete(id);
+  const on = !roleOverride.has(id);
+  if (on) roleOverride.add(id);
+  else roleOverride.delete(id);
+  const viewer = await resolveViewer(interaction.guildId, id);
+  const nowSeeing = on
+    ? viewer?.role === "DM"
+      ? "everything in the campaign (DM_ONLY included)"
+      : `only what ${viewer?.characterName ?? "your character"} knows`
+    : "your real role again";
   await interaction.reply({
-    content: on
-      ? "🎭 DM view **on** — you now see everything in the campaign (DM_ONLY included)."
-      : "🎭 DM view **off** — back to your character's knowledge.",
+    content: `🎭 Role swap **${on ? "on" : "off"}** — you now see ${nowSeeing}.`,
     flags: MessageFlags.Ephemeral,
   });
 }
