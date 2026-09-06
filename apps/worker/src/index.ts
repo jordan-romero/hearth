@@ -8,13 +8,14 @@ import {
   extractSession,
   embedTexts,
   toVectorLiteral,
-  maybeEnqueueExtraction,
+  scheduleFinalize,
   ingestDocument,
   TRANSCRIBE_QUEUE,
-  EXTRACT_QUEUE,
+  FINALIZE_QUEUE,
   INGEST_QUEUE,
+  SESSION_GAP_MS,
   type TranscribeJob,
-  type ExtractJob,
+  type FinalizeJob,
   type IngestJob,
 } from "@hearth/agents";
 import { prisma } from "@hearth/db";
@@ -60,20 +61,20 @@ async function main(): Promise<void> {
         console.log(`[transcribe] clip ${audioClipId}: (silence, skipped)`);
       }
 
-      // Mark processed (text OR silence) so completion can be detected, then fire
-      // extraction IFF the recording has stopped and this was the last clip.
+      // Mark processed (text OR silence). Extraction no longer fires here — it happens
+      // once per session at finalize, well after all clips are transcribed.
       await prisma.audioClip.update({
         where: { id: audioClipId },
         data: { transcribedAt: new Date() },
       });
-      await maybeEnqueueExtraction(recordingId);
     }
   });
 
-  // A fully-transcribed recording → campaign memory (recap + knowledge units).
-  await boss.work<ExtractJob>(EXTRACT_QUEUE, async (jobs) => {
+  // A session whose quiet window elapsed → extract the WHOLE session + mark it complete.
+  // If it actually resumed, the handler reschedules itself instead of finalizing.
+  await boss.work<FinalizeJob>(FINALIZE_QUEUE, async (jobs) => {
     for (const job of jobs) {
-      await runExtraction(job.data.recordingId);
+      await finalizeSession(job.data.gameSessionId);
     }
   });
 
@@ -87,35 +88,62 @@ async function main(): Promise<void> {
   console.log("🛠  Hearth worker online — waiting for jobs");
 }
 
-/** Distill a session's transcript into a recap + embedded SESSION knowledge units. */
-async function runExtraction(recordingId: string): Promise<void> {
-  const rec = await prisma.recording.findUnique({
-    where: { id: recordingId },
-    include: { gameSession: true },
+/** Finalize a game session: extract its FULL transcript (every recording — a session can span
+ * several stop/restart segments) into a recap + knowledge units, then mark it complete.
+ * Reschedules itself if the session resumed inside the gap window, so a break never finalizes
+ * a session early. */
+async function finalizeSession(gameSessionId: string): Promise<void> {
+  const gameSession = await prisma.gameSession.findUnique({
+    where: { id: gameSessionId },
+    include: { recordings: { select: { id: true, status: true } } },
   });
-  if (!rec) {
-    console.warn(`[extract] recording ${recordingId} not found`);
+  if (!gameSession) {
+    console.warn(`[finalize] session ${gameSessionId} not found`);
     return;
   }
-  if (rec.status !== "TRANSCRIBING") {
-    // Only a stopped-but-unextracted recording is eligible (guards DONE / a stray
-    // job that somehow fired while still CAPTURING).
+  if (gameSession.status === "COMPLETE") {
+    console.log(`[finalize] session ${gameSessionId} already complete`);
+    return;
+  }
+  // Still live (or resumed inside the window) → try again after another gap.
+  const capturing = gameSession.recordings.some(
+    (r) => r.status === "CAPTURING",
+  );
+  const quietFor = gameSession.lastActivityAt
+    ? Date.now() - gameSession.lastActivityAt.getTime()
+    : Infinity;
+  if (capturing || quietFor < SESSION_GAP_MS) {
     console.log(
-      `[extract] recording ${recordingId} not ready (status ${rec.status}) — skipping`,
+      `[finalize] session ${gameSessionId} still active — rescheduling`,
     );
+    await scheduleFinalize(gameSessionId);
     return;
   }
-  const { gameSession } = rec;
+  // Wait for transcription to drain before extracting, or we'd summarize a partial session.
+  const pending = await prisma.audioClip.count({
+    where: {
+      recordingId: { in: gameSession.recordings.map((r) => r.id) },
+      transcribedAt: null,
+    },
+  });
+  if (pending > 0) {
+    console.log(
+      `[finalize] session ${gameSessionId}: ${pending} clip(s) still transcribing — rescheduling`,
+    );
+    await scheduleFinalize(gameSessionId);
+    return;
+  }
 
+  // The whole session's speech, across every recording, in order.
   const segments = await prisma.transcriptSegment.findMany({
-    where: { recordingId },
-    orderBy: { startMs: "asc" },
+    where: { recordingId: { in: gameSession.recordings.map((r) => r.id) } },
+    orderBy: [{ startMs: "asc" }],
     include: { character: { select: { name: true } } },
   });
   if (segments.length === 0) {
-    await finalize(recordingId, gameSession.id);
+    await finalize(gameSession.id);
     console.log(
-      `[extract] recording ${recordingId}: no speech — nothing to extract`,
+      `[finalize] session ${gameSessionId}: no speech — nothing to extract`,
     );
     return;
   }
@@ -164,19 +192,16 @@ async function runExtraction(recordingId: string): Promise<void> {
     }
   }
 
-  await finalize(recordingId, gameSession.id);
+  await finalize(gameSession.id);
   console.log(
-    `[extract] recording ${recordingId}: recap + ${created.length} knowledge units stored`,
+    `[finalize] session ${gameSessionId}: recap + ${created.length} knowledge units stored`,
   );
 }
 
-/** Mark a recording (and its session) fully processed. */
-async function finalize(
-  recordingId: string,
-  gameSessionId: string,
-): Promise<void> {
-  await prisma.recording.update({
-    where: { id: recordingId },
+/** Mark a session — and all of its recordings — fully processed. */
+async function finalize(gameSessionId: string): Promise<void> {
+  await prisma.recording.updateMany({
+    where: { gameSessionId, status: { not: "FAILED" } },
     data: { status: "DONE" },
   });
   await prisma.gameSession.update({

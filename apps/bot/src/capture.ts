@@ -25,8 +25,9 @@ import { prisma } from "@hearth/db";
 import {
   getQueue,
   putClip,
-  maybeEnqueueExtraction,
+  scheduleFinalize,
   TRANSCRIBE_QUEUE,
+  SESSION_GAP_MS,
   type TranscribeJob,
 } from "@hearth/agents";
 
@@ -121,19 +122,41 @@ export async function startRecording(
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  // A new game session + its recording container.
-  const last = await prisma.gameSession.findFirst({
-    where: { campaignId },
-    orderBy: { number: "desc" },
-  });
-  const gameSession = await prisma.gameSession.create({
-    data: {
+  // Find-or-create the session. A /record within the merge window RESUMES the most recent
+  // still-open session — a break/stop/restart is the SAME session, and just adds another
+  // Recording to it — rather than spawning a new session and bumping the session number.
+  // SESSION_GAP_MS is shared with the finalize delay, so "resumable" and "finalizable"
+  // can never disagree about how long a break may be.
+  const open = await prisma.gameSession.findFirst({
+    where: {
       campaignId,
-      number: (last?.number ?? 0) + 1,
-      status: "ACTIVE",
-      occurredAt: new Date(),
+      status: { not: "COMPLETE" },
+      lastActivityAt: { gte: new Date(Date.now() - SESSION_GAP_MS) },
     },
+    orderBy: { lastActivityAt: "desc" },
   });
+  const resumed = open !== null;
+  const gameSession = open
+    ? await prisma.gameSession.update({
+        where: { id: open.id },
+        data: { status: "ACTIVE", lastActivityAt: new Date() },
+      })
+    : await prisma.gameSession.create({
+        data: {
+          campaignId,
+          number:
+            ((
+              await prisma.gameSession.findFirst({
+                where: { campaignId },
+                orderBy: { number: "desc" },
+              })
+            )?.number ?? 0) + 1,
+          status: "ACTIVE",
+          occurredAt: new Date(),
+          lastActivityAt: new Date(),
+        },
+      });
+  // Each /record segment is its own Recording under the (possibly resumed) session.
   const recording = await prisma.recording.create({
     data: { gameSessionId: gameSession.id, status: "CAPTURING" },
   });
@@ -168,10 +191,10 @@ export async function startRecording(
     });
 
     console.log(
-      `🔴 recording started — session ${gameSession.number} in "${channel.name}"`,
+      `🔴 ${resumed ? "resumed" : "started"} — session ${gameSession.number} in "${channel.name}"`,
     );
     await interaction.editReply(
-      `🔴 Recording session ${gameSession.number} in **${channel.name}** — play on, then \`/stop\`.`,
+      `🔴 ${resumed ? "Resumed" : "Recording"} session ${gameSession.number} in **${channel.name}** — play on, then \`/stop\`.`,
     );
   } catch (err) {
     // If joining/awaiting the voice connection fails, undo everything — otherwise the
@@ -308,12 +331,17 @@ export async function stopRecording(
   console.log(
     `⏹ recording stopped — ${clipCount} clip(s) captured (recording ${state.recordingId})`,
   );
-  // Now that the recording has stopped, extraction is eligible. If the last clip was
-  // already transcribed, this fires it immediately; otherwise the worker fires it when
-  // the final clip lands. (Both paths dedupe via the stately queue's singletonKey.)
-  await maybeEnqueueExtraction(state.recordingId);
+  // The session stays OPEN — a /record within the gap window resumes it (breaks shouldn't
+  // split a session). Stamp the activity and schedule a delayed finalize; if we resume, the
+  // finalize job reschedules itself rather than summarizing a half-finished session.
+  await prisma.gameSession.update({
+    where: { id: state.gameSessionId },
+    data: { lastActivityAt: new Date() },
+  });
+  await scheduleFinalize(state.gameSessionId);
   await interaction.reply({
-    content: "⏹ Stopped — transcribing the session into the memory.",
+    content:
+      "⏹ Stopped — transcribing. `/record` again within 30 min and it stays the same session.",
     flags: MessageFlags.Ephemeral,
   });
 }
