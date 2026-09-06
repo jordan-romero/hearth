@@ -121,19 +121,40 @@ export async function startRecording(
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  // A new game session + its recording container.
-  const last = await prisma.gameSession.findFirst({
-    where: { campaignId },
-    orderBy: { number: "desc" },
-  });
-  const gameSession = await prisma.gameSession.create({
-    data: {
+  // Find-or-create the session. A /record within the merge window RESUMES the most recent
+  // still-open session — a break/stop/restart is the SAME session, and just adds another
+  // Recording to it — rather than spawning a new session and bumping the session number.
+  const MERGE_WINDOW_MS = 30 * 60_000; // 30 min: a stop/restart within this = same session
+  const open = await prisma.gameSession.findFirst({
+    where: {
       campaignId,
-      number: (last?.number ?? 0) + 1,
-      status: "ACTIVE",
-      occurredAt: new Date(),
+      status: { not: "COMPLETE" },
+      lastActivityAt: { gte: new Date(Date.now() - MERGE_WINDOW_MS) },
     },
+    orderBy: { lastActivityAt: "desc" },
   });
+  const resumed = open !== null;
+  const gameSession = open
+    ? await prisma.gameSession.update({
+        where: { id: open.id },
+        data: { status: "ACTIVE", lastActivityAt: new Date() },
+      })
+    : await prisma.gameSession.create({
+        data: {
+          campaignId,
+          number:
+            ((
+              await prisma.gameSession.findFirst({
+                where: { campaignId },
+                orderBy: { number: "desc" },
+              })
+            )?.number ?? 0) + 1,
+          status: "ACTIVE",
+          occurredAt: new Date(),
+          lastActivityAt: new Date(),
+        },
+      });
+  // Each /record segment is its own Recording under the (possibly resumed) session.
   const recording = await prisma.recording.create({
     data: { gameSessionId: gameSession.id, status: "CAPTURING" },
   });
@@ -168,10 +189,10 @@ export async function startRecording(
     });
 
     console.log(
-      `🔴 recording started — session ${gameSession.number} in "${channel.name}"`,
+      `🔴 ${resumed ? "resumed" : "started"} — session ${gameSession.number} in "${channel.name}"`,
     );
     await interaction.editReply(
-      `🔴 Recording session ${gameSession.number} in **${channel.name}** — play on, then \`/stop\`.`,
+      `🔴 ${resumed ? "Resumed" : "Recording"} session ${gameSession.number} in **${channel.name}** — play on, then \`/stop\`.`,
     );
   } catch (err) {
     // If joining/awaiting the voice connection fails, undo everything — otherwise the

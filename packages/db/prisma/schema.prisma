@@ -194,18 +194,23 @@ model Character {
 /// A game session. Empty until Phase 2 (capture) — created now so SESSION
 /// provenance and the Auth.js `Session` naming collision are both handled early.
 model GameSession {
-  id         String            @id @default(cuid())
-  campaignId String
-  number     Int
-  title      String?
-  occurredAt DateTime?
-  status     GameSessionStatus @default(COMPLETE)
-  recap      String? // prose summary written by extraction; also feeds the timeline
-  createdAt  DateTime          @default(now())
+  id             String            @id @default(cuid())
+  campaignId     String
+  number         Int
+  title          String?
+  occurredAt     DateTime?
+  status         GameSessionStatus @default(COMPLETE)
+  recap          String? // prose summary written by extraction; also feeds the timeline
+  // Last time this session saw activity (a /record or /stop). Drives the merge window —
+  // a /record within the window resumes this session — and the auto-finalize timeout.
+  lastActivityAt DateTime?
+  createdAt      DateTime          @default(now())
 
   campaign       Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   knowledgeUnits KnowledgeUnit[]
-  recording      Recording?
+  // One session can own MANY recordings — a break-stop-restart adds another Recording to the
+  // same session rather than starting a new one. Transcript = all recordings' clips by time.
+  recordings     Recording[]
   attendance     SessionAttendance[]
 
   @@unique([campaignId, number])
@@ -344,7 +349,7 @@ enum RecordingStatus {
 /// One recording per game session — the container, plus the derived playback mix.
 model Recording {
   id             String          @id @default(cuid())
-  gameSessionId  String          @unique
+  gameSessionId  String // NOT unique — a session can have many recordings (stop/restart segments)
   status         RecordingStatus @default(CAPTURING)
   startedAt      DateTime        @default(now())
   endedAt        DateTime?
@@ -354,6 +359,8 @@ model Recording {
   gameSession GameSession         @relation(fields: [gameSessionId], references: [id], onDelete: Cascade)
   clips       AudioClip[]
   segments    TranscriptSegment[]
+
+  @@index([gameSessionId])
 }
 
 /// One speaking burst's retained audio (compressed, in Supabase Storage).
