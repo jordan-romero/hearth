@@ -9,6 +9,8 @@ import {
   embedTexts,
   toVectorLiteral,
   scheduleFinalize,
+  getSpeakerLabels,
+  speakerLabel,
   ingestDocument,
   TRANSCRIBE_QUEUE,
   FINALIZE_QUEUE,
@@ -143,6 +145,9 @@ async function finalizeSession(gameSessionId: string): Promise<void> {
     orderBy: [{ recording: { startedAt: "asc" } }, { startMs: "asc" }],
     include: { character: { select: { name: true } } },
   });
+  // The DM has no character, so without role-derived labels the narrator — most of the
+  // session — would be attributed to "Unknown" in the transcript we hand to extraction.
+  const labels = await getSpeakerLabels(gameSession.campaignId);
   if (segments.length === 0) {
     await finalize(gameSession.id);
     console.log(
@@ -152,7 +157,7 @@ async function finalizeSession(gameSessionId: string): Promise<void> {
   }
 
   const transcript = segments
-    .map((s) => `${s.character?.name ?? "Unknown"}: ${s.text}`)
+    .map((s) => `${speakerLabel(s, labels)}: ${s.text}`)
     .join("\n");
 
   const { recap, units } = await extractSession(transcript);

@@ -9,6 +9,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@hearth/db";
+import { getSpeakerLabels } from "./tenancy.js";
 
 // Catch-up summaries run on Haiku — short, grounded, and asked repeatedly during a session,
 // so the cheap model is the right call (extraction still uses Sonnet).
@@ -56,12 +57,33 @@ export async function getLiveTranscript(
     orderBy: { createdAt: "asc" },
     select: {
       text: true,
+      discordUserId: true,
       character: { select: { name: true } },
+      recording: { select: { gameSession: { select: { campaignId: true } } } },
     },
   });
+  if (segments.length === 0) return "";
+  const campaignId = segments[0]!.recording.gameSession.campaignId;
+  const labels = await getSpeakerLabels(campaignId);
   return segments
-    .map((s) => `${s.character?.name ?? "Unknown"}: ${s.text}`)
+    .map((s) => `${speakerLabel(s, labels)}: ${s.text}`)
     .join("\n");
+}
+
+/** The name in front of a transcript line: the speaker's character, else their role-derived
+ * label (the DM has no character), else Unknown. */
+export function speakerLabel(
+  segment: {
+    discordUserId: string | null;
+    character: { name: string } | null;
+  },
+  labels: Map<string, string>,
+): string {
+  if (segment.character?.name) return segment.character.name;
+  const byUser = segment.discordUserId
+    ? labels.get(segment.discordUserId)
+    : undefined;
+  return byUser ?? "Unknown";
 }
 
 const CATCH_UP_SYSTEM = `You are catching a player up on the tabletop RPG session they are sitting in, after they stepped away for a few minutes.

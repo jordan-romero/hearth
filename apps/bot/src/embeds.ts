@@ -162,7 +162,7 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
       {
         name: "Getting started",
         value: [
-          "**/setup** `name` — (DM, once per server) create the campaign",
+          "**/setup** `name` `[dm_name]` — (DM, once per server) create the campaign and claim it",
           "**/join** `character` — claim your seat at the table with a character",
         ].join("\n"),
       },

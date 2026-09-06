@@ -64,6 +64,35 @@ export async function resolveMember(
   };
 }
 
+/** discordUserId → the name to put in front of their transcript lines.
+ *
+ * Players are their character; the DM usually has no character at all (they never `/join`), and
+ * without this every line they speak reads as "Unknown" — which is most of a session, since the
+ * DM narrates and voices the NPCs. A transcript that anonymises the narrator produces poor
+ * recaps and extraction, so the DM is labelled as the DM. */
+export async function getSpeakerLabels(
+  campaignId: string,
+): Promise<Map<string, string>> {
+  const memberships = await prisma.membership.findMany({
+    where: { campaignId },
+    include: {
+      user: { select: { discordUserId: true, name: true } },
+      characters: { where: { campaignId }, take: 1, select: { name: true } },
+    },
+  });
+  const labels = new Map<string, string>();
+  for (const m of memberships) {
+    const discordUserId = m.user.discordUserId;
+    if (!discordUserId) continue;
+    // A player is their character. The DM has none, so use the name they gave at /setup,
+    // falling back to a plain role label.
+    const character = m.characters[0]?.name;
+    const fallback = m.role === "DM" ? (m.user.name ?? "DM") : "Unknown";
+    labels.set(discordUserId, character ?? fallback);
+  }
+  return labels;
+}
+
 /** Every campaign this Discord account belongs to — the web app's campaign picker. */
 export async function listCampaignsForDiscordUser(discordUserId: string) {
   const user = await prisma.user.findUnique({

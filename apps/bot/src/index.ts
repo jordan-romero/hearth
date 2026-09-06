@@ -209,6 +209,13 @@ const setupCommand = new SlashCommandBuilder()
       .setName("name")
       .setDescription("What's the campaign called?")
       .setRequired(true),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("dm_name")
+      .setDescription(
+        "What should we call you at the table? (labels your lines in transcripts)",
+      ),
   );
 
 const joinCommand = new SlashCommandBuilder()
@@ -429,11 +436,13 @@ async function handleSetup(
       return;
     }
     const name = interaction.options.getString("name", true);
+    const dmName = interaction.options.getString("dm_name") ?? undefined;
     const result = await setupCampaign(
       guildId,
       interaction.user.id,
       interaction.user.username,
       name,
+      dmName,
     );
     if (result.alreadyExisted) {
       await interaction.editReply(

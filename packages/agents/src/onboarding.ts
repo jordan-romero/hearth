@@ -10,10 +10,24 @@ function placeholderEmail(discordUserId: string): string {
   return `discord-${discordUserId}@hearth.local`;
 }
 
-/** Find or create the Hearth user behind a Discord account. */
-async function upsertUser(discordUserId: string, displayName: string) {
+/** Find or create the Hearth user behind a Discord account. `displayName` is how they'll be
+ * named in transcripts and on the page; an explicit one always wins over a stale stored value,
+ * so a DM who sets their name in /setup sees it used everywhere. */
+async function upsertUser(
+  discordUserId: string,
+  displayName: string,
+  overwriteName = false,
+) {
   const existing = await prisma.user.findUnique({ where: { discordUserId } });
-  if (existing) return existing;
+  if (existing) {
+    if (overwriteName && displayName && existing.name !== displayName) {
+      return prisma.user.update({
+        where: { id: existing.id },
+        data: { name: displayName },
+      });
+    }
+    return existing;
+  }
   return prisma.user.create({
     data: {
       discordUserId,
@@ -36,6 +50,7 @@ export async function setupCampaign(
   discordUserId: string,
   displayName: string,
   campaignName: string,
+  dmName?: string,
 ): Promise<SetupResult> {
   const link = await prisma.campaignDiscord.findUnique({
     where: { guildId },
@@ -49,7 +64,13 @@ export async function setupCampaign(
     };
   }
 
-  const user = await upsertUser(discordUserId, displayName);
+  // The DM's chosen name is what labels their lines in every transcript, so take it here
+  // rather than falling back to a bare "DM" — they speak more than anyone at the table.
+  const user = await upsertUser(
+    discordUserId,
+    dmName?.trim() || displayName,
+    Boolean(dmName?.trim()),
+  );
   const campaign = await prisma.$transaction(async (tx) => {
     const created = await tx.campaign.create({ data: { name: campaignName } });
     await tx.campaignDiscord.create({
