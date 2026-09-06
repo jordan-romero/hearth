@@ -37,6 +37,8 @@ import {
   matchPortrait,
   portraitQuery,
   saveNpc,
+  getActiveSession,
+  getLiveTranscript,
   INGEST_QUEUE,
   type IngestJob,
   type NpcDraft,
@@ -158,6 +160,13 @@ const npcCommand = new SlashCommandBuilder()
       .setName("prompt")
       .setDescription(
         "Optional brief — role, race, vibe, where they fit. Leave blank to surprise you.",
+      ),
+  )
+  .addBooleanOption((o) =>
+    o
+      .setName("live")
+      .setDescription(
+        "Fit the NPC to what's happening right now (needs an active recording)",
       ),
   )
   .addChannelOption((o) =>
@@ -671,6 +680,7 @@ interface NpcDraftState {
   draft: NpcDraft;
   portrait: PortraitMatch | null;
   prompt?: string;
+  liveContext?: string; // the scene this NPC was generated for (keeps regen scene-aware)
   channelId: string; // where "Share" posts the player-facing card
   saved?: boolean; // true once Accepted — Share is only offered after saving
   touchedAt: number; // for the TTL sweep — refreshed on every interaction
@@ -749,7 +759,26 @@ async function handleNpc(
     }
     const prompt = interaction.options.getString("prompt") ?? undefined;
     const channelId = resolveRevealChannelId(interaction);
-    const draft = await generateNpc(CAMPAIGN_ID, prompt);
+    // live:true grounds the NPC in the scene playing out right now (needs an active
+    // recording — that's what fills the live transcript buffer).
+    let liveContext: string | undefined;
+    if (interaction.options.getBoolean("live")) {
+      const session = await getActiveSession(CAMPAIGN_ID);
+      if (!session) {
+        await interaction.editReply(
+          "No session is being recorded — start one with `/record`, or drop `live:true`.",
+        );
+        return;
+      }
+      liveContext = await getLiveTranscript(session.gameSessionId, 10);
+      if (!liveContext) {
+        await interaction.editReply(
+          "Nothing's been transcribed yet from this scene — give it a minute of talking, then try again.",
+        );
+        return;
+      }
+    }
+    const draft = await generateNpc(CAMPAIGN_ID, prompt, liveContext);
     const portrait = await matchPortrait(
       portraitQuery(draft.race, draft.role, draft.appearance),
       CAMPAIGN_ID,
@@ -759,6 +788,7 @@ async function handleNpc(
       draft,
       portrait,
       prompt,
+      liveContext,
       channelId,
       touchedAt: Date.now(),
     });
@@ -837,7 +867,11 @@ async function runNpcButtonAction(
   viewer: ResolvedViewer,
 ): Promise<void> {
   if (action === "regen") {
-    const draft = await generateNpc(CAMPAIGN_ID, entry.prompt);
+    const draft = await generateNpc(
+      CAMPAIGN_ID,
+      entry.prompt,
+      entry.liveContext,
+    );
     const portrait = await matchPortrait(
       portraitQuery(draft.race, draft.role, draft.appearance),
       CAMPAIGN_ID,

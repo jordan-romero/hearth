@@ -173,7 +173,7 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
           "**/stop** — stop recording and file the session into the memory",
           "**/upload** `file` — add notes, handouts, or lore to the memory",
           "**/reveal** `about` `to` — reveal something to a character or the party",
-          "**/npc** `[prompt]` — generate an NPC grounded in your campaign, with a portrait",
+          "**/npc** `[prompt]` `[live]` — generate an NPC with a matched portrait; `live:true` fits them to the scene you're playing right now",
         ].join("\n"),
       },
     )

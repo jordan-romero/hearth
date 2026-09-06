@@ -88,10 +88,12 @@ const NPC_TOOL: Anthropic.Tool = {
   },
 };
 
-/** Generate one NPC, grounded in the campaign's memory. `prompt` is the DM's optional brief. */
+/** Generate one NPC, grounded in the campaign's memory. `prompt` is the DM's optional brief;
+ * `liveContext` is the current scene's transcript when generating mid-session. */
 export async function generateNpc(
   campaignId: string,
   prompt?: string,
+  liveContext?: string,
 ): Promise<NpcDraft> {
   // Pull grounding context as the DM (sees everything) — real names to weave in.
   const dmViewer: Viewer = {
@@ -114,6 +116,12 @@ export async function generateNpc(
     ? `DM brief: ${prompt.trim()}`
     : "DM brief: (none — invent an NPC that fits the campaign)";
 
+  // Mid-session: the scene playing out right now outranks stored memory for "where does this
+  // character fit" — the party just walked somewhere and needs someone standing there.
+  const scene = liveContext?.trim()
+    ? `\n\nWHAT IS HAPPENING RIGHT NOW (live transcript of the current scene — the NPC must fit THIS moment; it is messy and may include out-of-character table talk, which you should ignore):\n${liveContext.trim()}`
+    : "";
+
   const client = new Anthropic(); // reads ANTHROPIC_API_KEY
   const msg = await client.messages.create({
     model: MODEL,
@@ -124,7 +132,7 @@ export async function generateNpc(
     messages: [
       {
         role: "user",
-        content: `${brief}\n\nCampaign memory excerpts:\n${context}`,
+        content: `${brief}\n\nCampaign memory excerpts:\n${context}${scene}`,
       },
     ],
   });
