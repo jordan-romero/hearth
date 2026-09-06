@@ -45,30 +45,22 @@ export default async function CampaignPage({
     select: { id: true, number: true, title: true, recap: true },
   });
 
-  // Load candidates, then filter in core — the same shape as retrieval in the bot.
-  const rows = await prisma.knowledgeUnit.findMany({
-    where: { campaignId },
-    orderBy: { createdAt: "desc" },
-    take: 200,
-    select: {
-      id: true,
-      campaignId: true,
-      baseVisibility: true,
-      title: true,
-      type: true,
-      grants: { select: { characterId: true, partyId: true } },
-    },
-  });
-  const candidates = rows.map((r) => ({
-    ...r,
-    grantedCharacterIds: r.grants
-      .map((g) => g.characterId)
-      .filter((v): v is string => v !== null),
-    grantedPartyIds: r.grants
-      .map((g) => g.partyId)
-      .filter((v): v is string => v !== null),
-  }));
-  const known = filterKnowledge(viewer, candidates);
+  // Load candidates and filter in core — the same shape as retrieval in the bot. The filter
+  // runs AFTER the query, so a page-sized fetch could be entirely DM_ONLY rows and wrongly
+  // look like the player knows nothing; keep pulling pages until the visible list is full or
+  // the campaign runs out.
+  const PAGE = 200;
+  const WANT = 100;
+  const known: Awaited<ReturnType<typeof loadPage>> = [];
+  let cursor: string | undefined;
+  for (let i = 0; i < 20 && known.length < WANT; i++) {
+    const page = await loadPage(campaignId, PAGE, cursor);
+    if (page.length === 0) break;
+    known.push(...filterKnowledge(viewer, page));
+    cursor = page[page.length - 1]!.id;
+    if (page.length < PAGE) break; // reached the end of the campaign
+  }
+  known.length = Math.min(known.length, WANT);
 
   return (
     <main className="wrap">
@@ -132,4 +124,31 @@ export default async function CampaignPage({
       </p>
     </main>
   );
+}
+
+/** One page of knowledge candidates, shaped for the permission filter. */
+async function loadPage(campaignId: string, take: number, cursor?: string) {
+  const rows = await prisma.knowledgeUnit.findMany({
+    where: { campaignId },
+    orderBy: { id: "asc" },
+    take,
+    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    select: {
+      id: true,
+      campaignId: true,
+      baseVisibility: true,
+      title: true,
+      type: true,
+      grants: { select: { characterId: true, partyId: true } },
+    },
+  });
+  return rows.map((r) => ({
+    ...r,
+    grantedCharacterIds: r.grants
+      .map((g) => g.characterId)
+      .filter((v): v is string => v !== null),
+    grantedPartyIds: r.grants
+      .map((g) => g.partyId)
+      .filter((v): v is string => v !== null),
+  }));
 }

@@ -8,7 +8,7 @@
   --ink-2: #55504a;
   --ink-3: #857f76;
   --line: #e4e0d9;
-  --ember: #c4531b;
+  --ember: #a8410f; /* ≥4.5:1 on --ground; the dark theme uses a lighter tint */
   --ember-soft: #fbede4;
   --gold: #8a6512;
 

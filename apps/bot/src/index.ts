@@ -25,7 +25,6 @@ import {
 } from "discord.js";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@hearth/db";
-import type { Viewer } from "@hearth/core";
 import {
   ask,
   putDocument,
@@ -42,10 +41,12 @@ import {
   getLiveTranscript,
   summarizeRecent,
   resolveCampaignId,
+  resolveMember,
   getCampaignDiscord,
   setupCampaign,
   joinCampaign,
   INGEST_QUEUE,
+  type ResolvedMember,
   type IngestJob,
   type NpcDraft,
   type PortraitMatch,
@@ -291,11 +292,7 @@ async function registerCommands(): Promise<void> {
 
 /** A resolved viewer plus the display name of their character (for in-world presentation).
  * The core `Viewer` stays pure — the name rides alongside only for the bot's UI. */
-type ResolvedViewer = Viewer & {
-  characterName: string | null;
-  membershipId: string;
-  theme: string;
-};
+type ResolvedViewer = ResolvedMember;
 
 /** Resolve the Discord author to a permission viewer within the campaign bound to `guildId`.
  * Returns null if the server has no campaign yet (`/setup`) or the user hasn't joined it. */
@@ -306,40 +303,12 @@ async function resolveViewer(
   if (!guildId) return null;
   const campaignId = await resolveCampaignId(guildId);
   if (!campaignId) return null;
-
-  const user = await prisma.user.findUnique({
-    where: { discordUserId },
-    include: {
-      memberships: {
-        where: { campaignId },
-        include: {
-          characters: { where: { campaignId }, take: 1 },
-          campaign: { select: { theme: true } },
-        },
-      },
-    },
-  });
-
-  const membership = user?.memberships[0];
-  if (!membership) return null;
-  const character = membership.characters[0];
-  // Dev DM-view override (see /dmmode) — treat this member as the DM so DM_ONLY content
-  // is visible. Never active unless HEARTH_DEV_DM_TOGGLE=1.
-  const role =
-    DEV_DM_TOGGLE && roleOverride.has(discordUserId)
-      ? membership.role === "DM"
-        ? "PLAYER"
-        : "DM"
-      : membership.role;
-  return {
-    campaignId,
-    role,
-    characterId: character?.id ?? null,
-    partyId: character?.partyId ?? null,
-    characterName: character?.name ?? null,
-    membershipId: membership.id,
-    theme: membership.campaign.theme,
-  };
+  const member = await resolveMember(campaignId, discordUserId);
+  if (!member) return null;
+  // Dev-only role swap (see /dmmode) — applied on top of the shared resolution, never inside
+  // it, so the web app can't inherit a development affordance.
+  if (!DEV_DM_TOGGLE || !roleOverride.has(discordUserId)) return member;
+  return { ...member, role: member.role === "DM" ? "PLAYER" : "DM" };
 }
 
 /** /ask — answer from the memory, filtered to what the asker's character knows. */
