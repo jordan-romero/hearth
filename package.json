@@ -40,8 +40,15 @@
     "typescript-eslint": "^8.62.1"
   },
   "pnpm": {
+    "comments": {
+      "overrides": "Advisories in transitive dependencies we don't control. Everything below @prisma/dev reaches us only because the prisma CLI is an OPTIONAL PEER of @prisma/client, so `pnpm audit --prod` walks it even though the CLI is a devDependency that never runs in production. Pinned to the patched versions rather than left red; drop an entry once Prisma ships it."
+    },
     "overrides": {
-      "undici": "^6.27.0"
+      "undici": "^6.28.0",
+      "fast-uri": "^3.1.6",
+      "mysql2": "^3.22.0",
+      "deepmerge-ts": "^8.0.0",
+      "@xmldom/xmldom": "^0.8.15"
     }
   }
 }
