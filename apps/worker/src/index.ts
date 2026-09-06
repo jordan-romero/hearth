@@ -134,10 +134,13 @@ async function finalizeSession(gameSessionId: string): Promise<void> {
     return;
   }
 
-  // The whole session's speech, across every recording, in order.
+  // The whole session's speech, across every recording, in order. `startMs` is relative to
+  // its OWN recording's start (each /record segment restarts at zero), so ordering by it alone
+  // would interleave a resumed session's segments with the earlier ones. Order by the parent
+  // recording first, then within it.
   const segments = await prisma.transcriptSegment.findMany({
     where: { recordingId: { in: gameSession.recordings.map((r) => r.id) } },
-    orderBy: [{ startMs: "asc" }],
+    orderBy: [{ recording: { startedAt: "asc" } }, { startMs: "asc" }],
     include: { character: { select: { name: true } } },
   });
   if (segments.length === 0) {

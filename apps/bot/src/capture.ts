@@ -40,6 +40,19 @@ interface ActiveRecording {
 }
 
 const active = new Map<string, ActiveRecording>(); // guildId → recording
+// Guilds whose /record is mid-setup. `active` isn't populated until after several awaits, so
+// without this a second /record slips through the "already recording?" check and creates a
+// second CAPTURING recording — and only one can live in `active`, leaving the other unstoppable
+// and blocking finalize forever.
+const starting = new Set<string>();
+
+/** The merge window in words, derived from the real value so the message can't drift from the
+ * behaviour (HEARTH_SESSION_GAP_MIN can shorten it to seconds for testing). */
+function formatGap(): string {
+  const minutes = SESSION_GAP_MS / 60_000;
+  if (minutes < 1) return `${Math.round(SESSION_GAP_MS / 1000)} sec`;
+  return `${Math.round(minutes)} min`;
+}
 
 const SAMPLE_RATE = 48000; // Discord voice is always 48kHz
 const DECODE_CHANNELS = 2; // Discord's Opus decodes to stereo…
@@ -113,13 +126,29 @@ export async function startRecording(
     });
     return;
   }
-  if (active.has(guildId)) {
+  if (active.has(guildId) || starting.has(guildId)) {
     await interaction.reply({
       content: "Already recording.",
       flags: MessageFlags.Ephemeral,
     });
     return;
   }
+  // Reserve the guild synchronously, before the first await, so a concurrent /record can't
+  // race past the check above. Released once `active` owns it, or on any failure below.
+  starting.add(guildId);
+  try {
+    await startRecordingInner(interaction, campaignId, guildId, channel);
+  } finally {
+    starting.delete(guildId);
+  }
+}
+
+async function startRecordingInner(
+  interaction: ChatInputCommandInteraction,
+  campaignId: string,
+  guildId: string,
+  channel: NonNullable<GuildMember["voice"]["channel"]>,
+): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   // Find-or-create the session. A /record within the merge window RESUMES the most recent
@@ -340,8 +369,7 @@ export async function stopRecording(
   });
   await scheduleFinalize(state.gameSessionId);
   await interaction.reply({
-    content:
-      "⏹ Stopped — transcribing. `/record` again within 30 min and it stays the same session.",
+    content: `⏹ Stopped — transcribing. \`/record\` again within ${formatGap()} and it stays the same session.`,
     flags: MessageFlags.Ephemeral,
   });
 }
