@@ -138,11 +138,15 @@ model User {
 
 /// A user's seat in one campaign, with a role.
 model Membership {
-  id         String     @id @default(cuid())
-  userId     String
-  campaignId String
-  role       MemberRole
-  createdAt  DateTime   @default(now())
+  id          String     @id @default(cuid())
+  userId      String
+  campaignId  String
+  role        MemberRole
+  // What to call this member AT THIS TABLE — the DM's name in transcripts, chosen during
+  // /setup. Campaign-scoped on purpose: one person can DM several campaigns under different
+  // names, and a global name would let a later /setup relabel an earlier campaign's history.
+  displayName String?
+  createdAt   DateTime   @default(now())
 
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)

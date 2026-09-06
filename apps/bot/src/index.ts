@@ -94,7 +94,10 @@ function isGuildAllowed(guildId: string | null): boolean {
 // DM (to test DM_ONLY content). Gated behind the flag so it can never exist in a real
 // multi-tenant deployment, where players must not self-promote.
 const DEV_DM_TOGGLE = process.env.HEARTH_DEV_DM_TOGGLE === "1";
-const dmOverride = new Set<string>(); // discord user ids currently viewing as the DM
+// Discord user ids currently viewing the campaign as the OPPOSITE of their real role — a
+// player checking DM_ONLY content, or (now that the DM is a real role) a DM checking what a
+// player would actually see. Two-way, because both directions are worth testing.
+const roleOverride = new Set<string>();
 
 const askCommand = new SlashCommandBuilder()
   .setName("ask")
@@ -245,7 +248,7 @@ const helpCommand = new SlashCommandBuilder()
 
 const dmModeCommand = new SlashCommandBuilder()
   .setName("dmmode")
-  .setDescription("(dev) Toggle viewing the campaign as the DM.");
+  .setDescription("(dev) Swap between the DM view and a player view.");
 
 async function registerCommands(): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -323,7 +326,11 @@ async function resolveViewer(
   // Dev DM-view override (see /dmmode) — treat this member as the DM so DM_ONLY content
   // is visible. Never active unless HEARTH_DEV_DM_TOGGLE=1.
   const role =
-    DEV_DM_TOGGLE && dmOverride.has(discordUserId) ? "DM" : membership.role;
+    DEV_DM_TOGGLE && roleOverride.has(discordUserId)
+      ? membership.role === "DM"
+        ? "PLAYER"
+        : "DM"
+      : membership.role;
   return {
     campaignId,
     role,
@@ -679,13 +686,17 @@ async function handleDmMode(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   const id = interaction.user.id;
-  const on = !dmOverride.has(id);
-  if (on) dmOverride.add(id);
-  else dmOverride.delete(id);
+  const on = !roleOverride.has(id);
+  if (on) roleOverride.add(id);
+  else roleOverride.delete(id);
+  const viewer = await resolveViewer(interaction.guildId, id);
+  const nowSeeing = on
+    ? viewer?.role === "DM"
+      ? "everything in the campaign (DM_ONLY included)"
+      : `only what ${viewer?.characterName ?? "your character"} knows`
+    : "your real role again";
   await interaction.reply({
-    content: on
-      ? "🎭 DM view **on** — you now see everything in the campaign (DM_ONLY included)."
-      : "🎭 DM view **off** — back to your character's knowledge.",
+    content: `🎭 Role swap **${on ? "on" : "off"}** — you now see ${nowSeeing}.`,
     flags: MessageFlags.Ephemeral,
   });
 }
