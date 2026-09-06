@@ -73,9 +73,9 @@ export function canView(
 }
 
 /** Return only the units the viewer is permitted to know. */
-export function filterKnowledge(
+export function filterKnowledge<T extends FilterableKnowledgeUnit>(
   viewer: Viewer,
-  units: FilterableKnowledgeUnit[],
-): FilterableKnowledgeUnit[] {
+  units: T[],
+): T[] {
   return units.filter((unit) => canView(viewer, unit));
 }

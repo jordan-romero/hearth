@@ -1,0 +1,27 @@
+{
+  "name": "@hearth/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "dotenv -e ../../.env -- next dev --port 3000",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hearth/agents": "workspace:*",
+    "@hearth/core": "workspace:*",
+    "@hearth/db": "workspace:*",
+    "next": "^15.5.0",
+    "next-auth": "^5.0.0-beta.25",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "dotenv-cli": "^8.0.0"
+  }
+}

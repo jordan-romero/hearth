@@ -36,10 +36,13 @@ function client(): SupabaseClient {
 
 // ── Local-disk backend (dev) ─────────────────────────────────────────────────
 // General storage root, anchored to the repo root (…/packages/agents/{src,dist} → up 3);
-// each bucket is a subdirectory.
-const BASE =
-  process.env.HEARTH_STORAGE_DIR ??
-  fileURLToPath(new URL("../../../.hearth-storage", import.meta.url));
+// each bucket is a subdirectory. Resolved lazily and without a relative `new URL(...)`
+// literal, which bundlers try to resolve as a module at build time (it broke `next build`).
+function storageBase(): string {
+  if (process.env.HEARTH_STORAGE_DIR) return process.env.HEARTH_STORAGE_DIR;
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return path.join(here, "..", "..", "..", ".hearth-storage");
+}
 
 // ── Public interface ─────────────────────────────────────────────────────────
 /** Store `data` under `bucket`/`key`; returns the key. */
@@ -59,7 +62,7 @@ export async function putObject(
       );
     return key;
   }
-  const full = path.join(BASE, bucket, key);
+  const full = path.join(storageBase(), bucket, key);
   await fs.promises.mkdir(path.dirname(full), { recursive: true });
   await fs.promises.writeFile(full, data);
   return key;
@@ -75,7 +78,7 @@ export async function getObject(bucket: string, key: string): Promise<Buffer> {
       );
     return Buffer.from(await data.arrayBuffer());
   }
-  return fs.promises.readFile(path.join(BASE, bucket, key));
+  return fs.promises.readFile(path.join(storageBase(), bucket, key));
 }
 
 // Per-bucket convenience wrappers.
