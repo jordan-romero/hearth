@@ -14,3 +14,5 @@ export * from "./journal.js";
 export * from "./portraits.js";
 export * from "./npc.js";
 export * from "./live.js";
+export * from "./tenancy.js";
+export * from "./onboarding.js";

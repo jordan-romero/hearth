@@ -105,6 +105,22 @@ model Campaign {
   documentChunks  DocumentChunk[]
   assets          Asset[]
   askLogs         AskLog[]
+  discord         CampaignDiscord?
+}
+
+/// Binds a campaign to one Discord server — the multi-tenancy hinge. The bot resolves which
+/// campaign an interaction belongs to from its `guildId`, so a single deployment can serve
+/// many tables without any campaign id in the environment. Per-server settings that used to
+/// be env vars (the reveals channel) live here too.
+model CampaignDiscord {
+  id              String   @id @default(cuid())
+  campaignId      String   @unique
+  guildId         String   @unique
+  revealChannelId String? // default channel for /reveal + /npc share
+  voiceChannelId  String? // preferred capture channel (advisory)
+  createdAt       DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 }
 
 /// A person. Auth.js will extend this table later; minimal for Phase 0.

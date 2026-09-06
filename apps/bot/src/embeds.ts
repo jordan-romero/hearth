@@ -160,6 +160,13 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
     )
     .addFields(
       {
+        name: "Getting started",
+        value: [
+          "**/setup** `name` — (DM, once per server) create the campaign",
+          "**/join** `character` — claim your seat at the table with a character",
+        ].join("\n"),
+      },
+      {
         name: "Everyone",
         value: [
           "**/ask** `question` — ask the memory; answers are filtered to what your character knows",
