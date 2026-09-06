@@ -31,8 +31,10 @@ export async function requireMember(
   return { viewer, campaign };
 }
 
-/** How a member is addressed on screen: their character, else their table name, else a role. */
+/** How a member is addressed on screen. The label has to match WHAT THEY'RE SEEING, not just
+ * who they are: a DM who also has a character still sees everything, so showing the character
+ * name would imply a filtered view they aren't in. Role wins for DMs. */
 export function viewerLabel(viewer: ResolvedMember): string {
-  if (viewer.characterName) return viewer.characterName;
-  return viewer.role === "DM" ? "Dungeon Master" : "Player";
+  if (viewer.role === "DM") return "Dungeon Master";
+  return viewer.characterName ?? "Player";
 }
