@@ -25,8 +25,9 @@ import { prisma } from "@hearth/db";
 import {
   getQueue,
   putClip,
-  maybeEnqueueExtraction,
+  scheduleFinalize,
   TRANSCRIBE_QUEUE,
+  SESSION_GAP_MS,
   type TranscribeJob,
 } from "@hearth/agents";
 
@@ -124,12 +125,13 @@ export async function startRecording(
   // Find-or-create the session. A /record within the merge window RESUMES the most recent
   // still-open session — a break/stop/restart is the SAME session, and just adds another
   // Recording to it — rather than spawning a new session and bumping the session number.
-  const MERGE_WINDOW_MS = 30 * 60_000; // 30 min: a stop/restart within this = same session
+  // SESSION_GAP_MS is shared with the finalize delay, so "resumable" and "finalizable"
+  // can never disagree about how long a break may be.
   const open = await prisma.gameSession.findFirst({
     where: {
       campaignId,
       status: { not: "COMPLETE" },
-      lastActivityAt: { gte: new Date(Date.now() - MERGE_WINDOW_MS) },
+      lastActivityAt: { gte: new Date(Date.now() - SESSION_GAP_MS) },
     },
     orderBy: { lastActivityAt: "desc" },
   });
@@ -329,12 +331,17 @@ export async function stopRecording(
   console.log(
     `⏹ recording stopped — ${clipCount} clip(s) captured (recording ${state.recordingId})`,
   );
-  // Now that the recording has stopped, extraction is eligible. If the last clip was
-  // already transcribed, this fires it immediately; otherwise the worker fires it when
-  // the final clip lands. (Both paths dedupe via the stately queue's singletonKey.)
-  await maybeEnqueueExtraction(state.recordingId);
+  // The session stays OPEN — a /record within the gap window resumes it (breaks shouldn't
+  // split a session). Stamp the activity and schedule a delayed finalize; if we resume, the
+  // finalize job reschedules itself rather than summarizing a half-finished session.
+  await prisma.gameSession.update({
+    where: { id: state.gameSessionId },
+    data: { lastActivityAt: new Date() },
+  });
+  await scheduleFinalize(state.gameSessionId);
   await interaction.reply({
-    content: "⏹ Stopped — transcribing the session into the memory.",
+    content:
+      "⏹ Stopped — transcribing. `/record` again within 30 min and it stays the same session.",
     flags: MessageFlags.Ephemeral,
   });
 }
