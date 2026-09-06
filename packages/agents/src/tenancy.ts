@@ -84,10 +84,11 @@ export async function getSpeakerLabels(
   for (const m of memberships) {
     const discordUserId = m.user.discordUserId;
     if (!discordUserId) continue;
-    // A player is their character. The DM has none, so use the name they gave at /setup,
-    // falling back to a plain role label.
+    // A player is their character. The DM has none, so use the campaign-scoped name they gave
+    // at /setup. A player without a character yet gets a role label rather than "Unknown".
     const character = m.characters[0]?.name;
-    const fallback = m.role === "DM" ? (m.user.name ?? "DM") : "Unknown";
+    const fallback =
+      m.displayName ?? m.user.name ?? (m.role === "DM" ? "DM" : "Player");
     labels.set(discordUserId, character ?? fallback);
   }
   return labels;

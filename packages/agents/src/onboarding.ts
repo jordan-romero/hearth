@@ -10,24 +10,11 @@ function placeholderEmail(discordUserId: string): string {
   return `discord-${discordUserId}@hearth.local`;
 }
 
-/** Find or create the Hearth user behind a Discord account. `displayName` is how they'll be
- * named in transcripts and on the page; an explicit one always wins over a stale stored value,
- * so a DM who sets their name in /setup sees it used everywhere. */
-async function upsertUser(
-  discordUserId: string,
-  displayName: string,
-  overwriteName = false,
-) {
+/** Find or create the Hearth user behind a Discord account. Per-table naming lives on the
+ * membership, not here — this name is only a fallback. */
+async function upsertUser(discordUserId: string, displayName: string) {
   const existing = await prisma.user.findUnique({ where: { discordUserId } });
-  if (existing) {
-    if (overwriteName && displayName && existing.name !== displayName) {
-      return prisma.user.update({
-        where: { id: existing.id },
-        data: { name: displayName },
-      });
-    }
-    return existing;
-  }
+  if (existing) return existing;
   return prisma.user.create({
     data: {
       discordUserId,
@@ -64,20 +51,21 @@ export async function setupCampaign(
     };
   }
 
-  // The DM's chosen name is what labels their lines in every transcript, so take it here
-  // rather than falling back to a bare "DM" — they speak more than anyone at the table.
-  const user = await upsertUser(
-    discordUserId,
-    dmName?.trim() || displayName,
-    Boolean(dmName?.trim()),
-  );
+  const user = await upsertUser(discordUserId, displayName);
   const campaign = await prisma.$transaction(async (tx) => {
     const created = await tx.campaign.create({ data: { name: campaignName } });
     await tx.campaignDiscord.create({
       data: { campaignId: created.id, guildId },
     });
+    // The DM's chosen name labels their lines in every transcript. Stored per-membership, so
+    // DMing a second campaign under a different name can't relabel this one's history.
     await tx.membership.create({
-      data: { userId: user.id, campaignId: created.id, role: "DM" },
+      data: {
+        userId: user.id,
+        campaignId: created.id,
+        role: "DM",
+        displayName: dmName?.trim() || displayName,
+      },
     });
     // Every campaign gets one party, so `/reveal to:party` works from day one.
     await tx.party.create({
