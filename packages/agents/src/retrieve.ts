@@ -66,6 +66,9 @@ async function searchUnits(
            "title", "content", "type"::text AS "type"
     FROM "KnowledgeUnit"
     WHERE "campaignId" = ${viewer.campaignId} AND "embedding" IS NOT NULL
+      -- A fact the table has corrected is never retrieved again. This is the whole point of a
+      -- correction: the wrong answer has to become unreachable, not merely outranked.
+      AND "supersededByCorrectionId" IS NULL
     ORDER BY "embedding" <=> ${vec}::vector
     LIMIT ${limit * 3}`;
   if (rows.length === 0) return [];
