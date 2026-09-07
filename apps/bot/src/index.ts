@@ -27,8 +27,6 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@hearth/db";
 import {
   ask,
-  putDocument,
-  getQueue,
   getPortrait,
   retrieveContext,
   revealTo,
@@ -39,6 +37,7 @@ import {
   saveNpc,
   getActiveSession,
   getLiveTranscript,
+  ingestUpload,
   proposeCorrection,
   applyCorrection,
   rejectCorrection,
@@ -48,9 +47,7 @@ import {
   getCampaignDiscord,
   setupCampaign,
   joinCampaign,
-  INGEST_QUEUE,
   type ResolvedMember,
-  type IngestJob,
   type NpcDraft,
   type PortraitMatch,
 } from "@hearth/agents";
@@ -783,31 +780,16 @@ async function handleUpload(
     const data = Buffer.from(await res.arrayBuffer());
 
     const extractUnits = interaction.options.getBoolean("extract") ?? true;
-    const doc = await prisma.sourceDocument.create({
-      data: {
-        campaignId: viewer.campaignId,
-        name: attachment.name,
-        sourceType: "UPLOAD",
-        mimeType: attachment.contentType ?? null,
-        status: "PENDING",
-        extractUnits,
-      },
-    });
-    // Tenant-scoped key: {campaignId}/{docId}/{safe-name}.
-    const safeName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const key = `${viewer.campaignId}/${doc.id}/${safeName}`;
-    await putDocument(key, data, attachment.contentType ?? undefined);
-    await prisma.sourceDocument.update({
-      where: { id: doc.id },
-      data: { storagePath: key },
-    });
-
-    const boss = await getQueue();
-    const job: IngestJob = { sourceDocumentId: doc.id };
-    await boss.send(INGEST_QUEUE, job);
+    const doc = await ingestUpload(
+      viewer.campaignId,
+      attachment.name,
+      data,
+      attachment.contentType ?? undefined,
+      extractUnits,
+    );
 
     console.log(
-      `📄 upload: "${attachment.name}" (${data.length} bytes) → ${doc.id} queued`,
+      `📄 upload: "${attachment.name}" (${data.length} bytes) → ${doc.documentId} queued`,
     );
     await interaction.editReply(
       `📄 Uploaded **${attachment.name}** — parsing it into the memory.`,
