@@ -1,154 +1,121 @@
-// A campaign as its members see it. Session recaps are table-shared, but the knowledge list
-// runs through the SAME permission filter the bot uses — so a player's page shows only what
-// their character knows, and the DM's shows everything. No filtering logic lives here.
+// The campaign at a glance: how much it remembers, and the story so far in reverse order.
+// Recaps are table-shared (everyone heard the session), so they need no per-viewer filtering.
 
 import Link from "next/link";
-import { notFound } from "next/navigation";
-import { auth } from "@/auth";
+import { requireMember } from "@/lib/campaign";
 import { prisma } from "@hearth/db";
-import { resolveMember } from "@hearth/agents";
-import { filterKnowledge } from "@hearth/core";
 
-export default async function CampaignPage({
+export default async function CampaignOverview({
   params,
 }: {
   params: Promise<{ campaignId: string }>;
 }) {
   const { campaignId } = await params;
-  const session = await auth();
-  if (!session?.discordUserId) {
-    return (
-      <main className="wrap">
-        <h1>Sign in first</h1>
-        <p className="muted">
-          <Link href="/">Back to the front door</Link>
-        </p>
-      </main>
-    );
-  }
+  const { viewer } = await requireMember(campaignId);
 
-  // Membership IS the authorization check — a non-member gets a 404, not a hint that the
-  // campaign exists.
-  const viewer = await resolveMember(campaignId, session.discordUserId);
-  if (!viewer) notFound();
-
-  const campaign = await prisma.campaign.findUnique({
-    where: { id: campaignId },
-    select: { name: true },
-  });
-  if (!campaign) notFound();
-
-  const sessions = await prisma.gameSession.findMany({
-    where: { campaignId, recap: { not: null } },
-    orderBy: { number: "desc" },
-    take: 10,
-    select: { id: true, number: true, title: true, recap: true },
-  });
-
-  // Load candidates and filter in core — the same shape as retrieval in the bot. The filter
-  // runs AFTER the query, so a page-sized fetch could be entirely DM_ONLY rows and wrongly
-  // look like the player knows nothing; keep pulling pages until the visible list is full or
-  // the campaign runs out.
-  const PAGE = 200;
-  const WANT = 100;
-  const known: Awaited<ReturnType<typeof loadPage>> = [];
-  let cursor: string | undefined;
-  for (let i = 0; i < 20 && known.length < WANT; i++) {
-    const page = await loadPage(campaignId, PAGE, cursor);
-    if (page.length === 0) break;
-    known.push(...filterKnowledge(viewer, page));
-    cursor = page[page.length - 1]!.id;
-    if (page.length < PAGE) break; // reached the end of the campaign
-  }
-  known.length = Math.min(known.length, WANT);
+  const [sessions, unitCount, docCount, characters] = await Promise.all([
+    prisma.gameSession.findMany({
+      where: { campaignId, recap: { not: null } },
+      orderBy: { number: "desc" },
+      take: 20,
+      select: {
+        id: true,
+        number: true,
+        title: true,
+        recap: true,
+        occurredAt: true,
+      },
+    }),
+    prisma.knowledgeUnit.count({ where: { campaignId } }),
+    prisma.sourceDocument.count({ where: { campaignId, status: "PARSED" } }),
+    prisma.character.findMany({
+      where: { campaignId },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, ancestry: true, class: true },
+    }),
+  ]);
 
   return (
-    <main className="wrap">
-      <p className="eyebrow">
-        {viewer.role === "DM"
-          ? "Dungeon Master"
-          : (viewer.characterName ?? "Player")}
-      </p>
-      <h1>{campaign.name}</h1>
+    <>
+      <section className="stats">
+        <div className="stat">
+          <span className="stat-n">{sessions.length}</span>
+          <span className="stat-l">sessions recapped</span>
+        </div>
+        <div className="stat">
+          <span className="stat-n">{unitCount}</span>
+          <span className="stat-l">things remembered</span>
+        </div>
+        <div className="stat">
+          <span className="stat-n">{docCount}</span>
+          <span className="stat-l">documents ingested</span>
+        </div>
+        <div className="stat">
+          <span className="stat-n">{characters.length}</span>
+          <span className="stat-l">characters</span>
+        </div>
+      </section>
 
-      <section style={{ marginTop: 36 }}>
-        <h2>Sessions</h2>
+      {characters.length > 0 && (
+        <section className="section">
+          <h2 className="section-h">The party</h2>
+          <div className="party">
+            {characters.map((c) => (
+              <div key={c.id} className="party-member">
+                <span className="party-name">{c.name}</span>
+                {(c.ancestry || c.class) && (
+                  <span className="muted small">
+                    {[c.ancestry, c.class].filter(Boolean).join(" · ")}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section className="section">
+        <h2 className="section-h">The story so far</h2>
         {sessions.length === 0 ? (
           <p className="muted">
             No sessions recorded yet. Start one in Discord with{" "}
-            <code>/record</code>.
+            <code>/record</code>, and the recap lands here when you{" "}
+            <code>/stop</code>.
           </p>
         ) : (
           <div className="stack">
             {sessions.map((s) => (
               <article key={s.id} className="card">
-                <span className="tag">Session {s.number}</span>
-                <h2 style={{ margin: "6px 0 8px", fontSize: 18 }}>
-                  {s.title ?? `Session ${s.number}`}
-                </h2>
-                <p className="muted" style={{ margin: 0 }}>
-                  {s.recap}
-                </p>
+                <div className="card-head">
+                  <span className="tag">Session {s.number}</span>
+                  {s.occurredAt && (
+                    <time
+                      className="muted small"
+                      dateTime={s.occurredAt.toISOString()}
+                    >
+                      {s.occurredAt.toLocaleDateString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
+                    </time>
+                  )}
+                </div>
+                {s.title && <h3 className="card-title">{s.title}</h3>}
+                <p className="card-body">{s.recap}</p>
               </article>
             ))}
           </div>
         )}
       </section>
 
-      <section style={{ marginTop: 44 }}>
-        <h2>
-          What {viewer.role === "DM" ? "the campaign" : "you"} know
-          {viewer.role === "DM" ? "s" : ""}{" "}
-          <span className="muted" style={{ fontSize: 15, fontWeight: 400 }}>
-            ({known.length})
-          </span>
-        </h2>
-        {known.length === 0 ? (
-          <p className="muted">
-            Nothing yet — play a session, and this fills in.
-          </p>
-        ) : (
-          <div className="stack">
-            {known.map((u) => (
-              <div key={u.id} className="card">
-                <span className="tag">{u.type}</span>
-                <div style={{ marginTop: 4 }}>{u.title}</div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <p style={{ marginTop: 40 }}>
-        <Link href="/">← All campaigns</Link>
+      <p className="muted">
+        Ask it anything on the{" "}
+        <Link href={`/campaign/${campaignId}/ask`}>Ask</Link> tab
+        {viewer.role === "DM"
+          ? " — you'll see everything, secrets included."
+          : " — you'll get what your character knows."}
       </p>
-    </main>
+    </>
   );
-}
-
-/** One page of knowledge candidates, shaped for the permission filter. */
-async function loadPage(campaignId: string, take: number, cursor?: string) {
-  const rows = await prisma.knowledgeUnit.findMany({
-    where: { campaignId },
-    orderBy: { id: "asc" },
-    take,
-    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-    select: {
-      id: true,
-      campaignId: true,
-      baseVisibility: true,
-      title: true,
-      type: true,
-      grants: { select: { characterId: true, partyId: true } },
-    },
-  });
-  return rows.map((r) => ({
-    ...r,
-    grantedCharacterIds: r.grants
-      .map((g) => g.characterId)
-      .filter((v): v is string => v !== null),
-    grantedPartyIds: r.grants
-      .map((g) => g.partyId)
-      .filter((v): v is string => v !== null),
-  }));
 }
