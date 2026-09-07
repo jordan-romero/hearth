@@ -172,6 +172,7 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
           "**/ask** `question` — ask the memory; answers are filtered to what your character knows",
           "**/journal** `entry` — save a private note only you and the DM can see",
           "**/recap** `[minutes]` — what did I miss? Catches you up mid-session, or recaps last time",
+          "**/correct** `truth` — the memory got something wrong; the DM approves the fix",
         ].join("\n"),
       },
       {
@@ -202,6 +203,55 @@ export function recapEmbed(
     .setTitle(truncate(title, 256))
     .setDescription(truncate(body, 4096))
     .setFooter({ text: truncate(footer, 2048) });
+}
+
+/** A correction, shown to whoever proposed it and to the DM deciding on it. Shows the change
+ * itself — before and after — because "approve" should never be a leap of faith. */
+export function correctionEmbed(
+  proposal: {
+    statement: string;
+    targets: { title: string; content: string; rewrite: string }[];
+    newFactTitle: string | null;
+    newFactContent: string | null;
+  },
+  state: "applied" | "pending",
+  theme: string = DEFAULT_THEME,
+): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setColor(themeColor(theme, "DM"))
+    .setTitle(
+      state === "applied" ? "✅ Canon corrected" : "✏️ Correction proposed",
+    )
+    .setDescription(truncate(proposal.statement, 2000));
+
+  for (const t of proposal.targets.slice(0, 4)) {
+    const body = t.rewrite
+      ? `~~${truncate(t.content, 300)}~~\n**→ ${truncate(t.rewrite, 400)}**`
+      : `~~${truncate(t.content, 300)}~~\n**→ removed**`;
+    embed.addFields({
+      name: truncate(t.title, 256),
+      value: truncate(body, 1024),
+    });
+  }
+  if (proposal.targets.length > 4) {
+    embed.addFields({
+      name: "…and more",
+      value: `${proposal.targets.length - 4} further fact(s) change too.`,
+    });
+  }
+  if (proposal.newFactTitle && proposal.newFactContent) {
+    embed.addFields({
+      name: `+ ${truncate(proposal.newFactTitle, 254)}`,
+      value: truncate(proposal.newFactContent, 1024),
+    });
+  }
+  embed.setFooter({
+    text:
+      state === "applied"
+        ? "Applied — the old version won't be answered with again."
+        : "Waiting on the DM. Nothing has changed yet.",
+  });
+  return embed;
 }
 
 /** A filesystem/attachment-safe version of a name (for portrait + card downloads). */

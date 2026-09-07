@@ -39,6 +39,9 @@ import {
   saveNpc,
   getActiveSession,
   getLiveTranscript,
+  proposeCorrection,
+  applyCorrection,
+  rejectCorrection,
   summarizeRecent,
   resolveCampaignId,
   resolveMember,
@@ -62,6 +65,7 @@ import {
   safeFileName,
   helpEmbed,
   recapEmbed,
+  correctionEmbed,
 } from "./embeds.js";
 
 function requireEnv(name: string): string {
@@ -232,6 +236,27 @@ const joinCommand = new SlashCommandBuilder()
       .setRequired(true),
   );
 
+const correctCommand = new SlashCommandBuilder()
+  .setName("correct")
+  .setDescription(
+    "Something in the memory is wrong — tell Hearth what's actually true.",
+  )
+  .addStringOption((o) =>
+    o
+      .setName("truth")
+      .setDescription(
+        "What's actually true, e.g. 'Moira was Morwyn's mother, not his wife'",
+      )
+      .setRequired(true),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("said")
+      .setDescription(
+        "What the memory said, if you want to point at it directly",
+      ),
+  );
+
 const recapCommand = new SlashCommandBuilder()
   .setName("recap")
   .setDescription("What did I miss? Catch up on the session.")
@@ -262,6 +287,7 @@ async function registerCommands(): Promise<void> {
     journalCommand.toJSON(),
     npcCommand.toJSON(),
     recapCommand.toJSON(),
+    correctCommand.toJSON(),
     setupCommand.toJSON(),
     joinCommand.toJSON(),
     helpCommand.toJSON(),
@@ -541,6 +567,150 @@ async function handleRecap(
     console.error("/recap failed:", err);
     await interaction
       .editReply("Something went wrong putting that recap together.")
+      .catch(() => {});
+  }
+}
+
+/** /correct — anyone can say the memory got something wrong. A player's correction waits for
+ * the DM; a DM's applies immediately, because there's nobody above them to ask. */
+async function handleCorrect(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
+    if (!viewer) {
+      await interaction.editReply(
+        "You're not part of a campaign here yet — try `/join`.",
+      );
+      return;
+    }
+    const truth = interaction.options.getString("truth", true);
+    const said = interaction.options.getString("said") ?? undefined;
+
+    const proposal = await proposeCorrection(
+      viewer,
+      viewer.membershipId,
+      truth,
+      said,
+    );
+
+    if (proposal.targets.length === 0 && !proposal.newFactTitle) {
+      await interaction.editReply(
+        "Nothing in the memory contradicts that — it may not have been recorded yet. Nothing changed.",
+      );
+      return;
+    }
+
+    if (proposal.autoApproved) {
+      await interaction.editReply({
+        embeds: [correctionEmbed(proposal, "applied", viewer.theme)],
+      });
+      return;
+    }
+
+    // A player's correction: tell them it's pending, then put it in front of the DM.
+    await interaction.editReply({
+      embeds: [correctionEmbed(proposal, "pending", viewer.theme)],
+    });
+    await notifyDmOfCorrection(interaction, viewer, proposal);
+  } catch (err) {
+    console.error("/correct failed:", err);
+    await interaction
+      .editReply("Something went wrong filing that correction.")
+      .catch(() => {});
+  }
+}
+
+/** Put a pending correction in front of the DM with Approve / Reject. Posts in the channel and
+ * pings them, because unlike a private journal note this changes shared canon. */
+async function notifyDmOfCorrection(
+  interaction: ChatInputCommandInteraction,
+  viewer: ResolvedViewer,
+  proposal: Awaited<ReturnType<typeof proposeCorrection>>,
+): Promise<void> {
+  const dm = await prisma.membership.findFirst({
+    where: { campaignId: viewer.campaignId, role: "DM" },
+    select: { user: { select: { discordUserId: true } } },
+  });
+  const mention = dm?.user.discordUserId ? `<@${dm.user.discordUserId}> ` : "";
+  const who = viewer.characterName ?? "A player";
+
+  const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`cx:a:${proposal.id}`)
+      .setLabel("Approve")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`cx:r:${proposal.id}`)
+      .setLabel("Reject")
+      .setStyle(ButtonStyle.Secondary),
+  );
+
+  const channel = interaction.channel;
+  if (!channel || !channel.isSendable()) return;
+  await channel
+    .send({
+      content: `${mention}${who} says the memory got something wrong.`,
+      embeds: [correctionEmbed(proposal, "pending", viewer.theme)],
+      components: [buttons],
+    })
+    .catch((err) => console.error("correction notify failed:", err));
+}
+
+/** Approve / Reject on a pending correction. DM only — they own canon. */
+async function handleCorrectionButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const [, action, correctionId] = interaction.customId.split(":");
+  const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
+  if (!viewer || viewer.role !== "DM") {
+    await interaction.reply({
+      content: "Only the DM can decide on a correction.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  // Ack first: applying rewrites units and re-embeds, well past the 3s button window.
+  await interaction.deferUpdate();
+  try {
+    if (action === "r") {
+      await rejectCorrection(correctionId!, viewer.membershipId);
+      await interaction.editReply({
+        content: "❌ Correction rejected — the memory stands as it was.",
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    const { rewritten, added } = await applyCorrection(
+      correctionId!,
+      viewer.membershipId,
+    );
+    const parts = [
+      rewritten > 0
+        ? `${rewritten} fact${rewritten === 1 ? "" : "s"} corrected`
+        : null,
+      added ? "1 added" : null,
+    ].filter(Boolean);
+    await interaction.editReply({
+      content: `✅ Canon updated — ${parts.join(", ")}. The old version won't come back.`,
+      embeds: [],
+      components: [],
+    });
+  } catch (err) {
+    console.error("correction decision failed:", err);
+    await interaction
+      .editReply({
+        content:
+          err instanceof Error && err.message.includes("already been applied")
+            ? "That correction was already applied."
+            : "Something went wrong applying that correction.",
+        components: [],
+      })
       .catch(() => {});
   }
 }
@@ -1369,6 +1539,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
     if (interaction.isButton()) {
+      if (interaction.customId.startsWith("cx:")) {
+        await handleCorrectionButton(interaction);
+        return;
+      }
       if (interaction.customId.startsWith("rv:")) {
         await handleRevealButton(interaction);
       } else if (interaction.customId.startsWith("npc:")) {
@@ -1407,6 +1581,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case "recap":
         await handleRecap(interaction);
+        break;
+      case "correct":
+        await handleCorrect(interaction);
         break;
       case "setup":
         await handleSetup(interaction);
