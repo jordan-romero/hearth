@@ -31,6 +31,7 @@ export default async function JournalPage({
       campaignId,
       source: "PLAYER_NOTE",
       authorMembershipId: viewer.membershipId,
+      supersededByCorrectionId: null,
     },
     orderBy: { createdAt: "desc" },
     select: { id: true, content: true, createdAt: true },

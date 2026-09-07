@@ -26,7 +26,10 @@ export default async function CampaignOverview({
         occurredAt: true,
       },
     }),
-    prisma.knowledgeUnit.count({ where: { campaignId } }),
+    // Superseded facts aren't part of the memory any more — counting them would overstate it.
+    prisma.knowledgeUnit.count({
+      where: { campaignId, supersededByCorrectionId: null },
+    }),
     prisma.sourceDocument.count({ where: { campaignId, status: "PARSED" } }),
     prisma.character.findMany({
       where: { campaignId },

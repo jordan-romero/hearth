@@ -10,6 +10,7 @@ interface Tab {
   slug: string;
   label: string;
   playerOnly?: boolean;
+  dmOnly?: boolean;
 }
 
 const TABS: Tab[] = [
@@ -17,6 +18,7 @@ const TABS: Tab[] = [
   { slug: "ask", label: "Ask" },
   { slug: "memory", label: "Memory" },
   { slug: "journal", label: "Journal", playerOnly: true },
+  { slug: "library", label: "Library", dmOnly: true },
 ];
 
 export function CampaignNav({
@@ -31,20 +33,22 @@ export function CampaignNav({
 
   return (
     <nav className="tabs" aria-label="Campaign sections">
-      {TABS.filter((t) => !(t.playerOnly && isDm)).map((t) => {
-        const href = t.slug ? `${base}/${t.slug}` : base;
-        const active = pathname === href;
-        return (
-          <Link
-            key={t.slug}
-            href={href}
-            className={`tab${active ? " active" : ""}`}
-            aria-current={active ? "page" : undefined}
-          >
-            {t.label}
-          </Link>
-        );
-      })}
+      {TABS.filter((t) => !(t.playerOnly && isDm) && !(t.dmOnly && !isDm)).map(
+        (t) => {
+          const href = t.slug ? `${base}/${t.slug}` : base;
+          const active = pathname === href;
+          return (
+            <Link
+              key={t.slug}
+              href={href}
+              className={`tab${active ? " active" : ""}`}
+              aria-current={active ? "page" : undefined}
+            >
+              {t.label}
+            </Link>
+          );
+        },
+      )}
     </nav>
   );
 }

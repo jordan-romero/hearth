@@ -31,6 +31,19 @@ export async function requireMember(
   return { viewer, campaign };
 }
 
+/**
+ * The same, but only for the DM.
+ *
+ * Hiding a nav tab is presentation, not protection — every DM-only page calls this itself, so
+ * a player who types the URL is refused by the same check either way. A player gets a 404
+ * rather than a 403, consistent with the rest: don't confirm that something exists.
+ */
+export async function requireDm(campaignId: string): Promise<CampaignContext> {
+  const ctx = await requireMember(campaignId);
+  if (ctx.viewer.role !== "DM") notFound();
+  return ctx;
+}
+
 /** How a member is addressed on screen. The label has to match WHAT THEY'RE SEEING, not just
  * who they are: a DM who also has a character still sees everything, so showing the character
  * name would imply a filtered view they aren't in. Role wins for DMs. */

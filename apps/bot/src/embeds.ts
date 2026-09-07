@@ -172,6 +172,7 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
           "**/ask** `question` — ask the memory; answers are filtered to what your character knows",
           "**/journal** `entry` — save a private note only you and the DM can see",
           "**/recap** `[minutes]` — what did I miss? Catches you up mid-session, or recaps last time",
+          "**/correct** `truth` — the memory got something wrong; the DM approves the fix",
         ].join("\n"),
       },
       {
@@ -202,6 +203,86 @@ export function recapEmbed(
     .setTitle(truncate(title, 256))
     .setDescription(truncate(body, 4096))
     .setFooter({ text: truncate(footer, 2048) });
+}
+
+/** A correction, shown to whoever proposed it and to the DM deciding on it.
+ *
+ * Returns MULTIPLE embeds when a correction touches many facts. Every target has to be visible
+ * before approval — a DM asked to approve changes they were never shown isn't reviewing
+ * anything — and one embed can't hold them all.
+ *
+ * These carry the content of the facts being changed, which may be DM_ONLY or another player's
+ * note. They must only ever be delivered privately (ephemeral or DM), never posted to a channel.
+ */
+export function correctionEmbeds(
+  proposal: {
+    statement: string;
+    targets: { title: string; content: string; rewrite: string }[];
+    newFactTitle: string | null;
+    newFactContent: string | null;
+  },
+  state: "applied" | "pending",
+  theme: string = DEFAULT_THEME,
+): EmbedBuilder[] {
+  const color = themeColor(theme, "DM");
+  const head = new EmbedBuilder()
+    .setColor(color)
+    .setTitle(
+      state === "applied" ? "✅ Canon corrected" : "✏️ Correction proposed",
+    )
+    .setDescription(truncate(proposal.statement, 2000));
+
+  const embeds: EmbedBuilder[] = [head];
+  const PER_EMBED = 4;
+  // Discord caps a message at 6000 characters ACROSS all its embeds, so pagination has to
+  // budget the total, not just each embed. Leave headroom for the header and footer.
+  const CHAR_BUDGET = 5200;
+  let used = proposal.statement.length;
+
+  for (let i = 0; i < proposal.targets.length; i += PER_EMBED) {
+    const slice = proposal.targets.slice(i, i + PER_EMBED);
+    const e = i === 0 ? head : new EmbedBuilder().setColor(color);
+    let shown = 0;
+    for (const t of slice) {
+      const body = t.rewrite
+        ? `~~${truncate(t.content, 280)}~~\n**→ ${truncate(t.rewrite, 400)}**`
+        : `~~${truncate(t.content, 280)}~~\n**→ removed from the memory**`;
+      const name = truncate(t.title, 256);
+      const value = truncate(body, 1024);
+      if (used + name.length + value.length > CHAR_BUDGET) break;
+      used += name.length + value.length;
+      e.addFields({ name, value });
+      shown++;
+    }
+    if (i > 0 && shown > 0) embeds.push(e);
+    const rendered = i + shown;
+    // Out of embeds or out of characters — say what's missing rather than dropping it silently.
+    if (
+      rendered < proposal.targets.length &&
+      (shown < slice.length || embeds.length === 10)
+    ) {
+      e.addFields({
+        name: "…and more",
+        value: `${proposal.targets.length - rendered} further change(s) not shown here — approving applies them too.`,
+      });
+      break;
+    }
+  }
+
+  const last = embeds[embeds.length - 1]!;
+  if (proposal.newFactTitle && proposal.newFactContent) {
+    last.addFields({
+      name: `+ ${truncate(proposal.newFactTitle, 254)}`,
+      value: truncate(proposal.newFactContent, 1024),
+    });
+  }
+  last.setFooter({
+    text:
+      state === "applied"
+        ? "Applied — the old version won't be answered with again."
+        : "Waiting on the DM. Nothing has changed yet.",
+  });
+  return embeds;
 }
 
 /** A filesystem/attachment-safe version of a name (for portrait + card downloads). */

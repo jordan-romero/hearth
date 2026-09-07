@@ -386,3 +386,94 @@ code {
   border-radius: 4px;
   padding: 1px 5px;
 }
+
+/* ── library (DM) ───────────────────────────────────────────────────────── */
+.upload-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 20px;
+}
+.upload-form input[type="file"] {
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink-2);
+  min-width: 0;
+  flex: 1 1 240px;
+}
+.upload-form input[type="file"]::file-selector-button {
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 13px;
+  margin-right: 12px;
+  cursor: pointer;
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 14px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.check input {
+  accent-color: var(--ember);
+}
+
+.notice {
+  margin: 14px 0 0;
+  font-size: 14px;
+  border-radius: 8px;
+  padding: 11px 14px;
+}
+.notice.ok {
+  color: var(--ink);
+  background: var(--ember-soft);
+}
+.notice.error {
+  color: var(--ink);
+  background: var(--panel-2);
+  border-left: 3px solid var(--ember);
+}
+
+.doc {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.doc-main {
+  min-width: 0;
+}
+.doc .card-title {
+  margin: 0 0 3px;
+  overflow-wrap: anywhere;
+}
+.status {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 4px 11px;
+  color: var(--ink-2);
+  background: var(--panel-2);
+}
+.status.parsed {
+  color: var(--ember);
+  background: var(--ember-soft);
+}
+.status.failed {
+  color: var(--ground);
+  background: var(--ember);
+}
