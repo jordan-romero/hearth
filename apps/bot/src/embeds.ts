@@ -233,26 +233,37 @@ export function correctionEmbeds(
     .setDescription(truncate(proposal.statement, 2000));
 
   const embeds: EmbedBuilder[] = [head];
-  const PER_EMBED = 4; // keeps each embed clear of Discord's per-message character budget
+  const PER_EMBED = 4;
+  // Discord caps a message at 6000 characters ACROSS all its embeds, so pagination has to
+  // budget the total, not just each embed. Leave headroom for the header and footer.
+  const CHAR_BUDGET = 5200;
+  let used = proposal.statement.length;
 
   for (let i = 0; i < proposal.targets.length; i += PER_EMBED) {
     const slice = proposal.targets.slice(i, i + PER_EMBED);
     const e = i === 0 ? head : new EmbedBuilder().setColor(color);
+    let shown = 0;
     for (const t of slice) {
       const body = t.rewrite
         ? `~~${truncate(t.content, 280)}~~\n**→ ${truncate(t.rewrite, 400)}**`
         : `~~${truncate(t.content, 280)}~~\n**→ removed from the memory**`;
-      e.addFields({
-        name: truncate(t.title, 256),
-        value: truncate(body, 1024),
-      });
+      const name = truncate(t.title, 256);
+      const value = truncate(body, 1024);
+      if (used + name.length + value.length > CHAR_BUDGET) break;
+      used += name.length + value.length;
+      e.addFields({ name, value });
+      shown++;
     }
-    if (i > 0) embeds.push(e);
-    // Discord allows 10 embeds per message; say so rather than silently dropping the rest.
-    if (embeds.length === 10 && i + PER_EMBED < proposal.targets.length) {
+    if (i > 0 && shown > 0) embeds.push(e);
+    const rendered = i + shown;
+    // Out of embeds or out of characters — say what's missing rather than dropping it silently.
+    if (
+      rendered < proposal.targets.length &&
+      (shown < slice.length || embeds.length === 10)
+    ) {
       e.addFields({
         name: "…and more",
-        value: `${proposal.targets.length - (i + PER_EMBED)} further fact(s) change too.`,
+        value: `${proposal.targets.length - rendered} further change(s) not shown here — approving applies them too.`,
       });
       break;
     }

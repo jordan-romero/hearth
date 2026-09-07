@@ -244,7 +244,12 @@ export async function applyCorrection(
   correctionId: string,
   reviewerMembershipId: string,
   campaignId: string,
-): Promise<{ rewritten: number; retiredPassages: number; added: boolean }> {
+): Promise<{
+  rewritten: number;
+  retiredFacts: number;
+  retiredPassages: number;
+  added: boolean;
+}> {
   // Scope to the reviewer's own campaign. The id arrives from a Discord interaction, and a
   // correction belonging to another table must never be applicable from this one — the
   // reviewer isn't its DM, whatever role they hold here.
@@ -252,8 +257,20 @@ export async function applyCorrection(
     where: { id: correctionId, campaignId },
   });
   if (!correction) throw new Error(`correction ${correctionId} not found`);
-  if (correction.status === "APPROVED") {
-    throw new Error("that correction has already been applied");
+
+  // Claim it atomically BEFORE doing any work. A read-then-check would let two clicks (or two
+  // processes) both pass the check and apply the same correction twice, and would also let a
+  // REJECTED correction through. Whoever flips PENDING→APPROVED first owns it.
+  const claimed = await prisma.correction.updateMany({
+    where: { id: correctionId, campaignId, status: "PENDING" },
+    data: {
+      status: "APPROVED",
+      reviewedByMembershipId: reviewerMembershipId,
+      reviewedAt: new Date(),
+    },
+  });
+  if (claimed.count === 0) {
+    throw new Error("that correction is not awaiting a decision");
   }
 
   const rewrites = (correction.rewrites ?? []) as {
@@ -272,11 +289,16 @@ export async function applyCorrection(
     where: {
       id: { in: unitRewrites.map((r) => r.id) },
       campaignId: correction.campaignId,
+      // Another correction may have retired this since the proposal was made. Rewriting from
+      // its stale content would resurrect a fact the table has already moved past.
+      supersededByCorrectionId: null,
     },
     include: { grants: true },
   });
 
   const toEmbed: { id: string; text: string }[] = [];
+  let rewritten = 0;
+  let retiredPassages = 0;
 
   await prisma.$transaction(async (tx) => {
     for (const original of originals) {
@@ -318,6 +340,7 @@ export async function applyCorrection(
           id: replacement.id,
           text: `${replacement.title}. ${text}`,
         });
+        rewritten++;
       }
       await tx.knowledgeUnit.update({
         where: { id: original.id },
@@ -328,10 +351,15 @@ export async function applyCorrection(
     // Retire contradicted document passages. They aren't rewritten — the document is their
     // source of truth — so retrieval simply stops reaching them.
     if (chunkIds.length > 0) {
-      await tx.documentChunk.updateMany({
-        where: { id: { in: chunkIds }, campaignId: correction.campaignId },
+      const retired = await tx.documentChunk.updateMany({
+        where: {
+          id: { in: chunkIds },
+          campaignId: correction.campaignId,
+          supersededByCorrectionId: null,
+        },
         data: { supersededByCorrectionId: correction.id },
       });
+      retiredPassages = retired.count;
     }
 
     // An extra fact, only when the rewrites didn't already cover what was said.
@@ -356,15 +384,12 @@ export async function applyCorrection(
       });
     }
 
-    await tx.correction.update({
-      where: { id: correction.id },
-      data: {
-        status: "APPROVED",
-        reviewedByMembershipId: reviewerMembershipId,
-        reviewedAt: new Date(),
-        resultUnitId,
-      },
-    });
+    if (resultUnitId) {
+      await tx.correction.update({
+        where: { id: correction.id },
+        data: { resultUnitId },
+      });
+    }
   });
 
   // Embed outside the transaction — a slow API call shouldn't hold locks, and an unembedded
@@ -382,8 +407,9 @@ export async function applyCorrection(
   }
 
   return {
-    rewritten: originals.length,
-    retiredPassages: chunkIds.length,
+    rewritten,
+    retiredFacts: originals.length - rewritten,
+    retiredPassages,
     added: Boolean(correction.resultTitle && correction.resultContent),
   };
 }

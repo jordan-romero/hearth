@@ -648,13 +648,30 @@ async function notifyDmOfCorrection(
   );
 
   const channel = interaction.channel;
-  if (!channel || !channel.isSendable()) return;
-  await channel
-    .send({
-      content: `${mention}${who} says the memory got something wrong — only you can see the details.`,
-      components: [row],
-    })
-    .catch((err) => console.error("correction notify failed:", err));
+  const notified =
+    channel?.isSendable() &&
+    (await channel
+      .send({
+        content: `${mention}${who} says the memory got something wrong — only you can see the details.`,
+        components: [row],
+      })
+      .then(() => true)
+      .catch((err) => {
+        console.error("correction notify failed:", err);
+        return false;
+      }));
+
+  // Don't let the proposer believe the DM was told when they weren't — a correction that
+  // silently waits forever is worse than one that never got filed.
+  if (!notified) {
+    await interaction
+      .followUp({
+        content:
+          "Filed — but I couldn't post it here, so please mention it to your DM directly.",
+        flags: MessageFlags.Ephemeral,
+      })
+      .catch(() => {});
+  }
 }
 
 /** Load a pending correction and shape it the way the embeds expect. Campaign-scoped, so a
@@ -769,14 +786,18 @@ async function handleCorrectionButton(
       });
       return;
     }
-    const { rewritten, retiredPassages, added } = await applyCorrection(
-      correctionId!,
-      viewer.membershipId,
-      viewer.campaignId,
-    );
+    const { rewritten, retiredFacts, retiredPassages, added } =
+      await applyCorrection(
+        correctionId!,
+        viewer.membershipId,
+        viewer.campaignId,
+      );
     const parts = [
       rewritten > 0
         ? `${rewritten} fact${rewritten === 1 ? "" : "s"} corrected`
+        : null,
+      retiredFacts > 0
+        ? `${retiredFacts} fact${retiredFacts === 1 ? "" : "s"} retired`
         : null,
       retiredPassages > 0
         ? `${retiredPassages} passage${retiredPassages === 1 ? "" : "s"} retired`
@@ -784,7 +805,12 @@ async function handleCorrectionButton(
       added ? "1 fact added" : null,
     ].filter(Boolean);
     await interaction.editReply({
-      content: `✅ Canon updated — ${parts.join(", ")}.`,
+      // Everything it targeted can have been changed by another correction in the meantime,
+      // which is a real outcome and shouldn't render as "Canon updated — .".
+      content:
+        parts.length > 0
+          ? `✅ Canon updated — ${parts.join(", ")}.`
+          : "✅ Approved, but the memory had already moved on — nothing was left to change.",
       embeds: [],
       components: [],
     });
