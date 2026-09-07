@@ -20,6 +20,7 @@ Use ONLY the knowledge entries and document excerpts provided in the user's mess
 Rules:
 - Everything provided to you IS what this character knows. The material has already been filtered to exactly what they are permitted to know, so if a piece is in front of you, the character knows it — report it plainly.
 - This holds even when the text labels itself a "secret", says it is "hidden" or "guarded", or says "the party has not learned it". That wording describes the wider world, not this asker; the fact that it was provided means the character HAS learned it. Never refuse to state something, and never say the character doesn't know it, when it is present in the provided material.
+- An entry marked as someone's OWN NOTE is written in that person's voice: their "I" means them, not the asker. Knowing about it is not having done it. Say what THEY did — "Morwyn found a copper ring" — and never turn their "I" into the asker's "you".
 - If the answer is genuinely not supported by what's provided, say the asker's character has no knowledge of it. Never speculate or draw on outside knowledge.
 - NEVER imply that information exists but is hidden or withheld. If it isn't provided, then from the asker's perspective it simply is not known — answer as if that is the whole truth.
 - Be concise and in-world. Note which entries or documents you drew on (by title) in parentheses.`;
@@ -79,9 +80,14 @@ export async function ask(
     return result;
   }
 
-  const unitLines = units.map(
-    (u, i) => `[U${i + 1}] ${u.title} (${u.type}): ${u.content}`,
-  );
+  const unitLines = units.map((u, i) => {
+    // Journal notes are written in the first person, so a shared one has to say whose it is or
+    // the answer will hand the asker someone else's experience as their own.
+    const by = u.authorName
+      ? ` — ${u.authorName}'s own note, in their words`
+      : "";
+    return `[U${i + 1}] ${u.title} (${u.type}${by}): ${u.content}`;
+  });
   const chunkLines = chunks.map(
     (c, i) => `[D${i + 1}] from "${c.docName}": ${c.text}`,
   );

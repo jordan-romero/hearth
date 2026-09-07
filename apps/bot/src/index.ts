@@ -38,7 +38,8 @@ import {
   getActiveSession,
   getLiveTranscript,
   ingestUpload,
-  proposeShare,
+  findShareCandidate,
+  requestShare,
   approveShare,
   rejectShare,
   getShareForReview,
@@ -860,8 +861,9 @@ async function handleCorrectionButton(
 
 /** /share — a player offers something they know to the party. The DM decides.
  *
- * Deliberately mirrors /correct: same propose→approve shape, same private review, same buttons.
- * The two are one pattern at the table even though they're different underneath. */
+ * Deliberately mirrors /correct and /reveal: matching is semantic and can pick the wrong thing,
+ * so the player sees what was found and confirms before anything is filed. Nothing is written
+ * until they say that's the one. */
 async function handleShare(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
@@ -880,52 +882,81 @@ async function handleShare(
     const about = interaction.options.getString("about", true);
     const note = interaction.options.getString("note") ?? undefined;
 
-    const proposal = await proposeShare(
-      viewer,
-      viewer.membershipId,
-      about,
-      note,
-    );
-    if (!proposal) {
+    const match = await findShareCandidate(viewer, about);
+    if (!match) {
       await interaction.editReply(
         "Couldn't find anything you know that matches that — try describing it differently.",
       );
       return;
     }
-    if (proposal.alreadyShared) {
+    if (match.alreadyShared) {
       await interaction.editReply(
-        `The party already knows about **${proposal.unit.title}** — nothing to share.`,
+        `The party already knows about **${match.unit.title}** — nothing to share.`,
       );
       return;
     }
 
-    // The DM can share directly: there's nobody above them to ask.
-    if (viewer.role === "DM") {
-      await approveShare(proposal.id, viewer.membershipId, viewer.campaignId);
-      await interaction.editReply(
-        `✅ Shared **${proposal.unit.title}** with the party.`,
-      );
-      return;
-    }
+    // Stash the note against the draft id; Discord custom ids are far too small for prose.
+    const draftId = randomUUID().slice(0, 8);
+    shareDrafts.set(draftId, {
+      unitId: match.unit.id,
+      note,
+      touchedAt: Date.now(),
+    });
+    sweepShareDrafts();
 
-    await interaction.editReply(
-      `📨 Asked the DM to share **${proposal.unit.title}** with the party. Nothing is visible to anyone else yet.`,
-    );
-    await notifyDmOfShare(interaction, viewer, proposal);
+    await interaction.editReply({
+      content: `Share this with the party?`,
+      embeds: [
+        shareEmbed(
+          viewer.characterName ?? "You",
+          match.unit.title,
+          match.unit.content,
+          note,
+          viewer.theme,
+        ),
+      ],
+      components: [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`sh:c:${draftId}`)
+            .setLabel(viewer.role === "DM" ? "Share it" : "Ask the DM")
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId("sh:x")
+            .setLabel("Not that")
+            .setStyle(ButtonStyle.Secondary),
+        ),
+      ],
+    });
   } catch (err) {
     console.error("/share failed:", err);
     await interaction
-      .editReply("Something went wrong filing that.")
+      .editReply("Something went wrong looking that up.")
       .catch(() => {});
+  }
+}
+
+/** Confirmed shares awaiting the button click. In memory because they're seconds-long and
+ * carry nothing that matters if the process restarts — the same treatment as NPC drafts. */
+const shareDrafts = new Map<
+  string,
+  { unitId: string; note?: string; touchedAt: number }
+>();
+const SHARE_DRAFT_TTL_MS = 15 * 60_000;
+function sweepShareDrafts(): void {
+  const cutoff = Date.now() - SHARE_DRAFT_TTL_MS;
+  for (const [id, d] of shareDrafts) {
+    if (d.touchedAt < cutoff) shareDrafts.delete(id);
   }
 }
 
 /** Tell the DM a share is waiting, without publishing its content — the same reasoning as a
  * correction: until they approve it, it isn't the party's to read. */
 async function notifyDmOfShare(
-  interaction: ChatInputCommandInteraction,
+  interaction: ButtonInteraction,
   viewer: ResolvedViewer,
-  proposal: Awaited<ReturnType<typeof proposeShare>> & object,
+  shareId: string,
 ): Promise<void> {
   const dm = await prisma.membership.findFirst({
     where: { campaignId: viewer.campaignId, role: "DM" },
@@ -936,7 +967,7 @@ async function notifyDmOfShare(
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`sh:v:${proposal.id}`)
+      .setCustomId(`sh:v:${shareId}`)
       .setLabel("Review share")
       .setStyle(ButtonStyle.Primary),
   );
@@ -971,7 +1002,85 @@ async function handleShareButton(
 ): Promise<void> {
   const [, action, shareId] = interaction.customId.split(":");
   const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
-  if (!viewer || viewer.role !== "DM") {
+  if (!viewer) {
+    await interaction.reply({
+      content: "You're not part of a campaign here.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  // The player's own confirm/cancel — anyone may do this for their own draft.
+  if (action === "x") {
+    await interaction.update({
+      content: "Cancelled — nothing was shared.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+  if (action === "c") {
+    const draft = shareDrafts.get(shareId!);
+    if (!draft) {
+      await interaction.update({
+        content: "That's expired — run `/share` again.",
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    await interaction.deferUpdate();
+    try {
+      const { id, alreadyPending } = await requestShare(
+        viewer,
+        viewer.membershipId,
+        draft.unitId,
+        draft.note,
+      );
+      shareDrafts.delete(shareId!);
+      if (alreadyPending) {
+        await interaction.editReply({
+          content: "That's already waiting on the DM.",
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+      // A DM sharing is the approval — there's nobody above them to ask.
+      if (viewer.role === "DM") {
+        await approveShare(id, viewer.membershipId, viewer.campaignId);
+        await interaction.editReply({
+          content: "✅ Shared with the party.",
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+      await interaction.editReply({
+        content:
+          "📨 Asked the DM. Nothing is visible to anyone else until they approve.",
+        embeds: [],
+        components: [],
+      });
+      await notifyDmOfShare(interaction, viewer, id);
+    } catch (err) {
+      console.error("share request failed:", err);
+      await interaction
+        .editReply({
+          content:
+            err instanceof Error && err.message.includes("can share")
+              ? "That isn't something you can share."
+              : "Something went wrong filing that.",
+          embeds: [],
+          components: [],
+        })
+        .catch(() => {});
+    }
+    return;
+  }
+
+  // Everything below is the DM's decision.
+  if (viewer.role !== "DM") {
     await interaction.reply({
       content: "Only the DM can decide on a share.",
       flags: MessageFlags.Ephemeral,

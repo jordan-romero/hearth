@@ -174,10 +174,11 @@ model Party {
   campaignId String
   name       String
 
-  campaign     Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  characters   Character[]
-  grants       KnowledgeGrant[] @relation("GrantParty")
-  revealEvents RevealEvent[]    @relation("RevealParty")
+  campaign      Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  characters    Character[]
+  grants        KnowledgeGrant[] @relation("GrantParty")
+  revealEvents  RevealEvent[]    @relation("RevealParty")
+  shareRequests ShareRequest[]   @relation("SharedWithParty")
 
   @@index([campaignId])
 }
@@ -667,6 +668,11 @@ model ShareRequest {
   /// What the player wants the party to understand about it, in their words.
   note            String?
 
+  /// Who it goes to, resolved when the share is REQUESTED rather than at approval — so the DM
+  /// approves exactly the audience they were shown, and a player who changes party in the
+  /// meantime can't silently redirect it.
+  partyId String?
+
   /// Nullable for the same reason as a Correction's: the record of what was shared must
   /// outlive the member who shared it.
   proposedByMembershipId String?
@@ -679,6 +685,7 @@ model ShareRequest {
 
   campaign      Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   knowledgeUnit KnowledgeUnit @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
+  party         Party?        @relation("SharedWithParty", fields: [partyId], references: [id], onDelete: SetNull)
   proposedBy    Membership?   @relation("ShareProposedBy", fields: [proposedByMembershipId], references: [id], onDelete: SetNull)
   reviewedBy    Membership?   @relation("ShareReviewedBy", fields: [reviewedByMembershipId], references: [id], onDelete: SetNull)
 

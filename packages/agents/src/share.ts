@@ -23,11 +23,9 @@ export interface ShareCandidate {
   content: string;
 }
 
-export interface ShareProposal {
-  id: string;
+export interface ShareMatch {
   unit: ShareCandidate;
-  note?: string;
-  /** True when the party can already see it — nothing was filed. */
+  /** True when the party can already see it — there's nothing to share. */
   alreadyShared: boolean;
 }
 
@@ -50,44 +48,73 @@ async function partyAlreadyHas(
 }
 
 /**
- * Find the thing the player means and file a request to share it with the party.
+ * Find what the player means, WITHOUT filing anything.
  *
- * `about` is matched semantically against what THEY can see — usually their own journal entry
- * ("the sigil I sketched"), but anything they know is fair game.
+ * Semantic matching can pick the wrong thing, so the player confirms before a request exists —
+ * the same shape as /reveal, which previews before it grants. `about` is matched against what
+ * THEY can see, so a player can't fish for a DM secret by trying to share it.
  */
-export async function proposeShare(
+export async function findShareCandidate(
   viewer: Viewer,
-  membershipId: string,
   about: string,
-  note?: string,
-): Promise<ShareProposal | null> {
+): Promise<ShareMatch | null> {
   const [best] = await retrieveForViewer(viewer, about, 1);
   if (!best) return null;
+  return {
+    unit: { id: best.id, title: best.title, content: best.content },
+    alreadyShared: await partyAlreadyHas(best.id, viewer.partyId),
+  };
+}
 
-  if (await partyAlreadyHas(best.id, viewer.partyId)) {
-    return {
-      id: "",
-      unit: { id: best.id, title: best.title, content: best.content },
-      note,
-      alreadyShared: true,
-    };
+/**
+ * File the request, once the player has confirmed what they meant.
+ *
+ * Re-resolves the unit through the viewer's own retrieval rather than trusting the id that
+ * came back through a Discord interaction — an id from a button is user input.
+ */
+export async function requestShare(
+  viewer: Viewer,
+  membershipId: string,
+  unitId: string,
+  note?: string,
+): Promise<{ id: string; alreadyPending: boolean }> {
+  const visible = await prisma.knowledgeUnit.findFirst({
+    where: { id: unitId, campaignId: viewer.campaignId },
+    select: { id: true, title: true, content: true, baseVisibility: true },
+  });
+  if (!visible) throw new Error("that isn't something you can share");
+  // Confirm the viewer can actually see it — the filter, not the button, is the authority.
+  const allowed = await retrieveForViewer(
+    viewer,
+    `${visible.title} ${visible.content}`,
+    12,
+  );
+  if (!allowed.some((u) => u.id === unitId)) {
+    throw new Error("that isn't something you can share");
   }
+
+  // One pending request per unit: re-running /share shouldn't queue the DM the same decision
+  // several times.
+  const existing = await prisma.shareRequest.findFirst({
+    where: {
+      campaignId: viewer.campaignId,
+      knowledgeUnitId: unitId,
+      status: "PENDING",
+    },
+    select: { id: true },
+  });
+  if (existing) return { id: existing.id, alreadyPending: true };
 
   const request = await prisma.shareRequest.create({
     data: {
       campaignId: viewer.campaignId,
-      knowledgeUnitId: best.id,
+      knowledgeUnitId: unitId,
       note,
+      partyId: viewer.partyId,
       proposedByMembershipId: membershipId,
     },
   });
-
-  return {
-    id: request.id,
-    unit: { id: best.id, title: best.title, content: best.content },
-    note,
-    alreadyShared: false,
-  };
+  return { id: request.id, alreadyPending: false };
 }
 
 /**
@@ -115,14 +142,12 @@ export async function approveShare(
 
   const request = await prisma.shareRequest.findFirstOrThrow({
     where: { id: shareId, campaignId },
-    include: {
-      proposedBy: { include: { characters: { take: 1 } } },
-    },
   });
 
-  // The party the sharer belongs to — a share is "tell my party", not "tell everyone".
+  // The audience recorded when the share was requested. A DM sharing has no party of their
+  // own, so fall back to the campaign's party — that IS "the party" for them.
   const partyId =
-    request.proposedBy?.characters[0]?.partyId ??
+    request.partyId ??
     (await prisma.party.findFirst({ where: { campaignId } }))?.id ??
     null;
 
