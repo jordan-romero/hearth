@@ -215,8 +215,14 @@ async function startRecordingInner(
 
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
 
+    // Diagnostics: if clips come back empty, these say WHERE it broke — whether Discord is
+    // sending speaking events at all, and whether a subscribed stream yields any audio.
     connection.receiver.speaking.on("start", (userId) => {
+      console.log(`🎙  speaking start: ${userId}`);
       void captureBurst(connection.receiver, userId, state);
+    });
+    connection.receiver.speaking.on("end", (userId) => {
+      console.log(`🎙  speaking end:   ${userId}`);
     });
 
     console.log(
@@ -262,6 +268,8 @@ async function captureBurst(
   });
 
   const chunks: Buffer[] = [];
+  let opusPackets = 0;
+  opusStream.on("data", () => opusPackets++);
   const pcm = opusStream.pipe(decoder);
   pcm.on("data", (c: Buffer) => chunks.push(c));
 
@@ -275,6 +283,9 @@ async function captureBurst(
   state.capturing.delete(userId);
 
   const pcmData = Buffer.concat(chunks);
+  console.log(
+    `🎙  burst ${userId}: ${opusPackets} opus packet(s) → ${pcmData.length} pcm bytes`,
+  );
   if (pcmData.length === 0) {
     // Speaking fired but nothing decoded — worth a warning (empty/undecodable audio).
     console.warn(`⚠️  burst from ${userId} decoded to 0 bytes — dropped`);
