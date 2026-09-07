@@ -38,6 +38,10 @@ import {
   getActiveSession,
   getLiveTranscript,
   ingestUpload,
+  proposeShare,
+  approveShare,
+  rejectShare,
+  getShareForReview,
   proposeCorrection,
   applyCorrection,
   rejectCorrection,
@@ -63,6 +67,7 @@ import {
   helpEmbed,
   recapEmbed,
   correctionEmbeds,
+  shareEmbed,
 } from "./embeds.js";
 
 function requireEnv(name: string): string {
@@ -254,6 +259,25 @@ const correctCommand = new SlashCommandBuilder()
       ),
   );
 
+const shareCommand = new SlashCommandBuilder()
+  .setName("share")
+  .setDescription(
+    "Tell the party something you know — the DM approves it first.",
+  )
+  .addStringOption((o) =>
+    o
+      .setName("about")
+      .setDescription(
+        "What you want to share — a note you wrote, or anything you know",
+      )
+      .setRequired(true),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("note")
+      .setDescription("Anything you want the DM to know about why"),
+  );
+
 const recapCommand = new SlashCommandBuilder()
   .setName("recap")
   .setDescription("What did I miss? Catch up on the session.")
@@ -285,6 +309,7 @@ async function registerCommands(): Promise<void> {
     npcCommand.toJSON(),
     recapCommand.toJSON(),
     correctCommand.toJSON(),
+    shareCommand.toJSON(),
     setupCommand.toJSON(),
     joinCommand.toJSON(),
     helpCommand.toJSON(),
@@ -827,6 +852,193 @@ async function handleCorrectionButton(
             err.message.includes("not found"))
             ? "That correction has already been decided."
             : "Something went wrong applying that correction.",
+        components: [],
+      })
+      .catch(() => {});
+  }
+}
+
+/** /share — a player offers something they know to the party. The DM decides.
+ *
+ * Deliberately mirrors /correct: same propose→approve shape, same private review, same buttons.
+ * The two are one pattern at the table even though they're different underneath. */
+async function handleShare(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
+    if (!viewer) {
+      await interaction.editReply(
+        "You're not part of a campaign here yet — try `/join`.",
+      );
+      return;
+    }
+    const about = interaction.options.getString("about", true);
+    const note = interaction.options.getString("note") ?? undefined;
+
+    const proposal = await proposeShare(
+      viewer,
+      viewer.membershipId,
+      about,
+      note,
+    );
+    if (!proposal) {
+      await interaction.editReply(
+        "Couldn't find anything you know that matches that — try describing it differently.",
+      );
+      return;
+    }
+    if (proposal.alreadyShared) {
+      await interaction.editReply(
+        `The party already knows about **${proposal.unit.title}** — nothing to share.`,
+      );
+      return;
+    }
+
+    // The DM can share directly: there's nobody above them to ask.
+    if (viewer.role === "DM") {
+      await approveShare(proposal.id, viewer.membershipId, viewer.campaignId);
+      await interaction.editReply(
+        `✅ Shared **${proposal.unit.title}** with the party.`,
+      );
+      return;
+    }
+
+    await interaction.editReply(
+      `📨 Asked the DM to share **${proposal.unit.title}** with the party. Nothing is visible to anyone else yet.`,
+    );
+    await notifyDmOfShare(interaction, viewer, proposal);
+  } catch (err) {
+    console.error("/share failed:", err);
+    await interaction
+      .editReply("Something went wrong filing that.")
+      .catch(() => {});
+  }
+}
+
+/** Tell the DM a share is waiting, without publishing its content — the same reasoning as a
+ * correction: until they approve it, it isn't the party's to read. */
+async function notifyDmOfShare(
+  interaction: ChatInputCommandInteraction,
+  viewer: ResolvedViewer,
+  proposal: Awaited<ReturnType<typeof proposeShare>> & object,
+): Promise<void> {
+  const dm = await prisma.membership.findFirst({
+    where: { campaignId: viewer.campaignId, role: "DM" },
+    select: { user: { select: { discordUserId: true } } },
+  });
+  const mention = dm?.user.discordUserId ? `<@${dm.user.discordUserId}> ` : "";
+  const who = viewer.characterName ?? "A player";
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`sh:v:${proposal.id}`)
+      .setLabel("Review share")
+      .setStyle(ButtonStyle.Primary),
+  );
+
+  const channel = interaction.channel;
+  const notified =
+    channel?.isSendable() &&
+    (await channel
+      .send({
+        content: `${mention}${who} wants to tell the party something — only you can see what.`,
+        components: [row],
+      })
+      .then(() => true)
+      .catch((err) => {
+        console.error("share notify failed:", err);
+        return false;
+      }));
+  if (!notified) {
+    await interaction
+      .followUp({
+        content:
+          "Filed — but I couldn't post it here, so please mention it to your DM directly.",
+        flags: MessageFlags.Ephemeral,
+      })
+      .catch(() => {});
+  }
+}
+
+/** Review / Approve / Reject a pending share. DM only. */
+async function handleShareButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const [, action, shareId] = interaction.customId.split(":");
+  const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
+  if (!viewer || viewer.role !== "DM") {
+    await interaction.reply({
+      content: "Only the DM can decide on a share.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (action === "v") {
+    const req = await getShareForReview(shareId!, viewer.campaignId);
+    if (!req) {
+      await interaction.reply({
+        content: "That share is no longer available.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    const decide = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`sh:a:${shareId}`)
+        .setLabel("Share with the party")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`sh:r:${shareId}`)
+        .setLabel("Keep it private")
+        .setStyle(ButtonStyle.Secondary),
+    );
+    await interaction.reply({
+      embeds: [
+        shareEmbed(
+          req.proposedBy?.characters[0]?.name ?? "A player",
+          req.knowledgeUnit.title,
+          req.knowledgeUnit.content,
+          req.note,
+          viewer.theme,
+        ),
+      ],
+      components: [decide],
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  try {
+    if (action === "r") {
+      await rejectShare(shareId!, viewer.membershipId, viewer.campaignId);
+      await interaction.editReply({
+        content: "🤫 Kept private — the party wasn't told.",
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    await approveShare(shareId!, viewer.membershipId, viewer.campaignId);
+    await interaction.editReply({
+      content: "✅ Shared with the party — they can ask about it now.",
+      embeds: [],
+      components: [],
+    });
+  } catch (err) {
+    console.error("share decision failed:", err);
+    await interaction
+      .editReply({
+        content:
+          err instanceof Error && err.message.includes("not awaiting")
+            ? "That share has already been decided."
+            : "Something went wrong with that share.",
         components: [],
       })
       .catch(() => {});
@@ -1644,6 +1856,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
     if (interaction.isButton()) {
+      if (interaction.customId.startsWith("sh:")) {
+        await handleShareButton(interaction);
+        return;
+      }
       if (interaction.customId.startsWith("cx:")) {
         await handleCorrectionButton(interaction);
         return;
@@ -1689,6 +1905,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case "correct":
         await handleCorrect(interaction);
+        break;
+      case "share":
+        await handleShare(interaction);
         break;
       case "setup":
         await handleSetup(interaction);
