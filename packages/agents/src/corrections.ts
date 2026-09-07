@@ -19,7 +19,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@hearth/db";
 import type { Viewer } from "@hearth/core";
 import { embedTexts, toVectorLiteral } from "./embeddings.js";
-import { retrieveForViewer } from "./retrieve.js";
+import { retrieveContext } from "./retrieve.js";
 
 const MODEL = "claude-sonnet-5"; // judging contradictions is reasoning, not recall
 
@@ -33,7 +33,7 @@ const ANALYSIS_TOOL: Anthropic.Tool = {
       contradicts: {
         type: "array",
         description:
-          "The stored facts that state something the correction says is wrong. Only facts that genuinely conflict — not merely related ones. Empty if none do.",
+          "The stored entries that state something the correction says is wrong. Only entries that genuinely conflict — not merely related ones. Empty if none do.",
         items: {
           type: "object",
           properties: {
@@ -41,7 +41,7 @@ const ANALYSIS_TOOL: Anthropic.Tool = {
             rewrite: {
               type: "string",
               description:
-                "The whole fact rewritten so it is true, KEEPING everything about it that was already correct. Fix only the mistaken part. Use an empty string only if the fact is wrong through and through and nothing can be salvaged.",
+                "For a FACT: the whole fact rewritten so it is true, KEEPING everything about it that was already correct — fix only the mistaken part. Use an empty string to retire it instead, which is always what happens to a PASSAGE (those are quotes from an uploaded document and are never rewritten).",
             },
           },
           required: ["id", "rewrite"],
@@ -66,7 +66,9 @@ const ANALYSIS_SYSTEM = `You maintain the canon of a tabletop RPG campaign.
 
 Someone at the table says the memory got something wrong. You are given their correction and the stored facts most related to it, each with an id.
 
-Decide which stored facts CONTRADICT the correction — facts that assert something the correction says is untrue. Be strict: a fact that merely mentions the same people or place is not a contradiction. Only list facts that would still be wrong once the correction is accepted.
+You are given two kinds of entry. A FACT is a distilled statement the memory holds. A PASSAGE is a quote from a document the DM uploaded — passages are never rewritten, only retired, because the document itself is their source of truth.
+
+Decide which stored entries CONTRADICT the correction — facts that assert something the correction says is untrue. Be strict: a fact that merely mentions the same people or place is not a contradiction. Only list facts that would still be wrong once the correction is accepted.
 
 For each one, REWRITE it so it is true. This matters: a fact is usually mostly right with one thing wrong, and the rest of it is knowledge the table would lose. "Moraine, daughter of Morwyn and his late wife Moira" becomes "Moraine, daughter of Morwyn" — it does NOT disappear. Change only what is actually mistaken and keep every other detail intact.
 
@@ -91,7 +93,8 @@ export function keepVisible<T extends { id: string }>(
 }
 
 export interface CorrectionProposal {
-  id: string;
+  /** Null when nothing in the memory contradicted the statement — nothing was persisted. */
+  id: string | null;
   statement: string;
   status: string;
   /** The facts this changes, each with its replacement — what the DM sees before approving. */
@@ -114,14 +117,30 @@ export async function proposeCorrection(
   statement: string,
   wasWrong?: string,
 ): Promise<CorrectionProposal> {
-  const candidates = await retrieveForViewer(
-    viewer,
-    `${statement} ${wasWrong ?? ""}`.trim(),
-    12,
-  );
+  const query = `${statement} ${wasWrong ?? ""}`.trim();
+  // Facts AND document passages: /ask grounds answers on both, so a correction that couldn't
+  // touch a passage would leave the wrong version reachable through the original upload.
+  const { units, chunks } = await retrieveContext(viewer, query, {
+    unitLimit: 12,
+    chunkLimit: 6,
+  });
+  const candidates = [
+    ...units.map((u) => ({
+      id: u.id,
+      title: u.title,
+      content: u.content,
+      kind: "FACT" as const,
+    })),
+    ...chunks.map((c) => ({
+      id: c.id,
+      title: `passage from ${c.docName}`,
+      content: c.text,
+      kind: "PASSAGE" as const,
+    })),
+  ];
 
   const numbered = candidates
-    .map((u) => `[${u.id}] ${u.title}\n${u.content}`)
+    .map((u) => `[${u.id}] (${u.kind}) ${u.title}\n${u.content}`)
     .join("\n\n");
 
   const client = new Anthropic();
@@ -155,8 +174,27 @@ export async function proposeCorrection(
   const rewrites = keepVisible(
     out.contradicts ?? [],
     candidates.map((c) => c.id),
-  );
+  ).map((r) => {
+    const kind = candidates.find((c) => c.id === r.id)?.kind ?? "FACT";
+    // A passage is a quote from a document; rewriting one would put words in the document's
+    // mouth. Retire it and let the correction's own fact carry the truth.
+    return kind === "PASSAGE" ? { ...r, rewrite: "", kind } : { ...r, kind };
+  });
   const targetIds = rewrites.map((r) => r.id);
+
+  // Nothing to change and nothing to add: don't leave a PENDING row that no one will ever
+  // decide on. The caller reports that the memory didn't contradict them.
+  if (rewrites.length === 0 && !(out.newFactTitle && out.newFactContent)) {
+    return {
+      id: null,
+      statement,
+      status: "NOOP",
+      targets: [],
+      newFactTitle: null,
+      newFactContent: null,
+      autoApproved: false,
+    };
+  }
 
   const correction = await prisma.correction.create({
     data: {
@@ -206,7 +244,7 @@ export async function applyCorrection(
   correctionId: string,
   reviewerMembershipId: string,
   campaignId: string,
-): Promise<{ rewritten: number; added: boolean }> {
+): Promise<{ rewritten: number; retiredPassages: number; added: boolean }> {
   // Scope to the reviewer's own campaign. The id arrives from a Discord interaction, and a
   // correction belonging to another table must never be applicable from this one — the
   // reviewer isn't its DM, whatever role they hold here.
@@ -221,13 +259,18 @@ export async function applyCorrection(
   const rewrites = (correction.rewrites ?? []) as {
     id: string;
     rewrite: string;
+    kind?: "FACT" | "PASSAGE";
   }[];
+  const chunkIds = rewrites
+    .filter((r) => r.kind === "PASSAGE")
+    .map((r) => r.id);
+  const unitRewrites = rewrites.filter((r) => r.kind !== "PASSAGE");
 
   // Load the originals so replacements can inherit their shape. Scoped to the campaign so a
   // stale id can't reach across tenants.
   const originals = await prisma.knowledgeUnit.findMany({
     where: {
-      id: { in: rewrites.map((r) => r.id) },
+      id: { in: unitRewrites.map((r) => r.id) },
       campaignId: correction.campaignId,
     },
     include: { grants: true },
@@ -282,6 +325,15 @@ export async function applyCorrection(
       });
     }
 
+    // Retire contradicted document passages. They aren't rewritten — the document is their
+    // source of truth — so retrieval simply stops reaching them.
+    if (chunkIds.length > 0) {
+      await tx.documentChunk.updateMany({
+        where: { id: { in: chunkIds }, campaignId: correction.campaignId },
+        data: { supersededByCorrectionId: correction.id },
+      });
+    }
+
     // An extra fact, only when the rewrites didn't already cover what was said.
     let resultUnitId: string | undefined;
     if (correction.resultTitle && correction.resultContent) {
@@ -331,6 +383,7 @@ export async function applyCorrection(
 
   return {
     rewritten: originals.length,
+    retiredPassages: chunkIds.length,
     added: Boolean(correction.resultTitle && correction.resultContent),
   };
 }

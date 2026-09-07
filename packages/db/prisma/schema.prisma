@@ -507,12 +507,17 @@ model SourceDocument {
 /// document-level grant — that polymorphic grant/reveal ships with Phase 3's reveal bite;
 /// see docs/data-model.md. Retrieval filters chunks by the SAME permission rules as units.
 model DocumentChunk {
-  id               String         @id @default(cuid())
-  sourceDocumentId String
-  campaignId       String
-  chunkIndex       Int
-  text             String
-  baseVisibility   BaseVisibility @default(DM_ONLY)
+  id                       String         @id @default(cuid())
+  sourceDocumentId         String
+  campaignId               String
+  chunkIndex               Int
+  text                     String
+  baseVisibility           BaseVisibility @default(DM_ONLY)
+  /// Set when an approved correction retires this passage. /ask retrieves document passages as
+  /// well as facts, so without this a corrected mistake still grounds answers from the original
+  /// upload. A passage is retired rather than rewritten — the document is its source of truth,
+  /// and the correction carries the truth as its own fact.
+  supersededByCorrectionId String?
 
   // Voyage 1024-dim, same as KnowledgeUnit; similarity search via raw SQL ($queryRaw).
   embedding Unsupported("vector(1024)")?
@@ -527,6 +532,7 @@ model DocumentChunk {
   @@unique([sourceDocumentId, chunkIndex])
   @@index([campaignId, baseVisibility])
   @@index([sourceDocumentId])
+  @@index([supersededByCorrectionId])
 }
 
 /// A reusable media asset — NPC portraits/tokens today (maps/handouts later). Embedded for
@@ -594,7 +600,10 @@ model Correction {
   /// Optionally what the memory said — helps the DM judge, and names the mistake in the audit.
   wasWrong  String?
 
-  proposedByMembershipId String
+  /// Nullable on purpose: a correction must OUTLIVE whoever proposed it. Cascading from the
+  /// membership would delete the correction when a player leaves, which sets the units it
+  /// retired back to live — resurrecting facts the table already disowned.
+  proposedByMembershipId String?
   reviewedByMembershipId String?
   reviewedAt             DateTime?
   /// Why the DM rejected it, shown back to whoever proposed it.
@@ -621,7 +630,7 @@ model Correction {
   updatedAt DateTime @updatedAt
 
   campaign   Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  proposedBy Membership      @relation("CorrectionProposedBy", fields: [proposedByMembershipId], references: [id], onDelete: Cascade)
+  proposedBy Membership?     @relation("CorrectionProposedBy", fields: [proposedByMembershipId], references: [id], onDelete: SetNull)
   reviewedBy Membership?     @relation("CorrectionReviewedBy", fields: [reviewedByMembershipId], references: [id], onDelete: SetNull)
   resultUnit KnowledgeUnit?  @relation("CorrectionResult", fields: [resultUnitId], references: [id], onDelete: SetNull)
   /// Units this correction retired.

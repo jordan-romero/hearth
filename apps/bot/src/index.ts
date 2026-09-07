@@ -62,7 +62,7 @@ import {
   safeFileName,
   helpEmbed,
   recapEmbed,
-  correctionEmbed,
+  correctionEmbeds,
 } from "./embeds.js";
 
 function requireEnv(name: string): string {
@@ -604,14 +604,14 @@ async function handleCorrect(
 
     if (proposal.autoApproved) {
       await interaction.editReply({
-        embeds: [correctionEmbed(proposal, "applied", viewer.theme)],
+        embeds: correctionEmbeds(proposal, "applied", viewer.theme),
       });
       return;
     }
 
     // A player's correction: tell them it's pending, then put it in front of the DM.
     await interaction.editReply({
-      embeds: [correctionEmbed(proposal, "pending", viewer.theme)],
+      embeds: correctionEmbeds(proposal, "pending", viewer.theme),
     });
     await notifyDmOfCorrection(interaction, viewer, proposal);
   } catch (err) {
@@ -622,8 +622,12 @@ async function handleCorrect(
   }
 }
 
-/** Put a pending correction in front of the DM with Approve / Reject. Posts in the channel and
- * pings them, because unlike a private journal note this changes shared canon. */
+/** Tell the DM a correction is waiting — WITHOUT showing what it touches.
+ *
+ * The facts a correction changes can be DM_ONLY, or another player's private note that only
+ * they and the DM may read. Posting the before/after into a campaign channel would hand all of
+ * it to everyone present, so the channel message carries nothing but the proposer's own words;
+ * the detail is delivered ephemerally when the DM opens it. */
 async function notifyDmOfCorrection(
   interaction: ChatInputCommandInteraction,
   viewer: ResolvedViewer,
@@ -636,29 +640,75 @@ async function notifyDmOfCorrection(
   const mention = dm?.user.discordUserId ? `<@${dm.user.discordUserId}> ` : "";
   const who = viewer.characterName ?? "A player";
 
-  const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`cx:a:${proposal.id}`)
-      .setLabel("Approve")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId(`cx:r:${proposal.id}`)
-      .setLabel("Reject")
-      .setStyle(ButtonStyle.Secondary),
+      .setCustomId(`cx:v:${proposal.id}`)
+      .setLabel("Review correction")
+      .setStyle(ButtonStyle.Primary),
   );
 
   const channel = interaction.channel;
   if (!channel || !channel.isSendable()) return;
   await channel
     .send({
-      content: `${mention}${who} says the memory got something wrong.`,
-      embeds: [correctionEmbed(proposal, "pending", viewer.theme)],
-      components: [buttons],
+      content: `${mention}${who} says the memory got something wrong — only you can see the details.`,
+      components: [row],
     })
     .catch((err) => console.error("correction notify failed:", err));
 }
 
-/** Approve / Reject on a pending correction. DM only — they own canon. */
+/** Load a pending correction and shape it the way the embeds expect. Campaign-scoped, so a
+ * button id from another table resolves to nothing. */
+async function loadCorrectionForReview(
+  correctionId: string,
+  campaignId: string,
+): Promise<Parameters<typeof correctionEmbeds>[0] | null> {
+  const c = await prisma.correction.findFirst({
+    where: { id: correctionId, campaignId },
+  });
+  if (!c) return null;
+  const rewrites = (c.rewrites ?? []) as {
+    id: string;
+    rewrite: string;
+    kind?: "FACT" | "PASSAGE";
+  }[];
+  const [units, chunks] = await Promise.all([
+    prisma.knowledgeUnit.findMany({
+      where: { id: { in: rewrites.map((r) => r.id) }, campaignId },
+      select: { id: true, title: true, content: true },
+    }),
+    prisma.documentChunk.findMany({
+      where: { id: { in: rewrites.map((r) => r.id) }, campaignId },
+      select: {
+        id: true,
+        text: true,
+        sourceDocument: { select: { name: true } },
+      },
+    }),
+  ]);
+  return {
+    statement: c.statement,
+    targets: rewrites.map((r) => {
+      const unit = units.find((u) => u.id === r.id);
+      if (unit) {
+        return { title: unit.title, content: unit.content, rewrite: r.rewrite };
+      }
+      const chunk = chunks.find((ch) => ch.id === r.id);
+      if (chunk) {
+        return {
+          title: `passage from ${chunk.sourceDocument.name}`,
+          content: chunk.text,
+          rewrite: "",
+        };
+      }
+      return { title: "(already changed)", content: "", rewrite: r.rewrite };
+    }),
+    newFactTitle: c.resultTitle,
+    newFactContent: c.resultContent,
+  };
+}
+
+/** Review / Approve / Reject on a pending correction. DM only — they own canon. */
 async function handleCorrectionButton(
   interaction: ButtonInteraction,
 ): Promise<void> {
@@ -666,11 +716,43 @@ async function handleCorrectionButton(
   const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
   if (!viewer || viewer.role !== "DM") {
     await interaction.reply({
-      content: "Only the DM can decide on a correction.",
+      content: "Only the DM can review a correction.",
       flags: MessageFlags.Ephemeral,
     });
     return;
   }
+
+  // "Review" opens the detail privately — this is the only place target content is shown.
+  if (action === "v") {
+    const proposal = await loadCorrectionForReview(
+      correctionId!,
+      viewer.campaignId,
+    );
+    if (!proposal) {
+      await interaction.reply({
+        content: "That correction is no longer available.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    const decide = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`cx:a:${correctionId}`)
+        .setLabel("Approve")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`cx:r:${correctionId}`)
+        .setLabel("Reject")
+        .setStyle(ButtonStyle.Secondary),
+    );
+    await interaction.reply({
+      embeds: correctionEmbeds(proposal, "pending", viewer.theme),
+      components: [decide],
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
   // Ack first: applying rewrites units and re-embeds, well past the 3s button window.
   await interaction.deferUpdate();
   try {
@@ -687,7 +769,7 @@ async function handleCorrectionButton(
       });
       return;
     }
-    const { rewritten, added } = await applyCorrection(
+    const { rewritten, retiredPassages, added } = await applyCorrection(
       correctionId!,
       viewer.membershipId,
       viewer.campaignId,
@@ -696,10 +778,13 @@ async function handleCorrectionButton(
       rewritten > 0
         ? `${rewritten} fact${rewritten === 1 ? "" : "s"} corrected`
         : null,
-      added ? "1 added" : null,
+      retiredPassages > 0
+        ? `${retiredPassages} passage${retiredPassages === 1 ? "" : "s"} retired`
+        : null,
+      added ? "1 fact added" : null,
     ].filter(Boolean);
     await interaction.editReply({
-      content: `✅ Canon updated — ${parts.join(", ")}. The old version won't come back.`,
+      content: `✅ Canon updated — ${parts.join(", ")}.`,
       embeds: [],
       components: [],
     });

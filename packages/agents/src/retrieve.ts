@@ -103,6 +103,8 @@ async function searchChunks(
     FROM "DocumentChunk" c
     JOIN "SourceDocument" d ON d."id" = c."sourceDocumentId"
     WHERE c."campaignId" = ${viewer.campaignId} AND c."embedding" IS NOT NULL
+      -- Same rule as units: a passage the table has corrected is never retrieved again.
+      AND c."supersededByCorrectionId" IS NULL
     ORDER BY c."embedding" <=> ${vec}::vector
     LIMIT ${limit * 3}`;
   if (rows.length === 0) return [];

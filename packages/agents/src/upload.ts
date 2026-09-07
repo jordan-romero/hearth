@@ -12,6 +12,9 @@ import { putDocument } from "./storage.js";
 import { getQueue } from "./queue.js";
 import { INGEST_QUEUE, type IngestJob } from "./jobs.js";
 
+/** Must match the web action's limit and next.config's serverActions.bodySizeLimit. */
+export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
 /** Extensions the parser can actually read today (parse.ts). */
 export const SUPPORTED_UPLOAD_EXTENSIONS = [
   ".txt",
@@ -54,19 +57,29 @@ export async function ingestUpload(
     },
   });
 
-  // Tenant-scoped key: {campaignId}/{docId}/{safe-name}. The campaign prefix keeps one
-  // table's material from ever colliding with another's in the bucket.
-  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const key = `${campaignId}/${doc.id}/${safeName}`;
-  await putDocument(key, data, mimeType);
-  await prisma.sourceDocument.update({
-    where: { id: doc.id },
-    data: { storagePath: key },
-  });
+  // Everything after the row exists can fail — storage, the queue connection, the enqueue.
+  // Without this the document sits at "queued" forever and the library lies about it, so mark
+  // it FAILED before rethrowing and let the caller report the real error.
+  try {
+    // Tenant-scoped key: {campaignId}/{docId}/{safe-name}. The campaign prefix keeps one
+    // table's material from ever colliding with another's in the bucket.
+    const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const key = `${campaignId}/${doc.id}/${safeName}`;
+    await putDocument(key, data, mimeType);
+    await prisma.sourceDocument.update({
+      where: { id: doc.id },
+      data: { storagePath: key },
+    });
 
-  const boss = await getQueue();
-  const job: IngestJob = { sourceDocumentId: doc.id };
-  await boss.send(INGEST_QUEUE, job);
+    const boss = await getQueue();
+    const job: IngestJob = { sourceDocumentId: doc.id };
+    await boss.send(INGEST_QUEUE, job);
+  } catch (err) {
+    await prisma.sourceDocument
+      .update({ where: { id: doc.id }, data: { status: "FAILED" } })
+      .catch(() => {});
+    throw err;
+  }
 
   return { documentId: doc.id, name: fileName };
 }

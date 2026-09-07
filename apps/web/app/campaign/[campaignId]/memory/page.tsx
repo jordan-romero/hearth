@@ -21,7 +21,9 @@ const WANT = 120;
 
 async function loadPage(campaignId: string, take: number, cursor?: string) {
   const rows = await prisma.knowledgeUnit.findMany({
-    where: { campaignId },
+    // Superseded facts are gone as far as anyone reading is concerned — the same rule the
+    // retrieval path applies, so the page can't show what /ask would refuse to say.
+    where: { campaignId, supersededByCorrectionId: null },
     orderBy: { id: "asc" },
     take,
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),

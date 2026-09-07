@@ -13,6 +13,7 @@ import {
   listDocuments,
   isSupportedUpload,
   SUPPORTED_UPLOAD_EXTENSIONS,
+  MAX_UPLOAD_BYTES,
 } from "@hearth/agents";
 
 // Parsing happens in the worker, but the file still travels through this request.
@@ -58,15 +59,26 @@ export default async function LibraryPage({
         `Hearth can read ${SUPPORTED_UPLOAD_EXTENSIONS.join(", ")} — not that.`,
       );
     }
+    if (f.size > MAX_UPLOAD_BYTES) {
+      redirectTo(
+        campaignId,
+        `That file is ${(f.size / 1024 / 1024).toFixed(1)}MB — the limit is ${MAX_UPLOAD_BYTES / 1024 / 1024}MB.`,
+      );
+    }
     const extractUnits = formData.get("extract") !== null;
     const data = Buffer.from(await f.arrayBuffer());
-    await ingestUpload(
-      campaignId,
-      f.name,
-      data,
-      f.type || undefined,
-      extractUnits,
-    );
+    try {
+      await ingestUpload(
+        campaignId,
+        f.name,
+        data,
+        f.type || undefined,
+        extractUnits,
+      );
+    } catch (err) {
+      console.error("library upload failed:", err);
+      redirectTo(campaignId, "Couldn't store that file — try again.");
+    }
     revalidatePath(`/campaign/${campaignId}/library`);
     redirectTo(campaignId, undefined, f.name);
   }
@@ -76,8 +88,9 @@ export default async function LibraryPage({
       <section className="section">
         <h2 className="section-h">Add material</h2>
         <p className="muted" style={{ marginTop: 0, marginBottom: 16 }}>
-          Notes, lore, handouts, a session log. Everything you add is yours
-          alone until you reveal it — players can&rsquo;t reach it with{" "}
+          Notes, lore, handouts, a session log — up to{" "}
+          {MAX_UPLOAD_BYTES / 1024 / 1024}MB. Everything you add is yours alone
+          until you reveal it — players can&rsquo;t reach it with{" "}
           <code>/ask</code>.
         </p>
 

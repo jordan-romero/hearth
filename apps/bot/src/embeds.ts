@@ -205,9 +205,16 @@ export function recapEmbed(
     .setFooter({ text: truncate(footer, 2048) });
 }
 
-/** A correction, shown to whoever proposed it and to the DM deciding on it. Shows the change
- * itself — before and after — because "approve" should never be a leap of faith. */
-export function correctionEmbed(
+/** A correction, shown to whoever proposed it and to the DM deciding on it.
+ *
+ * Returns MULTIPLE embeds when a correction touches many facts. Every target has to be visible
+ * before approval — a DM asked to approve changes they were never shown isn't reviewing
+ * anything — and one embed can't hold them all.
+ *
+ * These carry the content of the facts being changed, which may be DM_ONLY or another player's
+ * note. They must only ever be delivered privately (ephemeral or DM), never posted to a channel.
+ */
+export function correctionEmbeds(
   proposal: {
     statement: string;
     targets: { title: string; content: string; rewrite: string }[];
@@ -216,42 +223,55 @@ export function correctionEmbed(
   },
   state: "applied" | "pending",
   theme: string = DEFAULT_THEME,
-): EmbedBuilder {
-  const embed = new EmbedBuilder()
-    .setColor(themeColor(theme, "DM"))
+): EmbedBuilder[] {
+  const color = themeColor(theme, "DM");
+  const head = new EmbedBuilder()
+    .setColor(color)
     .setTitle(
       state === "applied" ? "✅ Canon corrected" : "✏️ Correction proposed",
     )
     .setDescription(truncate(proposal.statement, 2000));
 
-  for (const t of proposal.targets.slice(0, 4)) {
-    const body = t.rewrite
-      ? `~~${truncate(t.content, 300)}~~\n**→ ${truncate(t.rewrite, 400)}**`
-      : `~~${truncate(t.content, 300)}~~\n**→ removed**`;
-    embed.addFields({
-      name: truncate(t.title, 256),
-      value: truncate(body, 1024),
-    });
+  const embeds: EmbedBuilder[] = [head];
+  const PER_EMBED = 4; // keeps each embed clear of Discord's per-message character budget
+
+  for (let i = 0; i < proposal.targets.length; i += PER_EMBED) {
+    const slice = proposal.targets.slice(i, i + PER_EMBED);
+    const e = i === 0 ? head : new EmbedBuilder().setColor(color);
+    for (const t of slice) {
+      const body = t.rewrite
+        ? `~~${truncate(t.content, 280)}~~\n**→ ${truncate(t.rewrite, 400)}**`
+        : `~~${truncate(t.content, 280)}~~\n**→ removed from the memory**`;
+      e.addFields({
+        name: truncate(t.title, 256),
+        value: truncate(body, 1024),
+      });
+    }
+    if (i > 0) embeds.push(e);
+    // Discord allows 10 embeds per message; say so rather than silently dropping the rest.
+    if (embeds.length === 10 && i + PER_EMBED < proposal.targets.length) {
+      e.addFields({
+        name: "…and more",
+        value: `${proposal.targets.length - (i + PER_EMBED)} further fact(s) change too.`,
+      });
+      break;
+    }
   }
-  if (proposal.targets.length > 4) {
-    embed.addFields({
-      name: "…and more",
-      value: `${proposal.targets.length - 4} further fact(s) change too.`,
-    });
-  }
+
+  const last = embeds[embeds.length - 1]!;
   if (proposal.newFactTitle && proposal.newFactContent) {
-    embed.addFields({
+    last.addFields({
       name: `+ ${truncate(proposal.newFactTitle, 254)}`,
       value: truncate(proposal.newFactContent, 1024),
     });
   }
-  embed.setFooter({
+  last.setFooter({
     text:
       state === "applied"
         ? "Applied — the old version won't be answered with again."
         : "Waiting on the DM. Nothing has changed yet.",
   });
-  return embed;
+  return embeds;
 }
 
 /** A filesystem/attachment-safe version of a name (for portrait + card downloads). */
