@@ -1093,8 +1093,10 @@ async function announceReveal(
   let itemTitle: string;
   let body: string;
   if (kind === "u") {
-    const u = await prisma.knowledgeUnit.findUnique({
-      where: { id: targetId },
+    // A reveal button can be clicked long after it was posted, by which time a correction may
+    // have retired this fact — announcing it would publish a version the table has disowned.
+    const u = await prisma.knowledgeUnit.findFirst({
+      where: { id: targetId, supersededByCorrectionId: null },
       select: { title: true, content: true },
     });
     itemTitle = u?.title ?? "a memory";
