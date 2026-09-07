@@ -675,7 +675,11 @@ async function handleCorrectionButton(
   await interaction.deferUpdate();
   try {
     if (action === "r") {
-      await rejectCorrection(correctionId!, viewer.membershipId);
+      await rejectCorrection(
+        correctionId!,
+        viewer.membershipId,
+        viewer.campaignId,
+      );
       await interaction.editReply({
         content: "❌ Correction rejected — the memory stands as it was.",
         embeds: [],
@@ -686,6 +690,7 @@ async function handleCorrectionButton(
     const { rewritten, added } = await applyCorrection(
       correctionId!,
       viewer.membershipId,
+      viewer.campaignId,
     );
     const parts = [
       rewritten > 0
@@ -702,9 +707,14 @@ async function handleCorrectionButton(
     console.error("correction decision failed:", err);
     await interaction
       .editReply({
+        // A second click on a stale message is the common case here, not a real failure —
+        // say what actually happened rather than implying something broke.
         content:
-          err instanceof Error && err.message.includes("already been applied")
-            ? "That correction was already applied."
+          err instanceof Error &&
+          (err.message.includes("already been applied") ||
+            err.message.includes("not awaiting") ||
+            err.message.includes("not found"))
+            ? "That correction has already been decided."
             : "Something went wrong applying that correction.",
         components: [],
       })

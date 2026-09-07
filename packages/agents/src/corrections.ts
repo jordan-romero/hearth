@@ -173,7 +173,7 @@ export async function proposeCorrection(
 
   // The DM proposing IS the approval — there is no one above them to ask.
   if (viewer.role === "DM") {
-    await applyCorrection(correction.id, membershipId);
+    await applyCorrection(correction.id, membershipId, viewer.campaignId);
   }
 
   const targets = rewrites.map((r) => {
@@ -205,9 +205,13 @@ export async function proposeCorrection(
 export async function applyCorrection(
   correctionId: string,
   reviewerMembershipId: string,
+  campaignId: string,
 ): Promise<{ rewritten: number; added: boolean }> {
-  const correction = await prisma.correction.findUnique({
-    where: { id: correctionId },
+  // Scope to the reviewer's own campaign. The id arrives from a Discord interaction, and a
+  // correction belonging to another table must never be applicable from this one — the
+  // reviewer isn't its DM, whatever role they hold here.
+  const correction = await prisma.correction.findFirst({
+    where: { id: correctionId, campaignId },
   });
   if (!correction) throw new Error(`correction ${correctionId} not found`);
   if (correction.status === "APPROVED") {
@@ -335,10 +339,12 @@ export async function applyCorrection(
 export async function rejectCorrection(
   correctionId: string,
   reviewerMembershipId: string,
+  campaignId: string,
   reviewNote?: string,
 ): Promise<void> {
-  await prisma.correction.update({
-    where: { id: correctionId },
+  // Campaign-scoped for the same reason as applying one.
+  const { count } = await prisma.correction.updateMany({
+    where: { id: correctionId, campaignId, status: "PENDING" },
     data: {
       status: "REJECTED",
       reviewedByMembershipId: reviewerMembershipId,
@@ -346,6 +352,9 @@ export async function rejectCorrection(
       reviewNote,
     },
   });
+  if (count === 0) {
+    throw new Error("that correction is not awaiting a decision");
+  }
 }
 
 /** Corrections awaiting the DM, oldest first. */
