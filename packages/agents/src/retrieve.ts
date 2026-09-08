@@ -17,6 +17,10 @@ export interface RetrievedUnit extends FilterableKnowledgeUnit {
   title: string;
   content: string;
   type: string;
+  /** Set for a player's journal note: whose note it is. Journal entries are written in the
+   * first person, so once one is shared with the party it reads as if the ASKER wrote it
+   * unless the answer knows who actually did. */
+  authorName?: string | null;
 }
 
 /** A retrieved passage from an ingested DM document (the RAG layer). */
@@ -38,6 +42,7 @@ interface UnitRow {
   title: string;
   content: string;
   type: string;
+  authorName: string | null;
 }
 
 interface ChunkRow {
@@ -62,14 +67,19 @@ async function searchUnits(
 ): Promise<RetrievedUnit[]> {
   // Over-fetch (×3) so dropping gated units still leaves a good set for the viewer.
   const rows = await prisma.$queryRaw<UnitRow[]>`
-    SELECT "id", "campaignId", "baseVisibility"::text AS "baseVisibility",
-           "title", "content", "type"::text AS "type"
-    FROM "KnowledgeUnit"
-    WHERE "campaignId" = ${viewer.campaignId} AND "embedding" IS NOT NULL
+    SELECT ku."id", ku."campaignId", ku."baseVisibility"::text AS "baseVisibility",
+           ku."title", ku."content", ku."type"::text AS "type",
+           ac."name" AS "authorName"
+    FROM "KnowledgeUnit" ku
+    -- Who wrote it, when it's a player's note (see RetrievedUnit.authorName).
+    LEFT JOIN "Character" ac
+      ON ac."membershipId" = ku."authorMembershipId"
+     AND ac."campaignId" = ku."campaignId"
+    WHERE ku."campaignId" = ${viewer.campaignId} AND ku."embedding" IS NOT NULL
       -- A fact the table has corrected is never retrieved again. This is the whole point of a
       -- correction: the wrong answer has to become unreachable, not merely outranked.
-      AND "supersededByCorrectionId" IS NULL
-    ORDER BY "embedding" <=> ${vec}::vector
+      AND ku."supersededByCorrectionId" IS NULL
+    ORDER BY ku."embedding" <=> ${vec}::vector
     LIMIT ${limit * 3}`;
   if (rows.length === 0) return [];
 

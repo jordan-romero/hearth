@@ -173,6 +173,7 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
           "**/journal** `entry` — save a private note only you and the DM can see",
           "**/recap** `[minutes]` — what did I miss? Catches you up mid-session, or recaps last time",
           "**/correct** `truth` — the memory got something wrong; the DM approves the fix",
+          "**/share** `about` — tell the party something you know; the DM approves it first",
         ].join("\n"),
       },
       {
@@ -283,6 +284,28 @@ export function correctionEmbeds(
         : "Waiting on the DM. Nothing has changed yet.",
   });
   return embeds;
+}
+
+/** A pending share, shown privately to the DM. Carries the content of what a player wants to
+ * tell the party, which isn't the party's to read until the DM says so — ephemeral only. */
+export function shareEmbed(
+  who: string,
+  title: string,
+  content: string,
+  note: string | null | undefined,
+  theme: string = DEFAULT_THEME,
+): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setColor(themeColor(theme, "DM"))
+    .setTitle("📨 A player wants to tell the party")
+    .setDescription(`**${truncate(title, 200)}**\n${truncate(content, 3000)}`)
+    .setFooter({
+      text: `Asked by ${who} · nothing is shared until you approve`,
+    });
+  if (note) {
+    embed.addFields({ name: "They added", value: truncate(note, 1024) });
+  }
+  return embed;
 }
 
 /** A filesystem/attachment-safe version of a name (for portrait + card downloads). */

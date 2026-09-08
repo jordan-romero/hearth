@@ -107,6 +107,7 @@ model Campaign {
   assets          Asset[]
   askLogs         AskLog[]
   corrections     Correction[]
+  shareRequests   ShareRequest[]
   discord         CampaignDiscord?
 }
 
@@ -159,6 +160,8 @@ model Membership {
   authoredNotes       KnowledgeUnit[]  @relation("NoteAuthor")
   correctionsProposed Correction[]     @relation("CorrectionProposedBy")
   correctionsReviewed Correction[]     @relation("CorrectionReviewedBy")
+  sharesProposed      ShareRequest[]   @relation("ShareProposedBy")
+  sharesReviewed      ShareRequest[]   @relation("ShareReviewedBy")
 
   @@unique([userId, campaignId])
   @@index([campaignId])
@@ -171,10 +174,11 @@ model Party {
   campaignId String
   name       String
 
-  campaign     Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  characters   Character[]
-  grants       KnowledgeGrant[] @relation("GrantParty")
-  revealEvents RevealEvent[]    @relation("RevealParty")
+  campaign      Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  characters    Character[]
+  grants        KnowledgeGrant[] @relation("GrantParty")
+  revealEvents  RevealEvent[]    @relation("RevealParty")
+  shareRequests ShareRequest[]   @relation("SharedWithParty")
 
   @@index([campaignId])
 }
@@ -289,6 +293,7 @@ model KnowledgeUnit {
 
   grants                 KnowledgeGrant[]
   revealEvents           RevealEvent[]
+  shareRequests          ShareRequest[]
   supersededByCorrection Correction?      @relation("Superseded", fields: [supersededByCorrectionId], references: [id], onDelete: SetNull)
   correctionResultOf     Correction?      @relation("CorrectionResult")
 
@@ -638,4 +643,52 @@ model Correction {
 
   @@index([campaignId, status])
   @@index([proposedByMembershipId])
+}
+
+enum ShareStatus {
+  PENDING // waiting on the DM
+  APPROVED // granted to the party
+  REJECTED // the DM kept it private
+}
+
+/// A player asking to tell the party something they know.
+///
+/// The same shape as a Correction — propose, the DM approves, it lands in shared memory — but
+/// deliberately its own table rather than one row type with a `kind` column: the payloads have
+/// nothing in common (a correction carries rewrites and targets, a share carries one unit), and
+/// merging them would mean a row where most columns are null for any given kind.
+///
+/// The permission spine bounds this for free: the unit is chosen through filtered retrieval, so
+/// a player can only offer to share something they can already see.
+model ShareRequest {
+  id              String      @id @default(cuid())
+  campaignId      String
+  knowledgeUnitId String
+  status          ShareStatus @default(PENDING)
+  /// What the player wants the party to understand about it, in their words.
+  note            String?
+
+  /// Who it goes to, resolved when the share is REQUESTED rather than at approval — so the DM
+  /// approves exactly the audience they were shown, and a player who changes party in the
+  /// meantime can't silently redirect it.
+  partyId String?
+
+  /// Nullable for the same reason as a Correction's: the record of what was shared must
+  /// outlive the member who shared it.
+  proposedByMembershipId String?
+  reviewedByMembershipId String?
+  reviewedAt             DateTime?
+  reviewNote             String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaign      Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  knowledgeUnit KnowledgeUnit @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
+  party         Party?        @relation("SharedWithParty", fields: [partyId], references: [id], onDelete: SetNull)
+  proposedBy    Membership?   @relation("ShareProposedBy", fields: [proposedByMembershipId], references: [id], onDelete: SetNull)
+  reviewedBy    Membership?   @relation("ShareReviewedBy", fields: [reviewedByMembershipId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId, status])
+  @@index([knowledgeUnitId])
 }
