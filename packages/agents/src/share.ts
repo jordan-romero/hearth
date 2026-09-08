@@ -14,6 +14,7 @@
 
 import { prisma } from "@hearth/db";
 import type { Viewer } from "@hearth/core";
+import { filterKnowledge } from "@hearth/core";
 import { retrieveForViewer } from "./retrieve.js";
 import { revealTo } from "./reveal.js";
 
@@ -78,18 +79,40 @@ export async function requestShare(
   unitId: string,
   note?: string,
 ): Promise<{ id: string; alreadyPending: boolean }> {
-  const visible = await prisma.knowledgeUnit.findFirst({
-    where: { id: unitId, campaignId: viewer.campaignId },
-    select: { id: true, title: true, content: true, baseVisibility: true },
+  const unit = await prisma.knowledgeUnit.findFirst({
+    where: {
+      id: unitId,
+      campaignId: viewer.campaignId,
+      // A correction may have retired it since the player looked it up; sharing a fact the
+      // table has disowned would put it back in front of everyone.
+      supersededByCorrectionId: null,
+    },
+    select: {
+      id: true,
+      campaignId: true,
+      baseVisibility: true,
+      grants: { select: { characterId: true, partyId: true } },
+    },
   });
-  if (!visible) throw new Error("that isn't something you can share");
-  // Confirm the viewer can actually see it — the filter, not the button, is the authority.
-  const allowed = await retrieveForViewer(
-    viewer,
-    `${visible.title} ${visible.content}`,
-    12,
-  );
-  if (!allowed.some((u) => u.id === unitId)) {
+  if (!unit) throw new Error("that isn't something you can share");
+
+  // Ask the filter directly rather than re-running semantic search. Search is ranked and could
+  // fail to return a unit even for its own text, which would reject a share the player is
+  // perfectly entitled to make; the filter is the actual authority and is deterministic.
+  const canSee = filterKnowledge(viewer, [
+    {
+      id: unit.id,
+      campaignId: unit.campaignId,
+      baseVisibility: unit.baseVisibility,
+      grantedCharacterIds: unit.grants
+        .map((g) => g.characterId)
+        .filter((v): v is string => v !== null),
+      grantedPartyIds: unit.grants
+        .map((g) => g.partyId)
+        .filter((v): v is string => v !== null),
+    },
+  ]);
+  if (canSee.length === 0) {
     throw new Error("that isn't something you can share");
   }
 
