@@ -43,6 +43,18 @@ async function main(): Promise<void> {
       const text = await transcribeClip(audio);
 
       if (text) {
+        // The authoritative transcript for this audio has arrived, so drop the live segments
+        // that stood in for it. Batch rescores with the whole clip in context and is better on
+        // names, so the record should be this, not what streaming heard mid-sentence.
+        await prisma.transcriptSegment.deleteMany({
+          where: {
+            recordingId,
+            discordUserId,
+            isLive: true,
+            startMs: { gte: startMs },
+            endMs: { lte: startMs + durationMs + 2000 },
+          },
+        });
         // Upsert on the unique audioClipId so a retried job never double-writes.
         await prisma.transcriptSegment.upsert({
           where: { audioClipId },

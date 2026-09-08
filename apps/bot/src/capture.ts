@@ -25,6 +25,7 @@ import { prisma } from "@hearth/db";
 import {
   getQueue,
   putClip,
+  openTranscriptStream,
   scheduleFinalize,
   TRANSCRIBE_QUEUE,
   SESSION_GAP_MS,
@@ -53,6 +54,12 @@ function formatGap(): string {
   if (minutes < 1) return `${Math.round(SESSION_GAP_MS / 1000)} sec`;
   return `${Math.round(minutes)} min`;
 }
+
+// Live transcription runs ALONGSIDE the batch path, never instead of it: batch rescores with
+// the whole clip in context and is measurably better on names, so it stays the record while
+// streaming exists to make a long monologue visible before the speaker stops. Off by default
+// until it's been through a real session — a dropped socket costs freshness, not a session.
+const LIVE_TRANSCRIPTION = process.env.HEARTH_LIVE_TRANSCRIPTION === "1";
 
 const SAMPLE_RATE = 48000; // Discord voice is always 48kHz
 const DECODE_CHANNELS = 2; // Discord's Opus decodes to stereo…
@@ -248,6 +255,31 @@ async function startRecordingInner(
   }
 }
 
+/** Record a finalized span of live speech so /recap and /npc live can see it immediately.
+ *
+ * Deliberately carries no audioClipId: the clip doesn't exist yet — it's written when the burst
+ * ends, which is the very wait this exists to avoid. The batch transcript replaces these once
+ * it lands (see the worker), so they're a fresher view, never the record. */
+async function writeLiveSegment(
+  state: ActiveRecording,
+  userId: string,
+  burstStartMs: number,
+  text: string,
+): Promise<void> {
+  const at = Date.now() - state.startedAtMs;
+  await prisma.transcriptSegment.create({
+    data: {
+      recordingId: state.recordingId,
+      characterId: state.speakerMap.get(userId) ?? null,
+      discordUserId: userId,
+      startMs: burstStartMs,
+      endMs: at,
+      text,
+      isLive: true,
+    },
+  });
+}
+
 /** Capture one speaking burst → mono WAV clip → store → AudioClip → enqueue. */
 async function captureBurst(
   receiver: import("@discordjs/voice").VoiceReceiver,
@@ -271,7 +303,26 @@ async function captureBurst(
   let opusPackets = 0;
   opusStream.on("data", () => opusPackets++);
   const pcm = opusStream.pipe(decoder);
-  pcm.on("data", (c: Buffer) => chunks.push(c));
+
+  // Open a live socket for this burst only. Deepgram bills by connected time, so holding one
+  // open across a whole session would bill the silence too.
+  const live = LIVE_TRANSCRIPTION
+    ? await openTranscriptStream({
+        onFinal: (text) =>
+          void writeLiveSegment(state, userId, startMs, text).catch((err) =>
+            console.error("[stream] live segment write failed:", err),
+          ),
+      }).catch((err) => {
+        console.error("[stream] could not open live socket:", err);
+        return null;
+      })
+    : null;
+
+  pcm.on("data", (c: Buffer) => {
+    chunks.push(c);
+    // Deepgram is configured for mono, and it halves what we send.
+    live?.send(stereoToMono(c));
+  });
 
   await new Promise<void>((resolve) => {
     pcm.on("end", () => resolve());
@@ -280,6 +331,7 @@ async function captureBurst(
       resolve();
     });
   });
+  await live?.close();
   state.capturing.delete(userId);
 
   const pcmData = Buffer.concat(chunks);
