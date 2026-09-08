@@ -26,6 +26,7 @@ import {
   getQueue,
   putClip,
   openTranscriptStream,
+  type TranscriptStream,
   scheduleFinalize,
   TRANSCRIBE_QUEUE,
   SESSION_GAP_MS,
@@ -38,6 +39,10 @@ interface ActiveRecording {
   startedAtMs: number;
   speakerMap: Map<string, string>; // discordUserId → characterId
   capturing: Set<string>;
+  // Counted so /stop can say whether live transcription actually did anything. Without this a
+  // silent failure at someone else's table is invisible to us.
+  liveSegments: number;
+  liveFailures: number;
 }
 
 const active = new Map<string, ActiveRecording>(); // guildId → recording
@@ -60,6 +65,12 @@ function formatGap(): string {
 // streaming exists to make a long monologue visible before the speaker stops. Off by default
 // until it's been through a real session — a dropped socket costs freshness, not a session.
 const LIVE_TRANSCRIPTION = process.env.HEARTH_LIVE_TRANSCRIPTION === "1";
+
+// Only stream a burst once it has actually run long. A short "yeah" is transcribed by the batch
+// path within seconds of ending, so streaming it buys nothing and still costs a socket and
+// Deepgram's minimum billable connection. Streaming exists for the burst that DOESN'T end —
+// so wait until a burst has proven itself one, then send what we buffered and continue live.
+const LIVE_AFTER_MS = 2500;
 
 const SAMPLE_RATE = 48000; // Discord voice is always 48kHz
 const DECODE_CHANNELS = 2; // Discord's Opus decodes to stereo…
@@ -203,6 +214,8 @@ async function startRecordingInner(
     startedAtMs: Date.now(),
     speakerMap: await loadSpeakerMap(campaignId),
     capturing: new Set(),
+    liveSegments: 0,
+    liveFailures: 0,
   };
   active.set(guildId, state);
 
@@ -263,17 +276,17 @@ async function startRecordingInner(
 async function writeLiveSegment(
   state: ActiveRecording,
   userId: string,
-  burstStartMs: number,
+  fromMs: number,
+  toMs: number,
   text: string,
 ): Promise<void> {
-  const at = Date.now() - state.startedAtMs;
   await prisma.transcriptSegment.create({
     data: {
       recordingId: state.recordingId,
       characterId: state.speakerMap.get(userId) ?? null,
       discordUserId: userId,
-      startMs: burstStartMs,
-      endMs: at,
+      startMs: fromMs,
+      endMs: toMs,
       text,
       isLive: true,
     },
@@ -304,24 +317,47 @@ async function captureBurst(
   opusStream.on("data", () => opusPackets++);
   const pcm = opusStream.pipe(decoder);
 
-  // Open a live socket for this burst only. Deepgram bills by connected time, so holding one
-  // open across a whole session would bill the silence too.
-  const live = LIVE_TRANSCRIPTION
-    ? await openTranscriptStream({
-        onFinal: (text) =>
-          void writeLiveSegment(state, userId, startMs, text).catch((err) =>
-            console.error("[stream] live segment write failed:", err),
-          ),
-      }).catch((err) => {
-        console.error("[stream] could not open live socket:", err);
-        return null;
-      })
-    : null;
+  // Live transcription, opened lazily once the burst passes LIVE_AFTER_MS. `opening` guards
+  // against starting a second socket while the first is still connecting.
+  let live: TranscriptStream | null = null;
+  let opening = false;
+  // Each finalized span starts where the previous one ended, so a burst's segments order
+  // correctly among themselves instead of all sharing the burst's start time.
+  let spanStartMs = startMs;
+
+  const onFinal = (text: string) => {
+    const endedAt = Date.now() - state.startedAtMs;
+    const from = spanStartMs;
+    spanStartMs = endedAt;
+    state.liveSegments++;
+    void writeLiveSegment(state, userId, from, endedAt, text).catch((err) =>
+      console.error("[stream] live segment write failed:", err),
+    );
+  };
 
   pcm.on("data", (c: Buffer) => {
     chunks.push(c);
-    // Deepgram is configured for mono, and it halves what we send.
-    live?.send(stereoToMono(c));
+    const mono = stereoToMono(c);
+    if (live) {
+      live.send(mono);
+      return;
+    }
+    if (!LIVE_TRANSCRIPTION || opening) return;
+    // bytes → ms: 16-bit mono at 48kHz is 96 bytes per millisecond.
+    const bufferedMs = chunks.reduce((n, b) => n + b.length, 0) / 2 / 96;
+    if (bufferedMs < LIVE_AFTER_MS) return;
+
+    opening = true;
+    void openTranscriptStream({ onFinal })
+      .then((stream) => {
+        // Catch the socket up on everything spoken before it existed, then run live.
+        stream.send(stereoToMono(Buffer.concat(chunks)));
+        live = stream;
+      })
+      .catch((err) => {
+        state.liveFailures++;
+        console.error("[stream] could not open live socket:", err.message);
+      });
   });
 
   await new Promise<void>((resolve) => {
@@ -331,7 +367,8 @@ async function captureBurst(
       resolve();
     });
   });
-  await live?.close();
+  // `live` is assigned from an async callback, so TypeScript can't see it may be set here.
+  await (live as TranscriptStream | null)?.close();
   state.capturing.delete(userId);
 
   const pcmData = Buffer.concat(chunks);
@@ -423,6 +460,11 @@ export async function stopRecording(
   console.log(
     `⏹ recording stopped — ${clipCount} clip(s) captured (recording ${state.recordingId})`,
   );
+  if (LIVE_TRANSCRIPTION) {
+    console.log(
+      `🎧 live transcription: ${state.liveSegments} span(s), ${state.liveFailures} socket failure(s)`,
+    );
+  }
   // The session stays OPEN — a /record within the gap window resumes it (breaks shouldn't
   // split a session). Stamp the activity and schedule a delayed finalize; if we resume, the
   // finalize job reschedules itself rather than summarizing a half-finished session.
