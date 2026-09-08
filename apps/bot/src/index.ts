@@ -214,12 +214,11 @@ const npcCommand = new SlashCommandBuilder()
 
 const setupCommand = new SlashCommandBuilder()
   .setName("setup")
-  .setDescription("Create this server's campaign and make yourself the DM.")
+  .setDescription("Set up this server's campaign, or change its settings.")
   .addStringOption((o) =>
     o
       .setName("name")
-      .setDescription("What's the campaign called?")
-      .setRequired(true),
+      .setDescription("What's the campaign called? (required the first time)"),
   )
   .addStringOption((o) =>
     o
@@ -227,6 +226,14 @@ const setupCommand = new SlashCommandBuilder()
       .setDescription(
         "What should we call you at the table? (labels your lines in transcripts)",
       ),
+  )
+  .addChannelOption((o) =>
+    o
+      .setName("reveals")
+      .setDescription(
+        "Where reveals and shared NPCs get posted (run /setup again any time to change it)",
+      )
+      .addChannelTypes(ChannelType.GuildText),
   );
 
 const joinCommand = new SlashCommandBuilder()
@@ -281,13 +288,24 @@ const shareCommand = new SlashCommandBuilder()
 
 const recapCommand = new SlashCommandBuilder()
   .setName("recap")
-  .setDescription("What did I miss? Catch up on the session.")
+  .setDescription("What happened last session?");
+
+const missedCommand = new SlashCommandBuilder()
+  .setName("missed")
+  .setDescription("What did I miss? Catch up on what just happened.")
   .addIntegerOption((o) =>
     o
       .setName("minutes")
-      .setDescription("How far back to catch up (default 10)")
+      .setDescription("How far back to look (default 5)")
       .setMinValue(1)
       .setMaxValue(120),
+  )
+  .addBooleanOption((o) =>
+    o
+      .setName("raw")
+      .setDescription(
+        "Show what was actually said, word for word, instead of a summary",
+      ),
   );
 
 const helpCommand = new SlashCommandBuilder()
@@ -309,6 +327,7 @@ async function registerCommands(): Promise<void> {
     journalCommand.toJSON(),
     npcCommand.toJSON(),
     recapCommand.toJSON(),
+    missedCommand.toJSON(),
     correctCommand.toJSON(),
     shareCommand.toJSON(),
     setupCommand.toJSON(),
@@ -453,31 +472,63 @@ async function handleSetup(
       await interaction.editReply("Run this in a server, not a DM.");
       return;
     }
-    const perms = interaction.memberPermissions;
-    if (!perms?.has(PermissionFlagsBits.ManageGuild)) {
+    // Two different questions, so two different gates. CLAIMING a server needs Manage Server,
+    // so a passing member can't take over someone else's table. ADJUSTING a campaign that
+    // already exists is the DM's call — they own it, and they may well not be a server admin.
+    const existing = await resolveCampaignId(guildId);
+    if (existing) {
+      const viewer = await resolveMember(existing, interaction.user.id);
+      if (viewer?.role !== "DM") {
+        await interaction.editReply(
+          "This server already has a campaign — only its DM can change these settings.",
+        );
+        return;
+      }
+    } else if (
+      !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
+    ) {
       await interaction.editReply(
         "You need the **Manage Server** permission to set up a campaign here.",
       );
       return;
     }
-    const name = interaction.options.getString("name", true);
+    const name = interaction.options.getString("name");
+    if (!existing && !name) {
+      await interaction.editReply(
+        'What\'s the campaign called? Run `/setup name:"Your campaign"`.',
+      );
+      return;
+    }
     const dmName = interaction.options.getString("dm_name") ?? undefined;
+    const reveals = interaction.options.getChannel("reveals");
     const result = await setupCampaign(
       guildId,
       interaction.user.id,
       interaction.user.username,
-      name,
+      name ?? "",
       dmName,
+      reveals?.id,
     );
+
+    // Say NOW whether I can actually post there, rather than at the moment someone tries to
+    // share something and it fails.
+    const revealWarning = await describeRevealChannel(
+      interaction,
+      result.revealChannelId,
+    );
+
     if (result.alreadyExisted) {
       await interaction.editReply(
-        `This server already runs **${result.campaignName}** — players can \`/join\`.`,
+        reveals
+          ? revealWarning
+          : `This server already runs **${result.campaignName}** — players can \`/join\`. Use \`/setup reveals:#channel\` to choose where reveals post.`,
       );
       return;
     }
     await interaction.editReply(
       `🔥 **${result.campaignName}** is live and you're the DM.\n` +
-        "Players join with `/join character:<name>`. Then `/record` to capture a session, `/upload` your notes, and `/help` for everything else.",
+        "Players join with `/join character:<name>`. Then `/record` to capture a session, `/upload` your notes, and `/help` for everything else." +
+        `\n${revealWarning}`,
     );
   } catch (err) {
     console.error("/setup failed:", err);
@@ -485,6 +536,37 @@ async function handleSetup(
       .editReply("Something went wrong setting up the campaign.")
       .catch(() => {});
   }
+}
+
+/** Whether I can actually post in the reveals channel, said at setup time.
+ *
+ * Reveals and shared NPCs are posted to a channel, and a PRIVATE channel needs the bot invited
+ * to it explicitly — being in the server isn't enough. Finding that out when a share fails is
+ * a bad time to find it out. */
+async function describeRevealChannel(
+  interaction: ChatInputCommandInteraction,
+  channelId: string | null,
+): Promise<string> {
+  if (!channelId) {
+    return "ℹ️ No reveals channel set — I'll post reveals wherever the command was run. `/setup reveals:#channel` to pin it down.";
+  }
+  const channel = await interaction.guild?.channels
+    .fetch(channelId)
+    .catch(() => null);
+  if (!channel || !channel.isTextBased()) {
+    return `⚠️ I can't see <#${channelId}> — pick a channel I can read.`;
+  }
+  const me = interaction.guild?.members.me;
+  const perms = me ? channel.permissionsFor(me) : null;
+  const missing = [
+    perms?.has(PermissionFlagsBits.ViewChannel) ? null : "View Channel",
+    perms?.has(PermissionFlagsBits.SendMessages) ? null : "Send Messages",
+    perms?.has(PermissionFlagsBits.EmbedLinks) ? null : "Embed Links",
+  ].filter(Boolean);
+  if (missing.length > 0) {
+    return `⚠️ Reveals will go to <#${channelId}>, but I can't post there yet — grant me **${missing.join(", ")}** (a private channel needs me added to it directly).`;
+  }
+  return `✅ Reveals will be posted in <#${channelId}>.`;
 }
 
 /** /join — a player registers themselves + their character in this server's campaign. */
@@ -521,9 +603,86 @@ async function handleJoin(
   }
 }
 
-/** /recap — catch up on the session. While one is being recorded that's a summary of the last
- * few minutes of live table talk; otherwise it's the stored recap of the last finished session.
- * Both are table-audible, so there's nothing to permission-filter. */
+/** Keep the most RECENT whole lines that fit — a transcript tail is what you missed, so
+ * trimming the end (as a plain truncate would) throws away the newest part. */
+function tailWithin(transcript: string, limit: number): string {
+  const lines = transcript.split("\n");
+  const kept: string[] = [];
+  let size = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (size + line.length + 1 > limit) break;
+    kept.unshift(line);
+    size += line.length + 1;
+  }
+  return kept.length > 0 ? kept.join("\n") : transcript.slice(-limit);
+}
+
+/** /missed — you stepped away mid-session; what happened? Five minutes by default, since that's
+ * about how long stepping away takes and nobody should have to estimate it. Table-audible
+ * speech only, so there's nothing to permission-filter. */
+async function handleMissed(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
+    if (!viewer) {
+      await interaction.editReply(
+        "You're not part of a campaign here yet — try `/join`.",
+      );
+      return;
+    }
+    const minutes = interaction.options.getInteger("minutes") ?? 5;
+    const raw = interaction.options.getBoolean("raw") ?? false;
+
+    const live = await getActiveSession(viewer.campaignId);
+    if (!live) {
+      await interaction.editReply(
+        "No session is being recorded right now — `/recap` covers last time.",
+      );
+      return;
+    }
+
+    const transcript = await getLiveTranscript(live.gameSessionId, minutes);
+    if (!transcript) {
+      await interaction.editReply(
+        `Nothing's been transcribed in the last ${minutes} minutes — it may still be catching up.`,
+      );
+      return;
+    }
+
+    // Raw is the literal transcript: no model call, so it's instant and free, and it shows
+    // exactly what was said rather than what a summary made of it.
+    const body = raw
+      ? tailWithin(transcript, 4000)
+      : await summarizeRecent(transcript);
+
+    await interaction.editReply({
+      embeds: [
+        recapEmbed(
+          raw
+            ? `🎙 The last ${minutes} minutes, word for word`
+            : `⏪ The last ${minutes} minutes`,
+          body,
+          `Session ${live.number} · in progress`,
+          viewer.theme,
+        ),
+      ],
+    });
+  } catch (err) {
+    console.error("/missed failed:", err);
+    await interaction
+      .editReply("Something went wrong catching you up.")
+      .catch(() => {});
+  }
+}
+
+/** /recap — what happened LAST session. After the fact, not mid-session: the stored recap the
+ * worker wrote when that session finished. */
 async function handleRecap(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
@@ -539,32 +698,6 @@ async function handleRecap(
       );
       return;
     }
-    const minutes = interaction.options.getInteger("minutes") ?? 10;
-    const live = await getActiveSession(viewer.campaignId);
-
-    if (live) {
-      const transcript = await getLiveTranscript(live.gameSessionId, minutes);
-      if (!transcript) {
-        await interaction.editReply(
-          `Nothing's been transcribed in the last ${minutes} minutes — it may still be catching up.`,
-        );
-        return;
-      }
-      const summary = await summarizeRecent(transcript);
-      await interaction.editReply({
-        embeds: [
-          recapEmbed(
-            `⏪ The last ${minutes} minutes`,
-            summary,
-            `Session ${live.number} · in progress`,
-            viewer.theme,
-          ),
-        ],
-      });
-      return;
-    }
-
-    // No live session — fall back to the last finished session's recap.
     const last = await prisma.gameSession.findFirst({
       where: { campaignId: viewer.campaignId, recap: { not: null } },
       orderBy: { number: "desc" },
@@ -2011,6 +2144,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case "recap":
         await handleRecap(interaction);
+        break;
+      case "missed":
+        await handleMissed(interaction);
         break;
       case "correct":
         await handleCorrect(interaction);

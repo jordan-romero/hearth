@@ -434,6 +434,11 @@ model TranscriptSegment {
   startMs       Int
   endMs         Int
   text          String
+  /// Written by live transcription while someone was still talking, so /recap and /npc live
+  /// can see a monologue before it ends. Superseded by the batch transcript for the same audio,
+  /// which is more accurate because it rescores with the whole clip in context — so these are
+  /// a temporary, fresher view rather than the record.
+  isLive        Boolean  @default(false)
   createdAt     DateTime @default(now())
 
   recording Recording  @relation(fields: [recordingId], references: [id], onDelete: Cascade)
@@ -442,6 +447,7 @@ model TranscriptSegment {
 
   @@index([recordingId, startMs])
   @@index([characterId])
+  @@index([recordingId, discordUserId, isLive])
 }
 
 /// Who was present in the session's voice channel (split-party + spotlight later).
