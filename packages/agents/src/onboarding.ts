@@ -28,6 +28,8 @@ export interface SetupResult {
   campaignId: string;
   campaignName: string;
   alreadyExisted: boolean;
+  /** Where reveals and shared NPCs get posted, after this call. */
+  revealChannelId: string | null;
 }
 
 /** Create a campaign for a Discord server and make the runner its DM. Idempotent: if the
@@ -38,16 +40,26 @@ export async function setupCampaign(
   displayName: string,
   campaignName: string,
   dmName?: string,
+  revealChannelId?: string,
 ): Promise<SetupResult> {
   const link = await prisma.campaignDiscord.findUnique({
     where: { guildId },
     include: { campaign: { select: { id: true, name: true } } },
   });
   if (link) {
+    // Already set up, so this is an adjustment rather than a creation — that's the only way
+    // to change where reveals go, and re-running /setup is where people will look for it.
+    const updated = revealChannelId
+      ? await prisma.campaignDiscord.update({
+          where: { guildId },
+          data: { revealChannelId },
+        })
+      : link;
     return {
       campaignId: link.campaign.id,
       campaignName: link.campaign.name,
       alreadyExisted: true,
+      revealChannelId: updated.revealChannelId,
     };
   }
 
@@ -55,7 +67,7 @@ export async function setupCampaign(
   const campaign = await prisma.$transaction(async (tx) => {
     const created = await tx.campaign.create({ data: { name: campaignName } });
     await tx.campaignDiscord.create({
-      data: { campaignId: created.id, guildId },
+      data: { campaignId: created.id, guildId, revealChannelId },
     });
     // The DM's chosen name labels their lines in every transcript. Stored per-membership, so
     // DMing a second campaign under a different name can't relabel this one's history.
@@ -78,6 +90,7 @@ export async function setupCampaign(
     campaignId: campaign.id,
     campaignName: campaign.name,
     alreadyExisted: false,
+    revealChannelId: revealChannelId ?? null,
   };
 }
 

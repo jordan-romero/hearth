@@ -227,6 +227,14 @@ const setupCommand = new SlashCommandBuilder()
       .setDescription(
         "What should we call you at the table? (labels your lines in transcripts)",
       ),
+  )
+  .addChannelOption((o) =>
+    o
+      .setName("reveals")
+      .setDescription(
+        "Where reveals and shared NPCs get posted (run /setup again any time to change it)",
+      )
+      .addChannelTypes(ChannelType.GuildText),
   );
 
 const joinCommand = new SlashCommandBuilder()
@@ -474,22 +482,34 @@ async function handleSetup(
     }
     const name = interaction.options.getString("name", true);
     const dmName = interaction.options.getString("dm_name") ?? undefined;
+    const reveals = interaction.options.getChannel("reveals");
     const result = await setupCampaign(
       guildId,
       interaction.user.id,
       interaction.user.username,
       name,
       dmName,
+      reveals?.id,
     );
+
+    // Say NOW whether I can actually post there, rather than at the moment someone tries to
+    // share something and it fails.
+    const revealWarning = await describeRevealChannel(
+      interaction,
+      result.revealChannelId,
+    );
+
     if (result.alreadyExisted) {
       await interaction.editReply(
-        `This server already runs **${result.campaignName}** — players can \`/join\`.`,
+        `This server already runs **${result.campaignName}** — players can \`/join\`.` +
+          (reveals ? `\n${revealWarning}` : ""),
       );
       return;
     }
     await interaction.editReply(
       `🔥 **${result.campaignName}** is live and you're the DM.\n` +
-        "Players join with `/join character:<name>`. Then `/record` to capture a session, `/upload` your notes, and `/help` for everything else.",
+        "Players join with `/join character:<name>`. Then `/record` to capture a session, `/upload` your notes, and `/help` for everything else." +
+        `\n${revealWarning}`,
     );
   } catch (err) {
     console.error("/setup failed:", err);
@@ -497,6 +517,37 @@ async function handleSetup(
       .editReply("Something went wrong setting up the campaign.")
       .catch(() => {});
   }
+}
+
+/** Whether I can actually post in the reveals channel, said at setup time.
+ *
+ * Reveals and shared NPCs are posted to a channel, and a PRIVATE channel needs the bot invited
+ * to it explicitly — being in the server isn't enough. Finding that out when a share fails is
+ * a bad time to find it out. */
+async function describeRevealChannel(
+  interaction: ChatInputCommandInteraction,
+  channelId: string | null,
+): Promise<string> {
+  if (!channelId) {
+    return "ℹ️ No reveals channel set — I'll post reveals wherever the command was run. `/setup reveals:#channel` to pin it down.";
+  }
+  const channel = await interaction.guild?.channels
+    .fetch(channelId)
+    .catch(() => null);
+  if (!channel || !channel.isTextBased()) {
+    return `⚠️ I can't see <#${channelId}> — pick a channel I can read.`;
+  }
+  const me = interaction.guild?.members.me;
+  const perms = me ? channel.permissionsFor(me) : null;
+  const missing = [
+    perms?.has(PermissionFlagsBits.ViewChannel) ? null : "View Channel",
+    perms?.has(PermissionFlagsBits.SendMessages) ? null : "Send Messages",
+    perms?.has(PermissionFlagsBits.EmbedLinks) ? null : "Embed Links",
+  ].filter(Boolean);
+  if (missing.length > 0) {
+    return `⚠️ Reveals will go to <#${channelId}>, but I can't post there yet — grant me **${missing.join(", ")}** (a private channel needs me added to it directly).`;
+  }
+  return `✅ Reveals will be posted in <#${channelId}>.`;
 }
 
 /** /join — a player registers themselves + their character in this server's campaign. */
