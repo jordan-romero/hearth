@@ -214,12 +214,11 @@ const npcCommand = new SlashCommandBuilder()
 
 const setupCommand = new SlashCommandBuilder()
   .setName("setup")
-  .setDescription("Create this server's campaign and make yourself the DM.")
+  .setDescription("Set up this server's campaign, or change its settings.")
   .addStringOption((o) =>
     o
       .setName("name")
-      .setDescription("What's the campaign called?")
-      .setRequired(true),
+      .setDescription("What's the campaign called? (required the first time)"),
   )
   .addStringOption((o) =>
     o
@@ -473,21 +472,40 @@ async function handleSetup(
       await interaction.editReply("Run this in a server, not a DM.");
       return;
     }
-    const perms = interaction.memberPermissions;
-    if (!perms?.has(PermissionFlagsBits.ManageGuild)) {
+    // Two different questions, so two different gates. CLAIMING a server needs Manage Server,
+    // so a passing member can't take over someone else's table. ADJUSTING a campaign that
+    // already exists is the DM's call — they own it, and they may well not be a server admin.
+    const existing = await resolveCampaignId(guildId);
+    if (existing) {
+      const viewer = await resolveMember(existing, interaction.user.id);
+      if (viewer?.role !== "DM") {
+        await interaction.editReply(
+          "This server already has a campaign — only its DM can change these settings.",
+        );
+        return;
+      }
+    } else if (
+      !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
+    ) {
       await interaction.editReply(
         "You need the **Manage Server** permission to set up a campaign here.",
       );
       return;
     }
-    const name = interaction.options.getString("name", true);
+    const name = interaction.options.getString("name");
+    if (!existing && !name) {
+      await interaction.editReply(
+        'What\'s the campaign called? Run `/setup name:"Your campaign"`.',
+      );
+      return;
+    }
     const dmName = interaction.options.getString("dm_name") ?? undefined;
     const reveals = interaction.options.getChannel("reveals");
     const result = await setupCampaign(
       guildId,
       interaction.user.id,
       interaction.user.username,
-      name,
+      name ?? "",
       dmName,
       reveals?.id,
     );
@@ -501,8 +519,9 @@ async function handleSetup(
 
     if (result.alreadyExisted) {
       await interaction.editReply(
-        `This server already runs **${result.campaignName}** — players can \`/join\`.` +
-          (reveals ? `\n${revealWarning}` : ""),
+        reveals
+          ? revealWarning
+          : `This server already runs **${result.campaignName}** — players can \`/join\`. Use \`/setup reveals:#channel\` to choose where reveals post.`,
       );
       return;
     }
