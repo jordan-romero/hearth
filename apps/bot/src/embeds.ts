@@ -171,7 +171,8 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
         value: [
           "**/ask** `question` — ask the memory; answers are filtered to what your character knows",
           "**/journal** `entry` — save a private note only you and the DM can see",
-          "**/recap** `[minutes]` — what did I miss? Catches you up mid-session, or recaps last time",
+          "**/missed** `[minutes]` `[raw]` — stepped away mid-session? The last 5 minutes, or `raw:true` for the actual words",
+          "**/recap** — what happened last session",
           "**/correct** `truth` — the memory got something wrong; the DM approves the fix",
           "**/share** `about` — tell the party something you know; the DM approves it first",
         ].join("\n"),
