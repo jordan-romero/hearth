@@ -14,12 +14,13 @@ export interface TranscribeJob {
   durationMs: number;
 }
 
-export const EXTRACT_QUEUE = "extract";
+export const FINALIZE_QUEUE = "finalize";
 
-/** A fully-transcribed recording, queued for extraction into campaign memory.
- * Enqueued once (pg-boss singletonKey = recordingId) when the last clip lands. */
-export interface ExtractJob {
-  recordingId: string;
+/** A game session queued for finalization — extraction over ALL its recordings, then marking
+ * it COMPLETE. Scheduled (delayed by the gap window) on /stop; if the session resumed within
+ * the window, the job reschedules itself instead of finalizing. */
+export interface FinalizeJob {
+  gameSessionId: string;
 }
 
 export const INGEST_QUEUE = "ingest";
@@ -28,3 +29,10 @@ export const INGEST_QUEUE = "ingest";
 export interface IngestJob {
   sourceDocumentId: string;
 }
+
+/** A stop→restart gap longer than this ends the session. It's BOTH the `/record` merge window
+ * (a restart within it resumes the same session) and the `/stop`→finalize delay. Override with
+ * HEARTH_SESSION_GAP_MIN (fractional minutes ok — set it tiny to test the lifecycle fast). */
+export const SESSION_GAP_MS =
+  (Number(process.env.HEARTH_SESSION_GAP_MIN) || 30) * 60_000;
+export const SESSION_GAP_SEC = Math.max(1, Math.round(SESSION_GAP_MS / 1000));

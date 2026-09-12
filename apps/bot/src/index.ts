@@ -15,6 +15,7 @@ import {
   GatewayIntentBits,
   MessageFlags,
   ModalBuilder,
+  PermissionFlagsBits,
   type ModalSubmitInteraction,
   REST,
   Routes,
@@ -24,11 +25,8 @@ import {
 } from "discord.js";
 import { randomUUID } from "node:crypto";
 import { prisma } from "@hearth/db";
-import type { Viewer } from "@hearth/core";
 import {
   ask,
-  putDocument,
-  getQueue,
   getPortrait,
   retrieveContext,
   revealTo,
@@ -37,8 +35,24 @@ import {
   matchPortrait,
   portraitQuery,
   saveNpc,
-  INGEST_QUEUE,
-  type IngestJob,
+  getActiveSession,
+  getLiveTranscript,
+  ingestUpload,
+  findShareCandidate,
+  requestShare,
+  approveShare,
+  rejectShare,
+  getShareForReview,
+  proposeCorrection,
+  applyCorrection,
+  rejectCorrection,
+  summarizeRecent,
+  resolveCampaignId,
+  resolveMember,
+  getCampaignDiscord,
+  setupCampaign,
+  joinCampaign,
+  type ResolvedMember,
   type NpcDraft,
   type PortraitMatch,
 } from "@hearth/agents";
@@ -51,6 +65,10 @@ import {
   npcShareEmbed,
   npcCardMarkdown,
   safeFileName,
+  helpEmbed,
+  recapEmbed,
+  correctionEmbeds,
+  shareEmbed,
 } from "./embeds.js";
 
 function requireEnv(name: string): string {
@@ -61,14 +79,33 @@ function requireEnv(name: string): string {
 
 const TOKEN = requireEnv("DISCORD_BOT_TOKEN");
 const CLIENT_ID = requireEnv("DISCORD_CLIENT_ID");
-const GUILD_ID = process.env.DISCORD_GUILD_ID; // optional → instant guild registration
-const CAMPAIGN_ID = process.env.HEARTH_CAMPAIGN_ID ?? "seed-ondera";
+const GUILD_ID = process.env.DISCORD_GUILD_ID; // optional → dev-only instant registration
+const GUILD_COMMANDS = process.env.HEARTH_GUILD_COMMANDS === "1";
+
+// Access gate. The bot can be added to any server once it's public, but running commands costs
+// real money (Claude, Voyage, Deepgram) on OUR keys — so only approved servers may use it.
+// HEARTH_ALLOWED_GUILDS is a comma-separated list of guild ids; when it's empty the bot serves
+// every server it's in, which is fine while it's private but must be set before going public.
+const ALLOWED_GUILDS = new Set(
+  (process.env.HEARTH_ALLOWED_GUILDS ?? "")
+    .split(",")
+    .map((g) => g.trim())
+    .filter(Boolean),
+);
+
+function isGuildAllowed(guildId: string | null): boolean {
+  if (ALLOWED_GUILDS.size === 0) return true; // no allowlist configured — open
+  return guildId !== null && ALLOWED_GUILDS.has(guildId);
+}
 
 // DEV ONLY: with HEARTH_DEV_DM_TOGGLE=1, `/dmmode` lets a member view the campaign as the
 // DM (to test DM_ONLY content). Gated behind the flag so it can never exist in a real
 // multi-tenant deployment, where players must not self-promote.
 const DEV_DM_TOGGLE = process.env.HEARTH_DEV_DM_TOGGLE === "1";
-const dmOverride = new Set<string>(); // discord user ids currently viewing as the DM
+// Discord user ids currently viewing the campaign as the OPPOSITE of their real role — a
+// player checking DM_ONLY content, or (now that the DM is a real role) a DM checking what a
+// player would actually see. Two-way, because both directions are worth testing.
+const roleOverride = new Set<string>();
 
 const askCommand = new SlashCommandBuilder()
   .setName("ask")
@@ -159,6 +196,13 @@ const npcCommand = new SlashCommandBuilder()
         "Optional brief — role, race, vibe, where they fit. Leave blank to surprise you.",
       ),
   )
+  .addBooleanOption((o) =>
+    o
+      .setName("live")
+      .setDescription(
+        "Fit the NPC to what's happening right now (needs an active recording)",
+      ),
+  )
   .addChannelOption((o) =>
     o
       .setName("in")
@@ -168,9 +212,109 @@ const npcCommand = new SlashCommandBuilder()
       .addChannelTypes(ChannelType.GuildText),
   );
 
+const setupCommand = new SlashCommandBuilder()
+  .setName("setup")
+  .setDescription("Set up this server's campaign, or change its settings.")
+  .addStringOption((o) =>
+    o
+      .setName("name")
+      .setDescription("What's the campaign called? (required the first time)"),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("dm_name")
+      .setDescription(
+        "What should we call you at the table? (labels your lines in transcripts)",
+      ),
+  )
+  .addChannelOption((o) =>
+    o
+      .setName("reveals")
+      .setDescription(
+        "Where reveals and shared NPCs get posted (run /setup again any time to change it)",
+      )
+      .addChannelTypes(ChannelType.GuildText),
+  );
+
+const joinCommand = new SlashCommandBuilder()
+  .setName("join")
+  .setDescription("Join this server's campaign with your character.")
+  .addStringOption((o) =>
+    o
+      .setName("character")
+      .setDescription("Your character's name")
+      .setRequired(true),
+  );
+
+const correctCommand = new SlashCommandBuilder()
+  .setName("correct")
+  .setDescription(
+    "Something in the memory is wrong — tell Hearth what's actually true.",
+  )
+  .addStringOption((o) =>
+    o
+      .setName("truth")
+      .setDescription(
+        "What's actually true, e.g. 'Moira was Morwyn's mother, not his wife'",
+      )
+      .setRequired(true),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("said")
+      .setDescription(
+        "What the memory said, if you want to point at it directly",
+      ),
+  );
+
+const shareCommand = new SlashCommandBuilder()
+  .setName("share")
+  .setDescription(
+    "Tell the party something you know — the DM approves it first.",
+  )
+  .addStringOption((o) =>
+    o
+      .setName("about")
+      .setDescription(
+        "What you want to share — a note you wrote, or anything you know",
+      )
+      .setRequired(true),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("note")
+      .setDescription("Anything you want the DM to know about why"),
+  );
+
+const recapCommand = new SlashCommandBuilder()
+  .setName("recap")
+  .setDescription("What happened last session?");
+
+const missedCommand = new SlashCommandBuilder()
+  .setName("missed")
+  .setDescription("What did I miss? Catch up on what just happened.")
+  .addIntegerOption((o) =>
+    o
+      .setName("minutes")
+      .setDescription("How far back to look (default 5)")
+      .setMinValue(1)
+      .setMaxValue(120),
+  )
+  .addBooleanOption((o) =>
+    o
+      .setName("raw")
+      .setDescription(
+        "Show what was actually said, word for word, instead of a summary",
+      ),
+  );
+
+const helpCommand = new SlashCommandBuilder()
+  .setName("help")
+  .setDescription("What can Hearth do? List the commands.");
+
 const dmModeCommand = new SlashCommandBuilder()
   .setName("dmmode")
-  .setDescription("(dev) Toggle viewing the campaign as the DM.");
+  .setDescription("(dev) Swap between the DM view and a player view.");
 
 async function registerCommands(): Promise<void> {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -182,62 +326,57 @@ async function registerCommands(): Promise<void> {
     revealCommand.toJSON(),
     journalCommand.toJSON(),
     npcCommand.toJSON(),
+    recapCommand.toJSON(),
+    missedCommand.toJSON(),
+    correctCommand.toJSON(),
+    shareCommand.toJSON(),
+    setupCommand.toJSON(),
+    joinCommand.toJSON(),
+    helpCommand.toJSON(),
   ];
   if (DEV_DM_TOGGLE) body.push(dmModeCommand.toJSON());
-  if (GUILD_ID) {
+  // Global registration is the default now that Hearth serves many servers — guild-scoped
+  // commands would only ever appear in ONE server. HEARTH_GUILD_COMMANDS=1 opts local dev into
+  // instant guild registration (global propagation takes ~1h), at the cost of that one server
+  // briefly showing each command twice.
+  if (GUILD_COMMANDS && GUILD_ID) {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
       body,
     });
-    // Clear any global commands of the same name so they don't show as duplicates.
-    await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
-    console.log(`Registered commands to guild ${GUILD_ID}`);
+    console.log(`Registered commands to guild ${GUILD_ID} (dev, instant)`);
   } else {
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body });
-    console.log("Registered commands globally (can take ~1h to appear)");
+    // Clear leftovers from a previous guild-scoped run so they don't duplicate the global set.
+    if (GUILD_ID) {
+      await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
+        body: [],
+      });
+    }
+    console.log(
+      "Registered commands globally — every server gets them (can take ~1h to appear)",
+    );
   }
 }
 
 /** A resolved viewer plus the display name of their character (for in-world presentation).
  * The core `Viewer` stays pure — the name rides alongside only for the bot's UI. */
-type ResolvedViewer = Viewer & {
-  characterName: string | null;
-  membershipId: string;
-  theme: string;
-};
+type ResolvedViewer = ResolvedMember;
 
-/** Resolve the Discord author to a permission viewer within the campaign. */
+/** Resolve the Discord author to a permission viewer within the campaign bound to `guildId`.
+ * Returns null if the server has no campaign yet (`/setup`) or the user hasn't joined it. */
 async function resolveViewer(
+  guildId: string | null,
   discordUserId: string,
 ): Promise<ResolvedViewer | null> {
-  const user = await prisma.user.findUnique({
-    where: { discordUserId },
-    include: {
-      memberships: {
-        where: { campaignId: CAMPAIGN_ID },
-        include: {
-          characters: { where: { campaignId: CAMPAIGN_ID }, take: 1 },
-          campaign: { select: { theme: true } },
-        },
-      },
-    },
-  });
-
-  const membership = user?.memberships[0];
-  if (!membership) return null;
-  const character = membership.characters[0];
-  // Dev DM-view override (see /dmmode) — treat this member as the DM so DM_ONLY content
-  // is visible. Never active unless HEARTH_DEV_DM_TOGGLE=1.
-  const role =
-    DEV_DM_TOGGLE && dmOverride.has(discordUserId) ? "DM" : membership.role;
-  return {
-    campaignId: CAMPAIGN_ID,
-    role,
-    characterId: character?.id ?? null,
-    partyId: character?.partyId ?? null,
-    characterName: character?.name ?? null,
-    membershipId: membership.id,
-    theme: membership.campaign.theme,
-  };
+  if (!guildId) return null;
+  const campaignId = await resolveCampaignId(guildId);
+  if (!campaignId) return null;
+  const member = await resolveMember(campaignId, discordUserId);
+  if (!member) return null;
+  // Dev-only role swap (see /dmmode) — applied on top of the shared resolution, never inside
+  // it, so the web app can't inherit a development affordance.
+  if (!DEV_DM_TOGGLE || !roleOverride.has(discordUserId)) return member;
+  return { ...member, role: member.role === "DM" ? "PLAYER" : "DM" };
 }
 
 /** /ask — answer from the memory, filtered to what the asker's character knows. */
@@ -250,7 +389,10 @@ async function handleAsk(
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   try {
-    const viewer = await resolveViewer(interaction.user.id);
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
     if (!viewer) {
       await interaction.editReply(
         "You're not linked to a character in this campaign yet.",
@@ -286,7 +428,10 @@ async function handleJournal(
 ): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   try {
-    const viewer = await resolveViewer(interaction.user.id);
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
     if (!viewer) {
       await interaction.editReply("You're not part of this campaign.");
       return;
@@ -299,7 +444,7 @@ async function handleJournal(
     }
     const entry = interaction.options.getString("entry", true);
     const note = await addJournalNote(
-      CAMPAIGN_ID,
+      viewer.campaignId,
       viewer.membershipId,
       viewer.characterId,
       entry,
@@ -315,13 +460,880 @@ async function handleJournal(
   }
 }
 
+/** /setup — create this server's campaign and make the runner its DM. Gated on Discord's
+ * Manage Server permission, so a random member can't claim someone else's table. */
+async function handleSetup(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const guildId = interaction.guildId;
+    if (!guildId) {
+      await interaction.editReply("Run this in a server, not a DM.");
+      return;
+    }
+    // Two different questions, so two different gates. CLAIMING a server needs Manage Server,
+    // so a passing member can't take over someone else's table. ADJUSTING a campaign that
+    // already exists is the DM's call — they own it, and they may well not be a server admin.
+    const existing = await resolveCampaignId(guildId);
+    if (existing) {
+      const viewer = await resolveMember(existing, interaction.user.id);
+      if (viewer?.role !== "DM") {
+        await interaction.editReply(
+          "This server already has a campaign — only its DM can change these settings.",
+        );
+        return;
+      }
+    } else if (
+      !interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)
+    ) {
+      await interaction.editReply(
+        "You need the **Manage Server** permission to set up a campaign here.",
+      );
+      return;
+    }
+    const name = interaction.options.getString("name");
+    if (!existing && !name) {
+      await interaction.editReply(
+        'What\'s the campaign called? Run `/setup name:"Your campaign"`.',
+      );
+      return;
+    }
+    const dmName = interaction.options.getString("dm_name") ?? undefined;
+    const reveals = interaction.options.getChannel("reveals");
+    const result = await setupCampaign(
+      guildId,
+      interaction.user.id,
+      interaction.user.username,
+      name ?? "",
+      dmName,
+      reveals?.id,
+    );
+
+    // Say NOW whether I can actually post there, rather than at the moment someone tries to
+    // share something and it fails.
+    const revealWarning = await describeRevealChannel(
+      interaction,
+      result.revealChannelId,
+    );
+
+    if (result.alreadyExisted) {
+      await interaction.editReply(
+        reveals
+          ? revealWarning
+          : `This server already runs **${result.campaignName}** — players can \`/join\`. Use \`/setup reveals:#channel\` to choose where reveals post.`,
+      );
+      return;
+    }
+    await interaction.editReply(
+      `🔥 **${result.campaignName}** is live and you're the DM.\n` +
+        "Players join with `/join character:<name>`. Then `/record` to capture a session, `/upload` your notes, and `/help` for everything else." +
+        `\n${revealWarning}`,
+    );
+  } catch (err) {
+    console.error("/setup failed:", err);
+    await interaction
+      .editReply("Something went wrong setting up the campaign.")
+      .catch(() => {});
+  }
+}
+
+/** Whether I can actually post in the reveals channel, said at setup time.
+ *
+ * Reveals and shared NPCs are posted to a channel, and a PRIVATE channel needs the bot invited
+ * to it explicitly — being in the server isn't enough. Finding that out when a share fails is
+ * a bad time to find it out. */
+async function describeRevealChannel(
+  interaction: ChatInputCommandInteraction,
+  channelId: string | null,
+): Promise<string> {
+  if (!channelId) {
+    return "ℹ️ No reveals channel set — I'll post reveals wherever the command was run. `/setup reveals:#channel` to pin it down.";
+  }
+  const channel = await interaction.guild?.channels
+    .fetch(channelId)
+    .catch(() => null);
+  if (!channel || !channel.isTextBased()) {
+    return `⚠️ I can't see <#${channelId}> — pick a channel I can read.`;
+  }
+  const me = interaction.guild?.members.me;
+  const perms = me ? channel.permissionsFor(me) : null;
+  const missing = [
+    perms?.has(PermissionFlagsBits.ViewChannel) ? null : "View Channel",
+    perms?.has(PermissionFlagsBits.SendMessages) ? null : "Send Messages",
+    perms?.has(PermissionFlagsBits.EmbedLinks) ? null : "Embed Links",
+  ].filter(Boolean);
+  if (missing.length > 0) {
+    return `⚠️ Reveals will go to <#${channelId}>, but I can't post there yet — grant me **${missing.join(", ")}** (a private channel needs me added to it directly).`;
+  }
+  return `✅ Reveals will be posted in <#${channelId}>.`;
+}
+
+/** /join — a player registers themselves + their character in this server's campaign. */
+async function handleJoin(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const guildId = interaction.guildId;
+    const campaignId = guildId ? await resolveCampaignId(guildId) : null;
+    if (!campaignId) {
+      await interaction.editReply(
+        "No campaign here yet — the DM needs to run `/setup` first.",
+      );
+      return;
+    }
+    const characterName = interaction.options.getString("character", true);
+    const result = await joinCampaign(
+      campaignId,
+      interaction.user.id,
+      interaction.user.username,
+      characterName,
+    );
+    await interaction.editReply(
+      result.renamed
+        ? `Your character is now **${result.characterName}**.`
+        : `🎲 Welcome — you're playing **${result.characterName}**. Try \`/ask\` to see what they know, or \`/journal\` to keep private notes.`,
+    );
+  } catch (err) {
+    console.error("/join failed:", err);
+    await interaction
+      .editReply("Something went wrong joining the campaign.")
+      .catch(() => {});
+  }
+}
+
+/** Keep the most RECENT whole lines that fit — a transcript tail is what you missed, so
+ * trimming the end (as a plain truncate would) throws away the newest part. */
+function tailWithin(transcript: string, limit: number): string {
+  const lines = transcript.split("\n");
+  const kept: string[] = [];
+  let size = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (size + line.length + 1 > limit) break;
+    kept.unshift(line);
+    size += line.length + 1;
+  }
+  return kept.length > 0 ? kept.join("\n") : transcript.slice(-limit);
+}
+
+/** /missed — you stepped away mid-session; what happened? Five minutes by default, since that's
+ * about how long stepping away takes and nobody should have to estimate it. Table-audible
+ * speech only, so there's nothing to permission-filter. */
+async function handleMissed(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
+    if (!viewer) {
+      await interaction.editReply(
+        "You're not part of a campaign here yet — try `/join`.",
+      );
+      return;
+    }
+    const minutes = interaction.options.getInteger("minutes") ?? 5;
+    const raw = interaction.options.getBoolean("raw") ?? false;
+
+    const live = await getActiveSession(viewer.campaignId);
+    if (!live) {
+      await interaction.editReply(
+        "No session is being recorded right now — `/recap` covers last time.",
+      );
+      return;
+    }
+
+    const transcript = await getLiveTranscript(live.gameSessionId, minutes);
+    if (!transcript) {
+      await interaction.editReply(
+        `Nothing's been transcribed in the last ${minutes} minutes — it may still be catching up.`,
+      );
+      return;
+    }
+
+    // Raw is the literal transcript: no model call, so it's instant and free, and it shows
+    // exactly what was said rather than what a summary made of it.
+    const body = raw
+      ? tailWithin(transcript, 4000)
+      : await summarizeRecent(transcript);
+
+    await interaction.editReply({
+      embeds: [
+        recapEmbed(
+          raw
+            ? `🎙 The last ${minutes} minutes, word for word`
+            : `⏪ The last ${minutes} minutes`,
+          body,
+          `Session ${live.number} · in progress`,
+          viewer.theme,
+        ),
+      ],
+    });
+  } catch (err) {
+    console.error("/missed failed:", err);
+    await interaction
+      .editReply("Something went wrong catching you up.")
+      .catch(() => {});
+  }
+}
+
+/** /recap — what happened LAST session. After the fact, not mid-session: the stored recap the
+ * worker wrote when that session finished. */
+async function handleRecap(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
+    if (!viewer) {
+      await interaction.editReply(
+        "You're not part of a campaign here yet — try `/join`.",
+      );
+      return;
+    }
+    const last = await prisma.gameSession.findFirst({
+      where: { campaignId: viewer.campaignId, recap: { not: null } },
+      orderBy: { number: "desc" },
+      select: { number: true, title: true, recap: true },
+    });
+    if (!last?.recap) {
+      await interaction.editReply(
+        "No sessions have been recorded yet — the DM can start one with `/record`.",
+      );
+      return;
+    }
+    await interaction.editReply({
+      embeds: [
+        recapEmbed(
+          last.title ?? `Session ${last.number}`,
+          last.recap,
+          `Session ${last.number} · last time`,
+          viewer.theme,
+        ),
+      ],
+    });
+  } catch (err) {
+    console.error("/recap failed:", err);
+    await interaction
+      .editReply("Something went wrong putting that recap together.")
+      .catch(() => {});
+  }
+}
+
+/** /correct — anyone can say the memory got something wrong. A player's correction waits for
+ * the DM; a DM's applies immediately, because there's nobody above them to ask. */
+async function handleCorrect(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
+    if (!viewer) {
+      await interaction.editReply(
+        "You're not part of a campaign here yet — try `/join`.",
+      );
+      return;
+    }
+    const truth = interaction.options.getString("truth", true);
+    const said = interaction.options.getString("said") ?? undefined;
+
+    const proposal = await proposeCorrection(
+      viewer,
+      viewer.membershipId,
+      truth,
+      said,
+    );
+
+    if (proposal.targets.length === 0 && !proposal.newFactTitle) {
+      await interaction.editReply(
+        "Nothing in the memory contradicts that — it may not have been recorded yet. Nothing changed.",
+      );
+      return;
+    }
+
+    if (proposal.autoApproved) {
+      await interaction.editReply({
+        embeds: correctionEmbeds(proposal, "applied", viewer.theme),
+      });
+      return;
+    }
+
+    // A player's correction: tell them it's pending, then put it in front of the DM.
+    await interaction.editReply({
+      embeds: correctionEmbeds(proposal, "pending", viewer.theme),
+    });
+    await notifyDmOfCorrection(interaction, viewer, proposal);
+  } catch (err) {
+    console.error("/correct failed:", err);
+    await interaction
+      .editReply("Something went wrong filing that correction.")
+      .catch(() => {});
+  }
+}
+
+/** Tell the DM a correction is waiting — WITHOUT showing what it touches.
+ *
+ * The facts a correction changes can be DM_ONLY, or another player's private note that only
+ * they and the DM may read. Posting the before/after into a campaign channel would hand all of
+ * it to everyone present, so the channel message carries nothing but the proposer's own words;
+ * the detail is delivered ephemerally when the DM opens it. */
+async function notifyDmOfCorrection(
+  interaction: ChatInputCommandInteraction,
+  viewer: ResolvedViewer,
+  proposal: Awaited<ReturnType<typeof proposeCorrection>>,
+): Promise<void> {
+  const dm = await prisma.membership.findFirst({
+    where: { campaignId: viewer.campaignId, role: "DM" },
+    select: { user: { select: { discordUserId: true } } },
+  });
+  const mention = dm?.user.discordUserId ? `<@${dm.user.discordUserId}> ` : "";
+  const who = viewer.characterName ?? "A player";
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`cx:v:${proposal.id}`)
+      .setLabel("Review correction")
+      .setStyle(ButtonStyle.Primary),
+  );
+
+  const channel = interaction.channel;
+  const notified =
+    channel?.isSendable() &&
+    (await channel
+      .send({
+        content: `${mention}${who} says the memory got something wrong — only you can see the details.`,
+        components: [row],
+      })
+      .then(() => true)
+      .catch((err) => {
+        console.error("correction notify failed:", err);
+        return false;
+      }));
+
+  // Don't let the proposer believe the DM was told when they weren't — a correction that
+  // silently waits forever is worse than one that never got filed.
+  if (!notified) {
+    await interaction
+      .followUp({
+        content:
+          "Filed — but I couldn't post it here, so please mention it to your DM directly.",
+        flags: MessageFlags.Ephemeral,
+      })
+      .catch(() => {});
+  }
+}
+
+/** Load a pending correction and shape it the way the embeds expect. Campaign-scoped, so a
+ * button id from another table resolves to nothing. */
+async function loadCorrectionForReview(
+  correctionId: string,
+  campaignId: string,
+): Promise<Parameters<typeof correctionEmbeds>[0] | null> {
+  const c = await prisma.correction.findFirst({
+    where: { id: correctionId, campaignId },
+  });
+  if (!c) return null;
+  const rewrites = (c.rewrites ?? []) as {
+    id: string;
+    rewrite: string;
+    kind?: "FACT" | "PASSAGE";
+  }[];
+  const [units, chunks] = await Promise.all([
+    prisma.knowledgeUnit.findMany({
+      where: { id: { in: rewrites.map((r) => r.id) }, campaignId },
+      select: { id: true, title: true, content: true },
+    }),
+    prisma.documentChunk.findMany({
+      where: { id: { in: rewrites.map((r) => r.id) }, campaignId },
+      select: {
+        id: true,
+        text: true,
+        sourceDocument: { select: { name: true } },
+      },
+    }),
+  ]);
+  return {
+    statement: c.statement,
+    targets: rewrites.map((r) => {
+      const unit = units.find((u) => u.id === r.id);
+      if (unit) {
+        return { title: unit.title, content: unit.content, rewrite: r.rewrite };
+      }
+      const chunk = chunks.find((ch) => ch.id === r.id);
+      if (chunk) {
+        return {
+          title: `passage from ${chunk.sourceDocument.name}`,
+          content: chunk.text,
+          rewrite: "",
+        };
+      }
+      return { title: "(already changed)", content: "", rewrite: r.rewrite };
+    }),
+    newFactTitle: c.resultTitle,
+    newFactContent: c.resultContent,
+  };
+}
+
+/** Review / Approve / Reject on a pending correction. DM only — they own canon. */
+async function handleCorrectionButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const [, action, correctionId] = interaction.customId.split(":");
+  const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
+  if (!viewer || viewer.role !== "DM") {
+    await interaction.reply({
+      content: "Only the DM can review a correction.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  // "Review" opens the detail privately — this is the only place target content is shown.
+  if (action === "v") {
+    const proposal = await loadCorrectionForReview(
+      correctionId!,
+      viewer.campaignId,
+    );
+    if (!proposal) {
+      await interaction.reply({
+        content: "That correction is no longer available.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    const decide = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`cx:a:${correctionId}`)
+        .setLabel("Approve")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`cx:r:${correctionId}`)
+        .setLabel("Reject")
+        .setStyle(ButtonStyle.Secondary),
+    );
+    await interaction.reply({
+      embeds: correctionEmbeds(proposal, "pending", viewer.theme),
+      components: [decide],
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  // Ack first: applying rewrites units and re-embeds, well past the 3s button window.
+  await interaction.deferUpdate();
+  try {
+    if (action === "r") {
+      await rejectCorrection(
+        correctionId!,
+        viewer.membershipId,
+        viewer.campaignId,
+      );
+      await interaction.editReply({
+        content: "❌ Correction rejected — the memory stands as it was.",
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    const { rewritten, retiredFacts, retiredPassages, added } =
+      await applyCorrection(
+        correctionId!,
+        viewer.membershipId,
+        viewer.campaignId,
+      );
+    const parts = [
+      rewritten > 0
+        ? `${rewritten} fact${rewritten === 1 ? "" : "s"} corrected`
+        : null,
+      retiredFacts > 0
+        ? `${retiredFacts} fact${retiredFacts === 1 ? "" : "s"} retired`
+        : null,
+      retiredPassages > 0
+        ? `${retiredPassages} passage${retiredPassages === 1 ? "" : "s"} retired`
+        : null,
+      added ? "1 fact added" : null,
+    ].filter(Boolean);
+    await interaction.editReply({
+      // Everything it targeted can have been changed by another correction in the meantime,
+      // which is a real outcome and shouldn't render as "Canon updated — .".
+      content:
+        parts.length > 0
+          ? `✅ Canon updated — ${parts.join(", ")}.`
+          : "✅ Approved, but the memory had already moved on — nothing was left to change.",
+      embeds: [],
+      components: [],
+    });
+  } catch (err) {
+    console.error("correction decision failed:", err);
+    await interaction
+      .editReply({
+        // A second click on a stale message is the common case here, not a real failure —
+        // say what actually happened rather than implying something broke.
+        content:
+          err instanceof Error &&
+          (err.message.includes("already been applied") ||
+            err.message.includes("not awaiting") ||
+            err.message.includes("not found"))
+            ? "That correction has already been decided."
+            : "Something went wrong applying that correction.",
+        components: [],
+      })
+      .catch(() => {});
+  }
+}
+
+/** /share — a player offers something they know to the party. The DM decides.
+ *
+ * Deliberately mirrors /correct and /reveal: matching is semantic and can pick the wrong thing,
+ * so the player sees what was found and confirms before anything is filed. Nothing is written
+ * until they say that's the one. */
+async function handleShare(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
+    if (!viewer) {
+      await interaction.editReply(
+        "You're not part of a campaign here yet — try `/join`.",
+      );
+      return;
+    }
+    const about = interaction.options.getString("about", true);
+    const note = interaction.options.getString("note") ?? undefined;
+
+    const match = await findShareCandidate(viewer, about);
+    if (!match) {
+      await interaction.editReply(
+        "Couldn't find anything you know that matches that — try describing it differently.",
+      );
+      return;
+    }
+    if (match.alreadyShared) {
+      await interaction.editReply(
+        `The party already knows about **${match.unit.title}** — nothing to share.`,
+      );
+      return;
+    }
+
+    // Stash the note against the draft id; Discord custom ids are far too small for prose.
+    const draftId = randomUUID().slice(0, 8);
+    shareDrafts.set(draftId, {
+      unitId: match.unit.id,
+      note,
+      touchedAt: Date.now(),
+    });
+    sweepShareDrafts();
+
+    await interaction.editReply({
+      content: `Share this with the party?`,
+      embeds: [
+        shareEmbed(
+          viewer.characterName ?? "You",
+          match.unit.title,
+          match.unit.content,
+          note,
+          viewer.theme,
+        ),
+      ],
+      components: [
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder()
+            .setCustomId(`sh:c:${draftId}`)
+            .setLabel(viewer.role === "DM" ? "Share it" : "Ask the DM")
+            .setStyle(ButtonStyle.Primary),
+          new ButtonBuilder()
+            .setCustomId("sh:x")
+            .setLabel("Not that")
+            .setStyle(ButtonStyle.Secondary),
+        ),
+      ],
+    });
+  } catch (err) {
+    console.error("/share failed:", err);
+    await interaction
+      .editReply("Something went wrong looking that up.")
+      .catch(() => {});
+  }
+}
+
+/** Confirmed shares awaiting the button click. In memory because they're seconds-long and
+ * carry nothing that matters if the process restarts — the same treatment as NPC drafts. */
+const shareDrafts = new Map<
+  string,
+  { unitId: string; note?: string; touchedAt: number }
+>();
+const SHARE_DRAFT_TTL_MS = 15 * 60_000;
+function sweepShareDrafts(): void {
+  const cutoff = Date.now() - SHARE_DRAFT_TTL_MS;
+  for (const [id, d] of shareDrafts) {
+    if (d.touchedAt < cutoff) shareDrafts.delete(id);
+  }
+}
+
+/** Tell the DM a share is waiting, without publishing its content — the same reasoning as a
+ * correction: until they approve it, it isn't the party's to read. */
+async function notifyDmOfShare(
+  interaction: ButtonInteraction,
+  viewer: ResolvedViewer,
+  shareId: string,
+): Promise<void> {
+  const dm = await prisma.membership.findFirst({
+    where: { campaignId: viewer.campaignId, role: "DM" },
+    select: { user: { select: { discordUserId: true } } },
+  });
+  const mention = dm?.user.discordUserId ? `<@${dm.user.discordUserId}> ` : "";
+  const who = viewer.characterName ?? "A player";
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`sh:v:${shareId}`)
+      .setLabel("Review share")
+      .setStyle(ButtonStyle.Primary),
+  );
+
+  const channel = interaction.channel;
+  const notified =
+    channel?.isSendable() &&
+    (await channel
+      .send({
+        content: `${mention}${who} wants to tell the party something — only you can see what.`,
+        components: [row],
+      })
+      .then(() => true)
+      .catch((err) => {
+        console.error("share notify failed:", err);
+        return false;
+      }));
+  if (!notified) {
+    await interaction
+      .followUp({
+        content:
+          "Filed — but I couldn't post it here, so please mention it to your DM directly.",
+        flags: MessageFlags.Ephemeral,
+      })
+      .catch(() => {});
+  }
+}
+
+/** Review / Approve / Reject a pending share. DM only. */
+async function handleShareButton(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const [, action, shareId] = interaction.customId.split(":");
+  const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
+  if (!viewer) {
+    await interaction.reply({
+      content: "You're not part of a campaign here.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  // The player's own confirm/cancel — anyone may do this for their own draft.
+  if (action === "x") {
+    await interaction.update({
+      content: "Cancelled — nothing was shared.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+  if (action === "c") {
+    const draft = shareDrafts.get(shareId!);
+    if (!draft) {
+      await interaction.update({
+        content: "That's expired — run `/share` again.",
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    await interaction.deferUpdate();
+    try {
+      const { id, alreadyPending } = await requestShare(
+        viewer,
+        viewer.membershipId,
+        draft.unitId,
+        draft.note,
+      );
+      shareDrafts.delete(shareId!);
+      if (alreadyPending) {
+        await interaction.editReply({
+          content: "That's already waiting on the DM.",
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+      // A DM sharing is the approval — there's nobody above them to ask.
+      if (viewer.role === "DM") {
+        await approveShare(id, viewer.membershipId, viewer.campaignId);
+        await interaction.editReply({
+          content: "✅ Shared with the party.",
+          embeds: [],
+          components: [],
+        });
+        return;
+      }
+      await interaction.editReply({
+        content:
+          "📨 Asked the DM. Nothing is visible to anyone else until they approve.",
+        embeds: [],
+        components: [],
+      });
+      await notifyDmOfShare(interaction, viewer, id);
+    } catch (err) {
+      console.error("share request failed:", err);
+      await interaction
+        .editReply({
+          content:
+            err instanceof Error && err.message.includes("can share")
+              ? "That isn't something you can share."
+              : "Something went wrong filing that.",
+          embeds: [],
+          components: [],
+        })
+        .catch(() => {});
+    }
+    return;
+  }
+
+  // Everything below is the DM's decision.
+  if (viewer.role !== "DM") {
+    await interaction.reply({
+      content: "Only the DM can decide on a share.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (action === "v") {
+    const req = await getShareForReview(shareId!, viewer.campaignId);
+    if (!req) {
+      await interaction.reply({
+        content: "That share is no longer available.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    const decide = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`sh:a:${shareId}`)
+        .setLabel("Share with the party")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`sh:r:${shareId}`)
+        .setLabel("Keep it private")
+        .setStyle(ButtonStyle.Secondary),
+    );
+    await interaction.reply({
+      embeds: [
+        shareEmbed(
+          req.proposedBy?.characters[0]?.name ?? "A player",
+          req.knowledgeUnit.title,
+          req.knowledgeUnit.content,
+          req.note,
+          viewer.theme,
+        ),
+      ],
+      components: [decide],
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferUpdate();
+  try {
+    if (action === "r") {
+      await rejectShare(shareId!, viewer.membershipId, viewer.campaignId);
+      await interaction.editReply({
+        content: "🤫 Kept private — the party wasn't told.",
+        embeds: [],
+        components: [],
+      });
+      return;
+    }
+    await approveShare(shareId!, viewer.membershipId, viewer.campaignId);
+    await interaction.editReply({
+      content: "✅ Shared with the party — they can ask about it now.",
+      embeds: [],
+      components: [],
+    });
+  } catch (err) {
+    console.error("share decision failed:", err);
+    await interaction
+      .editReply({
+        content:
+          err instanceof Error && err.message.includes("not awaiting")
+            ? "That share has already been decided."
+            : "Something went wrong with that share.",
+        components: [],
+      })
+      .catch(() => {});
+  }
+}
+
+/** /record — resolve this server's campaign, then start capture. */
+async function handleRecord(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
+  if (!viewer) {
+    await interaction.reply({
+      content:
+        "This server isn't set up yet — the DM can run `/setup`, or `/join` if the campaign already exists.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  if (viewer.role !== "DM") {
+    await interaction.reply({
+      content: "Only the DM can start a recording.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  await startRecording(interaction, viewer.campaignId);
+}
+
+/** /help — list Hearth's commands. Works for anyone; membership not required. */
+async function handleHelp(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  const viewer = await resolveViewer(
+    interaction.guildId,
+    interaction.user.id,
+  ).catch(() => null);
+  await interaction.reply({
+    embeds: [helpEmbed(viewer?.theme)],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
 /** /upload — ingest a document into the DM_ADDED corpus (parse → chunk → embed). */
 async function handleUpload(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   try {
-    const viewer = await resolveViewer(interaction.user.id);
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
     if (!viewer) {
       await interaction.editReply("You're not part of this campaign.");
       return;
@@ -343,31 +1355,16 @@ async function handleUpload(
     const data = Buffer.from(await res.arrayBuffer());
 
     const extractUnits = interaction.options.getBoolean("extract") ?? true;
-    const doc = await prisma.sourceDocument.create({
-      data: {
-        campaignId: CAMPAIGN_ID,
-        name: attachment.name,
-        sourceType: "UPLOAD",
-        mimeType: attachment.contentType ?? null,
-        status: "PENDING",
-        extractUnits,
-      },
-    });
-    // Tenant-scoped key: {campaignId}/{docId}/{safe-name}.
-    const safeName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const key = `${CAMPAIGN_ID}/${doc.id}/${safeName}`;
-    await putDocument(key, data, attachment.contentType ?? undefined);
-    await prisma.sourceDocument.update({
-      where: { id: doc.id },
-      data: { storagePath: key },
-    });
-
-    const boss = await getQueue();
-    const job: IngestJob = { sourceDocumentId: doc.id };
-    await boss.send(INGEST_QUEUE, job);
+    const doc = await ingestUpload(
+      viewer.campaignId,
+      attachment.name,
+      data,
+      attachment.contentType ?? undefined,
+      extractUnits,
+    );
 
     console.log(
-      `📄 upload: "${attachment.name}" (${data.length} bytes) → ${doc.id} queued`,
+      `📄 upload: "${attachment.name}" (${data.length} bytes) → ${doc.documentId} queued`,
     );
     await interaction.editReply(
       `📄 Uploaded **${attachment.name}** — parsing it into the memory.`,
@@ -385,13 +1382,17 @@ async function handleDmMode(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   const id = interaction.user.id;
-  const on = !dmOverride.has(id);
-  if (on) dmOverride.add(id);
-  else dmOverride.delete(id);
+  const on = !roleOverride.has(id);
+  if (on) roleOverride.add(id);
+  else roleOverride.delete(id);
+  const viewer = await resolveViewer(interaction.guildId, id);
+  const nowSeeing = on
+    ? viewer?.role === "DM"
+      ? "everything in the campaign (DM_ONLY included)"
+      : `only what ${viewer?.characterName ?? "your character"} knows`
+    : "your real role again";
   await interaction.reply({
-    content: on
-      ? "🎭 DM view **on** — you now see everything in the campaign (DM_ONLY included)."
-      : "🎭 DM view **off** — back to your character's knowledge.",
+    content: `🎭 Role swap **${on ? "on" : "off"}** — you now see ${nowSeeing}.`,
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -406,18 +1407,19 @@ function trimLabel(s: string): string {
 
 /** Resolve a `/reveal to:` string to a character or the party in this campaign. */
 async function resolveRevealTarget(
+  campaignId: string,
   to: string,
 ): Promise<{ characterId?: string; partyId?: string; label: string } | null> {
   const norm = to.trim().toLowerCase();
   if (["party", "the party", "everyone", "all", "everybody"].includes(norm)) {
     const party = await prisma.party.findFirst({
-      where: { campaignId: CAMPAIGN_ID },
+      where: { campaignId },
     });
     return party ? { partyId: party.id, label: "the party" } : null;
   }
   const character = await prisma.character.findFirst({
     where: {
-      campaignId: CAMPAIGN_ID,
+      campaignId,
       name: { contains: to.trim(), mode: "insensitive" },
     },
   });
@@ -429,12 +1431,14 @@ async function resolveRevealTarget(
 /** Where a PARTY reveal gets announced: explicit `in:` → the configured default channel
  * (HEARTH_REVEAL_CHANNEL_ID — becomes a per-campaign setting under multi-tenancy) → the
  * channel the command was run in. (Character reveals DM the player, so this is unused there.) */
-function resolveRevealChannelId(
+async function resolveRevealChannelId(
   interaction: ChatInputCommandInteraction,
-): string {
+  campaignId: string,
+): Promise<string> {
   const chosen = interaction.options.getChannel("in");
   if (chosen) return chosen.id;
-  return process.env.HEARTH_REVEAL_CHANNEL_ID ?? interaction.channelId ?? "";
+  const settings = await getCampaignDiscord(campaignId);
+  return settings?.revealChannelId ?? interaction.channelId ?? "";
 }
 
 /** /reveal — DM only. Find the best matching fact + document for `about`, then show the DM
@@ -444,7 +1448,7 @@ async function handleReveal(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const viewer = await resolveViewer(interaction.user.id);
+  const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
   if (!viewer || viewer.role !== "DM") {
     await interaction.editReply(
       "Only the DM can reveal things from the memory.",
@@ -454,7 +1458,7 @@ async function handleReveal(
   const about = interaction.options.getString("about", true);
   const to = interaction.options.getString("to", true);
 
-  const target = await resolveRevealTarget(to);
+  const target = await resolveRevealTarget(viewer.campaignId, to);
   if (!target) {
     await interaction.editReply(
       `Couldn't find a character or party matching "${to}".`,
@@ -467,7 +1471,9 @@ async function handleReveal(
     : `p:${target.partyId}`;
   // Resolve the announce channel now (for party reveals) and bake it into the button, so the
   // confirm handler posts exactly where the preview promised. Character reveals DM the player.
-  const channelId = isParty ? resolveRevealChannelId(interaction) : "";
+  const channelId = isParty
+    ? await resolveRevealChannelId(interaction, viewer.campaignId)
+    : "";
   const suffix = `${scope}:${channelId}`;
 
   const { units, chunks } = await retrieveContext(viewer, about, {
@@ -541,8 +1547,10 @@ async function announceReveal(
   let itemTitle: string;
   let body: string;
   if (kind === "u") {
-    const u = await prisma.knowledgeUnit.findUnique({
-      where: { id: targetId },
+    // A reveal button can be clicked long after it was posted, by which time a correction may
+    // have retired this fact — announcing it would publish a version the table has disowned.
+    const u = await prisma.knowledgeUnit.findFirst({
+      where: { id: targetId, supersededByCorrectionId: null },
       select: { title: true, content: true },
     });
     itemTitle = u?.title ?? "a memory";
@@ -597,7 +1605,7 @@ async function handleRevealButton(
     await interaction.update({ content: "Reveal cancelled.", components: [] });
     return;
   }
-  const viewer = await resolveViewer(interaction.user.id);
+  const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
   if (!viewer || viewer.role !== "DM") {
     await interaction.update({
       content: "Only the DM can confirm a reveal.",
@@ -607,7 +1615,7 @@ async function handleRevealButton(
   }
   const membership = await prisma.membership.findFirst({
     where: {
-      campaignId: CAMPAIGN_ID,
+      campaignId: viewer.campaignId,
       user: { discordUserId: interaction.user.id },
     },
     select: { id: true },
@@ -654,6 +1662,7 @@ interface NpcDraftState {
   draft: NpcDraft;
   portrait: PortraitMatch | null;
   prompt?: string;
+  liveContext?: string; // the scene this NPC was generated for (keeps regen scene-aware)
   channelId: string; // where "Share" posts the player-facing card
   saved?: boolean; // true once Accepted — Share is only offered after saving
   touchedAt: number; // for the TTL sweep — refreshed on every interaction
@@ -721,7 +1730,10 @@ async function handleNpc(
 ): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   try {
-    const viewer = await resolveViewer(interaction.user.id);
+    const viewer = await resolveViewer(
+      interaction.guildId,
+      interaction.user.id,
+    );
     if (!viewer) {
       await interaction.editReply("You're not part of this campaign.");
       return;
@@ -731,17 +1743,40 @@ async function handleNpc(
       return;
     }
     const prompt = interaction.options.getString("prompt") ?? undefined;
-    const channelId = resolveRevealChannelId(interaction);
-    const draft = await generateNpc(CAMPAIGN_ID, prompt);
+    const channelId = await resolveRevealChannelId(
+      interaction,
+      viewer.campaignId,
+    );
+    // live:true grounds the NPC in the scene playing out right now (needs an active
+    // recording — that's what fills the live transcript buffer).
+    let liveContext: string | undefined;
+    if (interaction.options.getBoolean("live")) {
+      const session = await getActiveSession(viewer.campaignId);
+      if (!session) {
+        await interaction.editReply(
+          "No session is being recorded — start one with `/record`, or drop `live:true`.",
+        );
+        return;
+      }
+      liveContext = await getLiveTranscript(session.gameSessionId, 10);
+      if (!liveContext) {
+        await interaction.editReply(
+          "Nothing's been transcribed yet from this scene — give it a minute of talking, then try again.",
+        );
+        return;
+      }
+    }
+    const draft = await generateNpc(viewer.campaignId, prompt, liveContext);
     const portrait = await matchPortrait(
       portraitQuery(draft.race, draft.role, draft.appearance),
-      CAMPAIGN_ID,
+      viewer.campaignId,
     );
     const draftId = randomUUID();
     npcDrafts.set(draftId, {
       draft,
       portrait,
       prompt,
+      liveContext,
       channelId,
       touchedAt: Date.now(),
     });
@@ -758,7 +1793,7 @@ async function handleNpc(
 /** Accept / Regenerate button from /npc. */
 async function handleNpcButton(interaction: ButtonInteraction): Promise<void> {
   const [, action, draftId] = interaction.customId.split(":");
-  const viewer = await resolveViewer(interaction.user.id);
+  const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
   if (!viewer || viewer.role !== "DM") {
     await interaction.reply({
       content: "Only the DM can do that.",
@@ -820,10 +1855,14 @@ async function runNpcButtonAction(
   viewer: ResolvedViewer,
 ): Promise<void> {
   if (action === "regen") {
-    const draft = await generateNpc(CAMPAIGN_ID, entry.prompt);
+    const draft = await generateNpc(
+      viewer.campaignId,
+      entry.prompt,
+      entry.liveContext,
+    );
     const portrait = await matchPortrait(
       portraitQuery(draft.race, draft.role, draft.appearance),
-      CAMPAIGN_ID,
+      viewer.campaignId,
     );
     npcDrafts.set(draftId, {
       ...entry,
@@ -836,7 +1875,7 @@ async function runNpcButtonAction(
     return;
   }
   if (action === "accept") {
-    await saveNpc(CAMPAIGN_ID, entry.draft, entry.portrait?.storagePath);
+    await saveNpc(viewer.campaignId, entry.draft, entry.portrait?.storagePath);
     entry.saved = true; // keep the draft so Share can use it now that it's saved
     entry.touchedAt = Date.now(); // and refresh it so the TTL sweep doesn't drop it pre-Share
     const name = safeFileName(entry.draft.name);
@@ -985,7 +2024,7 @@ async function handleNpcEditSubmit(
   interaction: ModalSubmitInteraction,
 ): Promise<void> {
   const draftId = interaction.customId.split(":")[1];
-  const viewer = await resolveViewer(interaction.user.id);
+  const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
   if (!viewer || viewer.role !== "DM") {
     await interaction.reply({
       content: "Only the DM can do that.",
@@ -1012,7 +2051,7 @@ async function handleNpcEditSubmit(
   };
   const portrait = await matchPortrait(
     portraitQuery(draft.race, draft.role, draft.appearance),
-    CAMPAIGN_ID,
+    viewer.campaignId,
   );
   npcDrafts.set(draftId, { ...entry, draft, portrait, touchedAt: Date.now() });
   await interaction.deferUpdate();
@@ -1024,9 +2063,18 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
 });
 
-client.once(Events.ClientReady, (c) =>
-  console.log(`🔥 Hearth online as ${c.user.tag}`),
-);
+client.once(Events.ClientReady, (c) => {
+  console.log(`🔥 Hearth online as ${c.user.tag}`);
+  if (ALLOWED_GUILDS.size > 0) {
+    console.log(
+      `🔒 allowlist active — ${ALLOWED_GUILDS.size} approved server(s)`,
+    );
+  } else {
+    console.warn(
+      "⚠️  no HEARTH_ALLOWED_GUILDS set — every server this bot is in can use it (and spend our API budget)",
+    );
+  }
+});
 
 // A single unhandled 'error' event will crash the process otherwise (spike lesson).
 client.on(Events.Error, (err) => console.error("Discord client error:", err));
@@ -1036,7 +2084,28 @@ process.on("unhandledRejection", (err) =>
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
+    // One gate for every command, button, and modal — an unapproved server can't spend
+    // anything, because nothing downstream runs.
+    if (!interaction.isAutocomplete() && !isGuildAllowed(interaction.guildId)) {
+      console.warn(
+        `blocked interaction from unapproved guild ${interaction.guildId ?? "(dm)"}`,
+      );
+      await interaction.reply({
+        content:
+          "Hearth isn't enabled for this server yet. It's in a limited beta — reach out if you'd like access.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
     if (interaction.isButton()) {
+      if (interaction.customId.startsWith("sh:")) {
+        await handleShareButton(interaction);
+        return;
+      }
+      if (interaction.customId.startsWith("cx:")) {
+        await handleCorrectionButton(interaction);
+        return;
+      }
       if (interaction.customId.startsWith("rv:")) {
         await handleRevealButton(interaction);
       } else if (interaction.customId.startsWith("npc:")) {
@@ -1056,7 +2125,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await handleAsk(interaction);
         break;
       case "record":
-        await startRecording(interaction, CAMPAIGN_ID);
+        await handleRecord(interaction);
         break;
       case "stop":
         await stopRecording(interaction);
@@ -1072,6 +2141,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case "npc":
         await handleNpc(interaction);
+        break;
+      case "recap":
+        await handleRecap(interaction);
+        break;
+      case "missed":
+        await handleMissed(interaction);
+        break;
+      case "correct":
+        await handleCorrect(interaction);
+        break;
+      case "share":
+        await handleShare(interaction);
+        break;
+      case "setup":
+        await handleSetup(interaction);
+        break;
+      case "join":
+        await handleJoin(interaction);
+        break;
+      case "help":
+        await handleHelp(interaction);
         break;
       case "dmmode":
         if (DEV_DM_TOGGLE) await handleDmMode(interaction);

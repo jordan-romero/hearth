@@ -150,6 +150,165 @@ export function npcShareEmbed(
   return embed;
 }
 
+/** The `/help` card — what Hearth can do, grouped by who can use each command. */
+export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(themeColor(theme, "DM"))
+    .setTitle("🔥 Hearth — your campaign's living memory")
+    .setDescription(
+      "Talk to everything your table has said and done — you only ever get what your character knows.",
+    )
+    .addFields(
+      {
+        name: "Getting started",
+        value: [
+          "**/setup** `name` `[dm_name]` `[reveals]` — (DM) create the campaign; run it again to change where reveals post",
+          "**/join** `character` — claim your seat at the table with a character",
+        ].join("\n"),
+      },
+      {
+        name: "Everyone",
+        value: [
+          "**/ask** `question` — ask the memory; answers are filtered to what your character knows",
+          "**/journal** `entry` — save a private note only you and the DM can see",
+          "**/missed** `[minutes]` `[raw]` — stepped away mid-session? The last 5 minutes, or `raw:true` for the actual words",
+          "**/recap** — what happened last session",
+          "**/correct** `truth` — the memory got something wrong; the DM approves the fix",
+          "**/share** `about` — tell the party something you know; the DM approves it first",
+        ].join("\n"),
+      },
+      {
+        name: "Dungeon Master",
+        value: [
+          "**/record** — start recording the session in your voice channel",
+          "**/stop** — stop recording and file the session into the memory",
+          "**/upload** `file` — add notes, handouts, or lore to the memory",
+          "**/reveal** `about` `to` — reveal something to a character or the party",
+          "**/npc** `[prompt]` `[live]` — generate an NPC with a matched portrait; `live:true` fits them to the scene you're playing right now",
+        ].join("\n"),
+      },
+    )
+    .setFooter({
+      text: "Answers are private (only you see them). Recording captures voice — get everyone's consent.",
+    });
+}
+
+/** A catch-up or session recap. Table-audible content, so it carries the player shade. */
+export function recapEmbed(
+  title: string,
+  body: string,
+  footer: string,
+  theme: string = DEFAULT_THEME,
+): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(themeColor(theme, "PLAYER"))
+    .setTitle(truncate(title, 256))
+    .setDescription(truncate(body, 4096))
+    .setFooter({ text: truncate(footer, 2048) });
+}
+
+/** A correction, shown to whoever proposed it and to the DM deciding on it.
+ *
+ * Returns MULTIPLE embeds when a correction touches many facts. Every target has to be visible
+ * before approval — a DM asked to approve changes they were never shown isn't reviewing
+ * anything — and one embed can't hold them all.
+ *
+ * These carry the content of the facts being changed, which may be DM_ONLY or another player's
+ * note. They must only ever be delivered privately (ephemeral or DM), never posted to a channel.
+ */
+export function correctionEmbeds(
+  proposal: {
+    statement: string;
+    targets: { title: string; content: string; rewrite: string }[];
+    newFactTitle: string | null;
+    newFactContent: string | null;
+  },
+  state: "applied" | "pending",
+  theme: string = DEFAULT_THEME,
+): EmbedBuilder[] {
+  const color = themeColor(theme, "DM");
+  const head = new EmbedBuilder()
+    .setColor(color)
+    .setTitle(
+      state === "applied" ? "✅ Canon corrected" : "✏️ Correction proposed",
+    )
+    .setDescription(truncate(proposal.statement, 2000));
+
+  const embeds: EmbedBuilder[] = [head];
+  const PER_EMBED = 4;
+  // Discord caps a message at 6000 characters ACROSS all its embeds, so pagination has to
+  // budget the total, not just each embed. Leave headroom for the header and footer.
+  const CHAR_BUDGET = 5200;
+  let used = proposal.statement.length;
+
+  for (let i = 0; i < proposal.targets.length; i += PER_EMBED) {
+    const slice = proposal.targets.slice(i, i + PER_EMBED);
+    const e = i === 0 ? head : new EmbedBuilder().setColor(color);
+    let shown = 0;
+    for (const t of slice) {
+      const body = t.rewrite
+        ? `~~${truncate(t.content, 280)}~~\n**→ ${truncate(t.rewrite, 400)}**`
+        : `~~${truncate(t.content, 280)}~~\n**→ removed from the memory**`;
+      const name = truncate(t.title, 256);
+      const value = truncate(body, 1024);
+      if (used + name.length + value.length > CHAR_BUDGET) break;
+      used += name.length + value.length;
+      e.addFields({ name, value });
+      shown++;
+    }
+    if (i > 0 && shown > 0) embeds.push(e);
+    const rendered = i + shown;
+    // Out of embeds or out of characters — say what's missing rather than dropping it silently.
+    if (
+      rendered < proposal.targets.length &&
+      (shown < slice.length || embeds.length === 10)
+    ) {
+      e.addFields({
+        name: "…and more",
+        value: `${proposal.targets.length - rendered} further change(s) not shown here — approving applies them too.`,
+      });
+      break;
+    }
+  }
+
+  const last = embeds[embeds.length - 1]!;
+  if (proposal.newFactTitle && proposal.newFactContent) {
+    last.addFields({
+      name: `+ ${truncate(proposal.newFactTitle, 254)}`,
+      value: truncate(proposal.newFactContent, 1024),
+    });
+  }
+  last.setFooter({
+    text:
+      state === "applied"
+        ? "Applied — the old version won't be answered with again."
+        : "Waiting on the DM. Nothing has changed yet.",
+  });
+  return embeds;
+}
+
+/** A pending share, shown privately to the DM. Carries the content of what a player wants to
+ * tell the party, which isn't the party's to read until the DM says so — ephemeral only. */
+export function shareEmbed(
+  who: string,
+  title: string,
+  content: string,
+  note: string | null | undefined,
+  theme: string = DEFAULT_THEME,
+): EmbedBuilder {
+  const embed = new EmbedBuilder()
+    .setColor(themeColor(theme, "DM"))
+    .setTitle("📨 A player wants to tell the party")
+    .setDescription(`**${truncate(title, 200)}**\n${truncate(content, 3000)}`)
+    .setFooter({
+      text: `Asked by ${who} · nothing is shared until you approve`,
+    });
+  if (note) {
+    embed.addFields({ name: "They added", value: truncate(note, 1024) });
+  }
+  return embed;
+}
+
 /** A filesystem/attachment-safe version of a name (for portrait + card downloads). */
 export function safeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "npc";

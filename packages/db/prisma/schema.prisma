@@ -32,6 +32,7 @@ enum KnowledgeSource {
   SESSION // happened at the table — fair game to the campaign
   DM_ADDED // authored/uploaded by the DM — gated until revealed
   PLAYER_NOTE // a player's private journal entry — visible to its author (+ DM) only
+  CORRECTION // DM-approved canon fix — authoritative, outranks whatever it supersedes
 }
 
 /// How a DM_ADDED unit originated (provenance/trust). SESSION units are PLAYED.
@@ -105,6 +106,24 @@ model Campaign {
   documentChunks  DocumentChunk[]
   assets          Asset[]
   askLogs         AskLog[]
+  corrections     Correction[]
+  shareRequests   ShareRequest[]
+  discord         CampaignDiscord?
+}
+
+/// Binds a campaign to one Discord server — the multi-tenancy hinge. The bot resolves which
+/// campaign an interaction belongs to from its `guildId`, so a single deployment can serve
+/// many tables without any campaign id in the environment. Per-server settings that used to
+/// be env vars (the reveals channel) live here too.
+model CampaignDiscord {
+  id              String   @id @default(cuid())
+  campaignId      String   @unique
+  guildId         String   @unique
+  revealChannelId String? // default channel for /reveal + /npc share
+  voiceChannelId  String? // preferred capture channel (advisory)
+  createdAt       DateTime @default(now())
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 }
 
 /// A person. Auth.js will extend this table later; minimal for Phase 0.
@@ -122,19 +141,27 @@ model User {
 
 /// A user's seat in one campaign, with a role.
 model Membership {
-  id         String     @id @default(cuid())
-  userId     String
-  campaignId String
-  role       MemberRole
-  createdAt  DateTime   @default(now())
+  id          String     @id @default(cuid())
+  userId      String
+  campaignId  String
+  role        MemberRole
+  // What to call this member AT THIS TABLE — the DM's name in transcripts, chosen during
+  // /setup. Campaign-scoped on purpose: one person can DM several campaigns under different
+  // names, and a global name would let a later /setup relabel an earlier campaign's history.
+  displayName String?
+  createdAt   DateTime   @default(now())
 
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 
-  characters     Character[]
-  grantsRevealed KnowledgeGrant[] @relation("GrantRevealedBy")
-  revealEvents   RevealEvent[]    @relation("RevealBy")
-  authoredNotes  KnowledgeUnit[]  @relation("NoteAuthor")
+  characters          Character[]
+  grantsRevealed      KnowledgeGrant[] @relation("GrantRevealedBy")
+  revealEvents        RevealEvent[]    @relation("RevealBy")
+  authoredNotes       KnowledgeUnit[]  @relation("NoteAuthor")
+  correctionsProposed Correction[]     @relation("CorrectionProposedBy")
+  correctionsReviewed Correction[]     @relation("CorrectionReviewedBy")
+  sharesProposed      ShareRequest[]   @relation("ShareProposedBy")
+  sharesReviewed      ShareRequest[]   @relation("ShareReviewedBy")
 
   @@unique([userId, campaignId])
   @@index([campaignId])
@@ -147,10 +174,11 @@ model Party {
   campaignId String
   name       String
 
-  campaign     Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  characters   Character[]
-  grants       KnowledgeGrant[] @relation("GrantParty")
-  revealEvents RevealEvent[]    @relation("RevealParty")
+  campaign      Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  characters    Character[]
+  grants        KnowledgeGrant[] @relation("GrantParty")
+  revealEvents  RevealEvent[]    @relation("RevealParty")
+  shareRequests ShareRequest[]   @relation("SharedWithParty")
 
   @@index([campaignId])
 }
@@ -194,18 +222,23 @@ model Character {
 /// A game session. Empty until Phase 2 (capture) — created now so SESSION
 /// provenance and the Auth.js `Session` naming collision are both handled early.
 model GameSession {
-  id         String            @id @default(cuid())
-  campaignId String
-  number     Int
-  title      String?
-  occurredAt DateTime?
-  status     GameSessionStatus @default(COMPLETE)
-  recap      String? // prose summary written by extraction; also feeds the timeline
-  createdAt  DateTime          @default(now())
+  id             String            @id @default(cuid())
+  campaignId     String
+  number         Int
+  title          String?
+  occurredAt     DateTime?
+  status         GameSessionStatus @default(COMPLETE)
+  recap          String? // prose summary written by extraction; also feeds the timeline
+  // Last time this session saw activity (a /record or /stop). Drives the merge window —
+  // a /record within the window resumes this session — and the auto-finalize timeout.
+  lastActivityAt DateTime?
+  createdAt      DateTime          @default(now())
 
   campaign       Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   knowledgeUnits KnowledgeUnit[]
-  recording      Recording?
+  // One session can own MANY recordings — a break-stop-restart adds another Recording to the
+  // same session rather than starting a new one. Transcript = all recordings' clips by time.
+  recordings     Recording[]
   attendance     SessionAttendance[]
 
   @@unique([campaignId, number])
@@ -236,6 +269,11 @@ model KnowledgeUnit {
   authorMembershipId String? // set for PLAYER_NOTE journal entries — who wrote it
   imageStoragePath   String? // set for GENERATED NPCs — the matched portrait's key
 
+  // Set when an approved correction supersedes this unit: retrieval skips it, so a fact the
+  // table has disowned can never be answered with again. Kept (not deleted) so the audit trail
+  // still points at something real.
+  supersededByCorrectionId String?
+
   // relationships-as-knowledge (self references)
   subjectId String?
   objectId  String?
@@ -253,8 +291,11 @@ model KnowledgeUnit {
   object    KnowledgeUnit?  @relation("ObjectRel", fields: [objectId], references: [id], onDelete: SetNull)
   objectOf  KnowledgeUnit[] @relation("ObjectRel")
 
-  grants       KnowledgeGrant[]
-  revealEvents RevealEvent[]
+  grants                 KnowledgeGrant[]
+  revealEvents           RevealEvent[]
+  shareRequests          ShareRequest[]
+  supersededByCorrection Correction?      @relation("Superseded", fields: [supersededByCorrectionId], references: [id], onDelete: SetNull)
+  correctionResultOf     Correction?      @relation("CorrectionResult")
 
   @@index([campaignId, baseVisibility])
   @@index([campaignId, type])
@@ -263,6 +304,7 @@ model KnowledgeUnit {
   @@index([authorMembershipId])
   @@index([subjectId])
   @@index([objectId])
+  @@index([supersededByCorrectionId])
 }
 
 /// A targeted reveal — the CURRENT state the filter reads. A DM_ONLY unit with a
@@ -344,7 +386,7 @@ enum RecordingStatus {
 /// One recording per game session — the container, plus the derived playback mix.
 model Recording {
   id             String          @id @default(cuid())
-  gameSessionId  String          @unique
+  gameSessionId  String // NOT unique — a session can have many recordings (stop/restart segments)
   status         RecordingStatus @default(CAPTURING)
   startedAt      DateTime        @default(now())
   endedAt        DateTime?
@@ -354,6 +396,8 @@ model Recording {
   gameSession GameSession         @relation(fields: [gameSessionId], references: [id], onDelete: Cascade)
   clips       AudioClip[]
   segments    TranscriptSegment[]
+
+  @@index([gameSessionId])
 }
 
 /// One speaking burst's retained audio (compressed, in Supabase Storage).
@@ -390,6 +434,11 @@ model TranscriptSegment {
   startMs       Int
   endMs         Int
   text          String
+  /// Written by live transcription while someone was still talking, so /recap and /npc live
+  /// can see a monologue before it ends. Superseded by the batch transcript for the same audio,
+  /// which is more accurate because it rescores with the whole clip in context — so these are
+  /// a temporary, fresher view rather than the record.
+  isLive        Boolean  @default(false)
   createdAt     DateTime @default(now())
 
   recording Recording  @relation(fields: [recordingId], references: [id], onDelete: Cascade)
@@ -398,6 +447,7 @@ model TranscriptSegment {
 
   @@index([recordingId, startMs])
   @@index([characterId])
+  @@index([recordingId, discordUserId, isLive])
 }
 
 /// Who was present in the session's voice channel (split-party + spotlight later).
@@ -468,12 +518,17 @@ model SourceDocument {
 /// document-level grant — that polymorphic grant/reveal ships with Phase 3's reveal bite;
 /// see docs/data-model.md. Retrieval filters chunks by the SAME permission rules as units.
 model DocumentChunk {
-  id               String         @id @default(cuid())
-  sourceDocumentId String
-  campaignId       String
-  chunkIndex       Int
-  text             String
-  baseVisibility   BaseVisibility @default(DM_ONLY)
+  id                       String         @id @default(cuid())
+  sourceDocumentId         String
+  campaignId               String
+  chunkIndex               Int
+  text                     String
+  baseVisibility           BaseVisibility @default(DM_ONLY)
+  /// Set when an approved correction retires this passage. /ask retrieves document passages as
+  /// well as facts, so without this a corrected mistake still grounds answers from the original
+  /// upload. A passage is retired rather than rewritten — the document is its source of truth,
+  /// and the correction carries the truth as its own fact.
+  supersededByCorrectionId String?
 
   // Voyage 1024-dim, same as KnowledgeUnit; similarity search via raw SQL ($queryRaw).
   embedding Unsupported("vector(1024)")?
@@ -488,6 +543,7 @@ model DocumentChunk {
   @@unique([sourceDocumentId, chunkIndex])
   @@index([campaignId, baseVisibility])
   @@index([sourceDocumentId])
+  @@index([supersededByCorrectionId])
 }
 
 /// A reusable media asset — NPC portraits/tokens today (maps/handouts later). Embedded for
@@ -528,4 +584,117 @@ model AskLog {
 
   @@index([campaignId, createdAt])
   @@index([campaignId, characterId])
+}
+
+enum CorrectionStatus {
+  PENDING // waiting on the DM
+  APPROVED // applied to canon
+  REJECTED // the DM said the memory was right
+}
+
+/// A proposed fix to something the memory got wrong.
+///
+/// Corrections are their own durable records rather than edits to the offending unit, because
+/// extraction is destructive: finalizing a session deletes and recreates its SESSION units, so
+/// an in-place edit would silently vanish on the next run. Instead an approved correction
+/// creates its own authoritative unit and marks what it supersedes.
+///
+/// The DM owns canon, so a player's correction only takes effect once approved — the same
+/// propose→approve shape as a reveal, just player-initiated.
+model Correction {
+  id         String           @id @default(cuid())
+  campaignId String
+  status     CorrectionStatus @default(PENDING)
+
+  /// What the table says is actually true, in their own words.
+  statement String
+  /// Optionally what the memory said — helps the DM judge, and names the mistake in the audit.
+  wasWrong  String?
+
+  /// Nullable on purpose: a correction must OUTLIVE whoever proposed it. Cascading from the
+  /// membership would delete the correction when a player leaves, which sets the units it
+  /// retired back to live — resurrecting facts the table already disowned.
+  proposedByMembershipId String?
+  reviewedByMembershipId String?
+  reviewedAt             DateTime?
+  /// Why the DM rejected it, shown back to whoever proposed it.
+  reviewNote             String?
+
+  /// What this proposes to retire, and the fact that replaces it — resolved when the correction
+  /// is PROPOSED, not when it's approved, so the DM applies exactly what they were shown rather
+  /// than whatever a second model pass would decide later.
+  /// Deliberately plain ids, not a relation: extraction deletes and recreates SESSION units, so
+  /// a foreign key here would either block that or cascade away the record of what was retired.
+  targetUnitIds String[]
+  /// Per-target corrected text: [{ id, rewrite }]. A correction REPLACES the facts it touches
+  /// rather than deleting them, because a wrong fact is usually mostly right — retiring
+  /// "Moraine, daughter of Morwyn and his wife Moira" outright would also lose Moraine.
+  rewrites      Json?
+  /// An additional fact, only when the rewrites don't already state what the correction says.
+  resultTitle   String?
+  resultContent String?
+
+  /// The authoritative unit created on approval (null while pending/rejected).
+  resultUnitId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaign   Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  proposedBy Membership?     @relation("CorrectionProposedBy", fields: [proposedByMembershipId], references: [id], onDelete: SetNull)
+  reviewedBy Membership?     @relation("CorrectionReviewedBy", fields: [reviewedByMembershipId], references: [id], onDelete: SetNull)
+  resultUnit KnowledgeUnit?  @relation("CorrectionResult", fields: [resultUnitId], references: [id], onDelete: SetNull)
+  /// Units this correction retired.
+  superseded KnowledgeUnit[] @relation("Superseded")
+
+  @@index([campaignId, status])
+  @@index([proposedByMembershipId])
+}
+
+enum ShareStatus {
+  PENDING // waiting on the DM
+  APPROVED // granted to the party
+  REJECTED // the DM kept it private
+}
+
+/// A player asking to tell the party something they know.
+///
+/// The same shape as a Correction — propose, the DM approves, it lands in shared memory — but
+/// deliberately its own table rather than one row type with a `kind` column: the payloads have
+/// nothing in common (a correction carries rewrites and targets, a share carries one unit), and
+/// merging them would mean a row where most columns are null for any given kind.
+///
+/// The permission spine bounds this for free: the unit is chosen through filtered retrieval, so
+/// a player can only offer to share something they can already see.
+model ShareRequest {
+  id              String      @id @default(cuid())
+  campaignId      String
+  knowledgeUnitId String
+  status          ShareStatus @default(PENDING)
+  /// What the player wants the party to understand about it, in their words.
+  note            String?
+
+  /// Who it goes to, resolved when the share is REQUESTED rather than at approval — so the DM
+  /// approves exactly the audience they were shown, and a player who changes party in the
+  /// meantime can't silently redirect it.
+  partyId String?
+
+  /// Nullable for the same reason as a Correction's: the record of what was shared must
+  /// outlive the member who shared it.
+  proposedByMembershipId String?
+  reviewedByMembershipId String?
+  reviewedAt             DateTime?
+  reviewNote             String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campaign      Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  knowledgeUnit KnowledgeUnit @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
+  party         Party?        @relation("SharedWithParty", fields: [partyId], references: [id], onDelete: SetNull)
+  proposedBy    Membership?   @relation("ShareProposedBy", fields: [proposedByMembershipId], references: [id], onDelete: SetNull)
+  reviewedBy    Membership?   @relation("ShareReviewedBy", fields: [reviewedByMembershipId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId, status])
+  @@index([knowledgeUnitId])
 }

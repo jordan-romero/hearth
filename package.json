@@ -29,19 +29,28 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.1.0",
-    "eslint": "^10.6.0",
+    "@types/node": "^26.4.1",
+    "eslint": "^10.10.0",
     "eslint-config-prettier": "^10.1.8",
     "husky": "^9.1.7",
-    "lint-staged": "^17.0.8",
-    "prettier": "^3.9.4",
-    "turbo": "^2.5.0",
+    "lint-staged": "^17.5.0",
+    "prettier": "^3.9.6",
+    "turbo": "^2.10.12",
     "typescript": "^5.6.3",
-    "typescript-eslint": "^8.62.1"
+    "typescript-eslint": "^8.69.0"
   },
   "pnpm": {
+    "comments": {
+      "overrides": "Advisories in transitive dependencies we don't control. Everything below @prisma/dev reaches us only because the prisma CLI is an OPTIONAL PEER of @prisma/client, so `pnpm audit --prod` walks it even though the CLI is a devDependency that never runs in production. Pinned to the patched versions rather than left red; drop an entry once Prisma ships it."
+    },
     "overrides": {
-      "undici": "^6.27.0"
+      "undici": "^6.28.0",
+      "fast-uri": "^3.1.6",
+      "mysql2": "^3.22.0",
+      "deepmerge-ts": "^8.0.0",
+      "@xmldom/xmldom": "^0.8.15",
+      "nanoid": ">=3.3.16",
+      "postcss": ">=8.5.23"
     }
   }
 }

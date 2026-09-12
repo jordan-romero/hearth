@@ -24,3 +24,6 @@ packages/db/src/generated/
 # os / editor
 .DS_Store
 *.log
+
+# Next.js generated type shim (recreated on every build)
+next-env.d.ts

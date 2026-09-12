@@ -25,8 +25,11 @@ import { prisma } from "@hearth/db";
 import {
   getQueue,
   putClip,
-  maybeEnqueueExtraction,
+  openTranscriptStream,
+  type TranscriptStream,
+  scheduleFinalize,
   TRANSCRIBE_QUEUE,
+  SESSION_GAP_MS,
   type TranscribeJob,
 } from "@hearth/agents";
 
@@ -36,9 +39,38 @@ interface ActiveRecording {
   startedAtMs: number;
   speakerMap: Map<string, string>; // discordUserId → characterId
   capturing: Set<string>;
+  // Counted so /stop can say whether live transcription actually did anything. Without this a
+  // silent failure at someone else's table is invisible to us.
+  liveSegments: number;
+  liveFailures: number;
 }
 
 const active = new Map<string, ActiveRecording>(); // guildId → recording
+// Guilds whose /record is mid-setup. `active` isn't populated until after several awaits, so
+// without this a second /record slips through the "already recording?" check and creates a
+// second CAPTURING recording — and only one can live in `active`, leaving the other unstoppable
+// and blocking finalize forever.
+const starting = new Set<string>();
+
+/** The merge window in words, derived from the real value so the message can't drift from the
+ * behaviour (HEARTH_SESSION_GAP_MIN can shorten it to seconds for testing). */
+function formatGap(): string {
+  const minutes = SESSION_GAP_MS / 60_000;
+  if (minutes < 1) return `${Math.round(SESSION_GAP_MS / 1000)} sec`;
+  return `${Math.round(minutes)} min`;
+}
+
+// Live transcription runs ALONGSIDE the batch path, never instead of it: batch rescores with
+// the whole clip in context and is measurably better on names, so it stays the record while
+// streaming exists to make a long monologue visible before the speaker stops. Off by default
+// until it's been through a real session — a dropped socket costs freshness, not a session.
+const LIVE_TRANSCRIPTION = process.env.HEARTH_LIVE_TRANSCRIPTION === "1";
+
+// Only stream a burst once it has actually run long. A short "yeah" is transcribed by the batch
+// path within seconds of ending, so streaming it buys nothing and still costs a socket and
+// Deepgram's minimum billable connection. Streaming exists for the burst that DOESN'T end —
+// so wait until a burst has proven itself one, then send what we buffered and continue live.
+const LIVE_AFTER_MS = 2500;
 
 const SAMPLE_RATE = 48000; // Discord voice is always 48kHz
 const DECODE_CHANNELS = 2; // Discord's Opus decodes to stereo…
@@ -112,28 +144,66 @@ export async function startRecording(
     });
     return;
   }
-  if (active.has(guildId)) {
+  if (active.has(guildId) || starting.has(guildId)) {
     await interaction.reply({
       content: "Already recording.",
       flags: MessageFlags.Ephemeral,
     });
     return;
   }
+  // Reserve the guild synchronously, before the first await, so a concurrent /record can't
+  // race past the check above. Released once `active` owns it, or on any failure below.
+  starting.add(guildId);
+  try {
+    await startRecordingInner(interaction, campaignId, guildId, channel);
+  } finally {
+    starting.delete(guildId);
+  }
+}
+
+async function startRecordingInner(
+  interaction: ChatInputCommandInteraction,
+  campaignId: string,
+  guildId: string,
+  channel: NonNullable<GuildMember["voice"]["channel"]>,
+): Promise<void> {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  // A new game session + its recording container.
-  const last = await prisma.gameSession.findFirst({
-    where: { campaignId },
-    orderBy: { number: "desc" },
-  });
-  const gameSession = await prisma.gameSession.create({
-    data: {
+  // Find-or-create the session. A /record within the merge window RESUMES the most recent
+  // still-open session — a break/stop/restart is the SAME session, and just adds another
+  // Recording to it — rather than spawning a new session and bumping the session number.
+  // SESSION_GAP_MS is shared with the finalize delay, so "resumable" and "finalizable"
+  // can never disagree about how long a break may be.
+  const open = await prisma.gameSession.findFirst({
+    where: {
       campaignId,
-      number: (last?.number ?? 0) + 1,
-      status: "ACTIVE",
-      occurredAt: new Date(),
+      status: { not: "COMPLETE" },
+      lastActivityAt: { gte: new Date(Date.now() - SESSION_GAP_MS) },
     },
+    orderBy: { lastActivityAt: "desc" },
   });
+  const resumed = open !== null;
+  const gameSession = open
+    ? await prisma.gameSession.update({
+        where: { id: open.id },
+        data: { status: "ACTIVE", lastActivityAt: new Date() },
+      })
+    : await prisma.gameSession.create({
+        data: {
+          campaignId,
+          number:
+            ((
+              await prisma.gameSession.findFirst({
+                where: { campaignId },
+                orderBy: { number: "desc" },
+              })
+            )?.number ?? 0) + 1,
+          status: "ACTIVE",
+          occurredAt: new Date(),
+          lastActivityAt: new Date(),
+        },
+      });
+  // Each /record segment is its own Recording under the (possibly resumed) session.
   const recording = await prisma.recording.create({
     data: { gameSessionId: gameSession.id, status: "CAPTURING" },
   });
@@ -144,6 +214,8 @@ export async function startRecording(
     startedAtMs: Date.now(),
     speakerMap: await loadSpeakerMap(campaignId),
     capturing: new Set(),
+    liveSegments: 0,
+    liveFailures: 0,
   };
   active.set(guildId, state);
 
@@ -163,15 +235,21 @@ export async function startRecording(
 
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
 
+    // Diagnostics: if clips come back empty, these say WHERE it broke — whether Discord is
+    // sending speaking events at all, and whether a subscribed stream yields any audio.
     connection.receiver.speaking.on("start", (userId) => {
+      console.log(`🎙  speaking start: ${userId}`);
       void captureBurst(connection.receiver, userId, state);
+    });
+    connection.receiver.speaking.on("end", (userId) => {
+      console.log(`🎙  speaking end:   ${userId}`);
     });
 
     console.log(
-      `🔴 recording started — session ${gameSession.number} in "${channel.name}"`,
+      `🔴 ${resumed ? "resumed" : "started"} — session ${gameSession.number} in "${channel.name}"`,
     );
     await interaction.editReply(
-      `🔴 Recording session ${gameSession.number} in **${channel.name}** — play on, then \`/stop\`.`,
+      `🔴 ${resumed ? "Resumed" : "Recording"} session ${gameSession.number} in **${channel.name}** — play on, then \`/stop\`.`,
     );
   } catch (err) {
     // If joining/awaiting the voice connection fails, undo everything — otherwise the
@@ -188,6 +266,31 @@ export async function startRecording(
       .editReply("Couldn't join your voice channel — try `/record` again.")
       .catch(() => {});
   }
+}
+
+/** Record a finalized span of live speech so /recap and /npc live can see it immediately.
+ *
+ * Deliberately carries no audioClipId: the clip doesn't exist yet — it's written when the burst
+ * ends, which is the very wait this exists to avoid. The batch transcript replaces these once
+ * it lands (see the worker), so they're a fresher view, never the record. */
+async function writeLiveSegment(
+  state: ActiveRecording,
+  userId: string,
+  fromMs: number,
+  toMs: number,
+  text: string,
+): Promise<void> {
+  await prisma.transcriptSegment.create({
+    data: {
+      recordingId: state.recordingId,
+      characterId: state.speakerMap.get(userId) ?? null,
+      discordUserId: userId,
+      startMs: fromMs,
+      endMs: toMs,
+      text,
+      isLive: true,
+    },
+  });
 }
 
 /** Capture one speaking burst → mono WAV clip → store → AudioClip → enqueue. */
@@ -210,8 +313,52 @@ async function captureBurst(
   });
 
   const chunks: Buffer[] = [];
+  let opusPackets = 0;
+  opusStream.on("data", () => opusPackets++);
   const pcm = opusStream.pipe(decoder);
-  pcm.on("data", (c: Buffer) => chunks.push(c));
+
+  // Live transcription, opened lazily once the burst passes LIVE_AFTER_MS. `opening` guards
+  // against starting a second socket while the first is still connecting.
+  let live: TranscriptStream | null = null;
+  let opening = false;
+  // Each finalized span starts where the previous one ended, so a burst's segments order
+  // correctly among themselves instead of all sharing the burst's start time.
+  let spanStartMs = startMs;
+
+  const onFinal = (text: string) => {
+    const endedAt = Date.now() - state.startedAtMs;
+    const from = spanStartMs;
+    spanStartMs = endedAt;
+    state.liveSegments++;
+    void writeLiveSegment(state, userId, from, endedAt, text).catch((err) =>
+      console.error("[stream] live segment write failed:", err),
+    );
+  };
+
+  pcm.on("data", (c: Buffer) => {
+    chunks.push(c);
+    const mono = stereoToMono(c);
+    if (live) {
+      live.send(mono);
+      return;
+    }
+    if (!LIVE_TRANSCRIPTION || opening) return;
+    // bytes → ms: 16-bit mono at 48kHz is 96 bytes per millisecond.
+    const bufferedMs = chunks.reduce((n, b) => n + b.length, 0) / 2 / 96;
+    if (bufferedMs < LIVE_AFTER_MS) return;
+
+    opening = true;
+    void openTranscriptStream({ onFinal })
+      .then((stream) => {
+        // Catch the socket up on everything spoken before it existed, then run live.
+        stream.send(stereoToMono(Buffer.concat(chunks)));
+        live = stream;
+      })
+      .catch((err) => {
+        state.liveFailures++;
+        console.error("[stream] could not open live socket:", err.message);
+      });
+  });
 
   await new Promise<void>((resolve) => {
     pcm.on("end", () => resolve());
@@ -220,9 +367,14 @@ async function captureBurst(
       resolve();
     });
   });
+  // `live` is assigned from an async callback, so TypeScript can't see it may be set here.
+  await (live as TranscriptStream | null)?.close();
   state.capturing.delete(userId);
 
   const pcmData = Buffer.concat(chunks);
+  console.log(
+    `🎙  burst ${userId}: ${opusPackets} opus packet(s) → ${pcmData.length} pcm bytes`,
+  );
   if (pcmData.length === 0) {
     // Speaking fired but nothing decoded — worth a warning (empty/undecodable audio).
     console.warn(`⚠️  burst from ${userId} decoded to 0 bytes — dropped`);
@@ -308,12 +460,21 @@ export async function stopRecording(
   console.log(
     `⏹ recording stopped — ${clipCount} clip(s) captured (recording ${state.recordingId})`,
   );
-  // Now that the recording has stopped, extraction is eligible. If the last clip was
-  // already transcribed, this fires it immediately; otherwise the worker fires it when
-  // the final clip lands. (Both paths dedupe via the stately queue's singletonKey.)
-  await maybeEnqueueExtraction(state.recordingId);
+  if (LIVE_TRANSCRIPTION) {
+    console.log(
+      `🎧 live transcription: ${state.liveSegments} span(s), ${state.liveFailures} socket failure(s)`,
+    );
+  }
+  // The session stays OPEN — a /record within the gap window resumes it (breaks shouldn't
+  // split a session). Stamp the activity and schedule a delayed finalize; if we resume, the
+  // finalize job reschedules itself rather than summarizing a half-finished session.
+  await prisma.gameSession.update({
+    where: { id: state.gameSessionId },
+    data: { lastActivityAt: new Date() },
+  });
+  await scheduleFinalize(state.gameSessionId);
   await interaction.reply({
-    content: "⏹ Stopped — transcribing the session into the memory.",
+    content: `⏹ Stopped — transcribing. \`/record\` again within ${formatGap()} and it stays the same session.`,
     flags: MessageFlags.Ephemeral,
   });
 }
