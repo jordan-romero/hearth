@@ -27,11 +27,23 @@ Anthropic SDK · Groq Whisper (→ Deepgram/AssemblyAI) · Stripe.
 
 Full rationale: `~/.claude/plans/campaign-memory-playful-stearns.md`.
 
-## Current status — Phase 0 (permission model)
+## Current status — Phase 5 done (web app), heading into the interactive-page finish
 
-Scaffold only. Next: design the knowledge-unit + visibility schema in
-`packages/db`, implement `filterKnowledge` in `packages/core`, and turn the
-`.todo` tests green. That green suite is the gate before anything trusts an answer.
+Phases 0-5 are merged: permission model, bot memory + capture, live sessions
+(incl. live transcription), NPC generation, and the campaign web app (ask,
+memory/codex, journal, DM library, corrections, share flow).
+
+Next, per `docs/scope.md`'s "Interactive page" list, the still-unbuilt pieces:
+
+- **Character pages** — what a PC knows/has done + the light display-only sheet.
+- **Relationship graph** — `RELATIONSHIP` knowledge units already model this;
+  it just needs a graph view.
+- **Map** — DM-uploaded image, pins linked to memory, fog-of-war overlay
+  (no `Map`/`MapPin` tables yet).
+- **Timeline** — scrub the campaign session by session (derived from
+  `Session` + provenance; no schema change needed).
+- **Theme picker** — the "Firelight in the dark" default theme is in;
+  presets/picker are not.
 
 ## Getting started (once dependencies are installed)
 
