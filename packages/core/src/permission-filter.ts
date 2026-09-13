@@ -79,3 +79,28 @@ export function filterKnowledge<T extends FilterableKnowledgeUnit>(
 ): T[] {
   return units.filter((unit) => canView(viewer, unit));
 }
+
+/** The character a page is about. */
+export interface CharacterSubject {
+  campaignId: string;
+  characterId: string;
+  partyId: string | null;
+}
+
+/** What a character knows, limited to what the viewer may also know — so opening someone
+ * else's character page can never show the viewer knowledge they were not given. */
+export function filterKnownToCharacter<T extends FilterableKnowledgeUnit>(
+  viewer: Viewer,
+  subject: CharacterSubject,
+  units: T[],
+): T[] {
+  const asCharacter: Viewer = {
+    campaignId: subject.campaignId,
+    role: "PLAYER",
+    characterId: subject.characterId,
+    partyId: subject.partyId,
+  };
+  return units.filter(
+    (unit) => canView(asCharacter, unit) && canView(viewer, unit),
+  );
+}
