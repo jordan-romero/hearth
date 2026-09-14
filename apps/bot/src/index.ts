@@ -52,6 +52,10 @@ import {
   getCampaignDiscord,
   setupCampaign,
   joinCampaign,
+  saveCharacterToken,
+  tokenImageType,
+  TOKEN_MAX_BYTES,
+  type TokenImageType,
   type ResolvedMember,
   type NpcDraft,
   type PortraitMatch,
@@ -227,6 +231,12 @@ const setupCommand = new SlashCommandBuilder()
         "What should we call you at the table? (labels your lines in transcripts)",
       ),
   )
+  .addStringOption((o) =>
+    o
+      .setName("dm_pronouns")
+      .setDescription("Your pronouns, e.g. she/her, he/him, they/them")
+      .setMaxLength(40),
+  )
   .addChannelOption((o) =>
     o
       .setName("reveals")
@@ -244,6 +254,21 @@ const joinCommand = new SlashCommandBuilder()
       .setName("character")
       .setDescription("Your character's name")
       .setRequired(true),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("pronouns")
+      .setDescription(
+        "Your character's pronouns, e.g. she/her, he/him, they/them",
+      )
+      .setMaxLength(40),
+  )
+  .addAttachmentOption((o) =>
+    o
+      .setName("token")
+      .setDescription(
+        "A token image for your character (PNG, JPG, WebP, or GIF, up to 5 MB)",
+      ),
   );
 
 const correctCommand = new SlashCommandBuilder()
@@ -500,6 +525,8 @@ async function handleSetup(
       return;
     }
     const dmName = interaction.options.getString("dm_name") ?? undefined;
+    const dmPronouns =
+      interaction.options.getString("dm_pronouns") ?? undefined;
     const reveals = interaction.options.getChannel("reveals");
     const result = await setupCampaign(
       guildId,
@@ -508,6 +535,7 @@ async function handleSetup(
       name ?? "",
       dmName,
       reveals?.id,
+      dmPronouns,
     );
 
     // Say NOW whether I can actually post there, rather than at the moment someone tries to
@@ -518,9 +546,15 @@ async function handleSetup(
     );
 
     if (result.alreadyExisted) {
+      const changes = [
+        reveals ? revealWarning : null,
+        dmPronouns?.trim()
+          ? `Your pronouns are set to **${dmPronouns.trim()}**.`
+          : null,
+      ].filter(Boolean);
       await interaction.editReply(
-        reveals
-          ? revealWarning
+        changes.length > 0
+          ? changes.join("\n")
           : `This server already runs **${result.campaignName}** — players can \`/join\`. Use \`/setup reveals:#channel\` to choose where reveals post.`,
       );
       return;
@@ -584,16 +618,62 @@ async function handleJoin(
       return;
     }
     const characterName = interaction.options.getString("character", true);
+    const pronouns = interaction.options.getString("pronouns") ?? undefined;
+    const token = interaction.options.getAttachment("token");
+
+    // Check the token before joining, so a bad file doesn't leave the join half done.
+    let tokenData: Buffer | undefined;
+    let tokenType: TokenImageType | null = null;
+    if (token) {
+      if (token.size > TOKEN_MAX_BYTES) {
+        await interaction.editReply(
+          "That token is over 5 MB — try a smaller image.",
+        );
+        return;
+      }
+      const res = await fetch(token.url);
+      if (!res.ok) {
+        await interaction.editReply(
+          "Couldn't download that token — try again.",
+        );
+        return;
+      }
+      tokenData = Buffer.from(await res.arrayBuffer());
+      tokenType = tokenImageType(token.contentType, tokenData);
+      if (!tokenType) {
+        await interaction.editReply(
+          "Tokens need to be a PNG, JPG, WebP, or GIF image.",
+        );
+        return;
+      }
+    }
+
     const result = await joinCampaign(
       campaignId,
       interaction.user.id,
       interaction.user.username,
       characterName,
+      pronouns,
     );
+    if (result.kind === "dm") {
+      await interaction.editReply(
+        "You're the DM here, so you don't need a character — players `/join`. Set your pronouns with `/setup dm_pronouns:`.",
+      );
+      return;
+    }
+    if (tokenData && tokenType) {
+      await saveCharacterToken(
+        campaignId,
+        result.characterId,
+        tokenData,
+        tokenType,
+      );
+    }
+    const tokenNote = tokenData ? " Token saved." : "";
     await interaction.editReply(
       result.renamed
-        ? `Your character is now **${result.characterName}**.`
-        : `🎲 Welcome — you're playing **${result.characterName}**. Try \`/ask\` to see what they know, or \`/journal\` to keep private notes.`,
+        ? `Your character is now **${result.characterName}**.${tokenNote}`
+        : `🎲 Welcome — you're playing **${result.characterName}**.${tokenNote} Try \`/ask\` to see what they know, or \`/journal\` to keep private notes.`,
     );
   } catch (err) {
     console.error("/join failed:", err);

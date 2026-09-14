@@ -255,6 +255,15 @@ a.party-member:hover {
   gap: 4px;
   margin: 14px 0 40px;
 }
+.token {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--line);
+  background: var(--panel-2);
+  margin-bottom: 10px;
+}
 .sheet-name {
   display: flex;
   flex-wrap: wrap;

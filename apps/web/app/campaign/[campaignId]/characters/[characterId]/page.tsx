@@ -40,6 +40,7 @@ export default async function CharacterPage({
       bio: true,
       stats: true,
       partyId: true,
+      tokenStoragePath: true,
       party: { select: { name: true } },
     },
   });
@@ -113,6 +114,15 @@ export default async function CharacterPage({
       </Link>
 
       <section className="sheet">
+        {character.tokenStoragePath && (
+          <img
+            className="token"
+            src={`/campaign/${campaignId}/characters/${character.id}/token`}
+            alt={`${character.name}'s token`}
+            width={96}
+            height={96}
+          />
+        )}
         <h2 className="sheet-name">
           {character.name}
           {character.status !== "ACTIVE" && (
