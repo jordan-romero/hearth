@@ -81,6 +81,19 @@ export async function getObject(bucket: string, key: string): Promise<Buffer> {
   return fs.promises.readFile(path.join(storageBase(), bucket, key));
 }
 
+/** Remove `bucket`/`key`. An object that's already gone isn't an error. */
+export async function deleteObject(bucket: string, key: string): Promise<void> {
+  if (useSupabase) {
+    const { error } = await client().storage.from(bucket).remove([key]);
+    if (error)
+      throw new Error(
+        `storage delete failed (${bucket}/${key}): ${error.message}`,
+      );
+    return;
+  }
+  await fs.promises.rm(path.join(storageBase(), bucket, key), { force: true });
+}
+
 // Per-bucket convenience wrappers.
 /** Store a clip's bytes (bot) — returns the key (AudioClip.storagePath). */
 export const putClip = (key: string, data: Buffer): Promise<string> =>

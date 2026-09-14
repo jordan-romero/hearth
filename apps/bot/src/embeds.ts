@@ -162,7 +162,7 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
       {
         name: "Getting started",
         value: [
-          "**/setup** `name` `[dm_name]` `[dm_pronouns]` `[starting_session]` `[reveals]` — (DM) create the campaign; run it again to change your settings",
+          "**/setup** `name` `[dm_name]` `[dm_pronouns]` `[starting_session]` `[reveals]` `[facts]` `[recaps]` `[lore]` `[import_history]` — (DM) create the campaign; run it again to change your settings",
           "**/join** `character` `[pronouns]` `[class]` `[ancestry]` `[level]` `[token]` — (players) claim your seat with a character",
         ].join("\n"),
       },
