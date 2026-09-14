@@ -3,11 +3,13 @@
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { requireMember } from "@/lib/campaign";
 import { prisma } from "@hearth/db";
 import { filterKnownToCharacter } from "@hearth/core";
 
 const KNOWN_LIMIT = 200;
+const BIO_MAX = 4000;
 
 function abilityScores(stats: unknown): [string, string][] {
   if (!stats || typeof stats !== "object" || Array.isArray(stats)) return [];
@@ -98,6 +100,22 @@ export default async function CharacterPage({
     })),
   );
 
+  async function saveBio(formData: FormData) {
+    "use server";
+    // A server action is its own entry point, so check again who is posting: only a
+    // character's own player may rewrite their backstory.
+    const { viewer: author } = await requireMember(campaignId);
+    if (author.characterId !== characterId) return;
+    const bio = String(formData.get("bio") ?? "")
+      .trim()
+      .slice(0, BIO_MAX);
+    await prisma.character.update({
+      where: { id: characterId },
+      data: { bio: bio || null },
+    });
+    revalidatePath(`/campaign/${campaignId}/characters/${characterId}`);
+  }
+
   const isOwn = viewer.characterId === character.id;
   const meta = [
     `Level ${character.level}`,
@@ -130,7 +148,9 @@ export default async function CharacterPage({
           )}
         </h2>
         <p className="sheet-meta">{meta.join(" · ")}</p>
-        {character.bio && <p className="sheet-bio">{character.bio}</p>}
+        {!isOwn && character.bio && (
+          <p className="sheet-bio">{character.bio}</p>
+        )}
         {scores.length > 0 && (
           <dl className="abilities">
             {scores.map(([key, value]) => (
@@ -142,6 +162,27 @@ export default async function CharacterPage({
           </dl>
         )}
       </section>
+
+      {isOwn && (
+        <section className="section">
+          <form className="journal-form" action={saveBio}>
+            <label className="section-h" htmlFor="bio">
+              Backstory
+            </label>
+            <textarea
+              id="bio"
+              name="bio"
+              rows={6}
+              maxLength={BIO_MAX}
+              defaultValue={character.bio ?? ""}
+              placeholder="Where they came from, what they want, who they left behind…"
+            />
+            <button className="btn" type="submit">
+              Save backstory
+            </button>
+          </form>
+        </section>
+      )}
 
       <section className="section">
         <h2 className="section-h">

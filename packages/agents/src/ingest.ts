@@ -1,7 +1,7 @@
 // The ingestion pipeline: a stored SourceDocument → parsed text → chunks → embedded
 // DocumentChunks (the RAG layer). Idempotent — re-ingesting a doc replaces its chunks.
-// Chunks default to DM_ONLY (the schema default); a player-visible source (e.g. a public
-// Discord channel) will override that when those connectors land.
+// Chunks and extracted facts take the document's visibility: DM_ONLY by default, EVERYONE when
+// the DM marked it as something the players already have.
 
 import { prisma } from "@hearth/db";
 import { getDocument } from "./storage.js";
@@ -46,6 +46,7 @@ export async function ingestDocument(sourceDocumentId: string): Promise<void> {
           campaignId: doc.campaignId,
           chunkIndex: i,
           text: chunk,
+          baseVisibility: doc.baseVisibility,
         })),
       });
     });
@@ -72,7 +73,12 @@ export async function ingestDocument(sourceDocumentId: string): Promise<void> {
     // so a failed extraction never loses the chunks we already committed.
     if (doc.extractUnits) {
       try {
-        await extractUnitsForDoc(doc.id, doc.campaignId, text);
+        await extractUnitsForDoc(
+          doc.id,
+          doc.campaignId,
+          text,
+          doc.baseVisibility,
+        );
       } catch (err) {
         console.error(`[ingest] unit extraction failed for ${doc.id}:`, err);
       }
@@ -90,31 +96,59 @@ export async function ingestDocument(sourceDocumentId: string): Promise<void> {
   }
 }
 
-/** Distill a document's text into structured DM_ADDED KnowledgeUnits (DM_ONLY), linked
- * back to the doc for provenance. Idempotent — replaces this doc's DM_ADDED units. */
+/** Distill a document's text into structured DM_ADDED KnowledgeUnits, linked back to the doc
+ * for provenance and visible to whoever the doc is. Idempotent — replaces this doc's
+ * DM_ADDED units. */
 async function extractUnitsForDoc(
   sourceDocumentId: string,
   campaignId: string,
   text: string,
+  baseVisibility: "DM_ONLY" | "EVERYONE" | "PUBLIC",
 ): Promise<void> {
   const units = await extractUnitsFromText(text);
   const created = await prisma.$transaction(async (tx) => {
+    // Secrets carry the same sourceDocumentId, so a re-ingest replaces them along with the facts.
     await tx.knowledgeUnit.deleteMany({
       where: { sourceDocumentId, source: "DM_ADDED" },
     });
     if (units.length === 0) return [];
-    return tx.knowledgeUnit.createManyAndReturn({
+    const facts = await tx.knowledgeUnit.createManyAndReturn({
       data: units.map((u) => ({
         campaignId,
         sourceDocumentId,
         type: u.type,
         source: "DM_ADDED" as const,
         origin: "AUTHORED" as const,
-        baseVisibility: "DM_ONLY" as const,
+        baseVisibility,
         title: u.title,
         content: u.content,
       })),
     });
+    // What only the DM should know is its own DM_ONLY unit linked to the fact — even in a
+    // document the players already have — so revealing the fact can never carry the secret.
+    const factIdByTitle = new Map(facts.map((f) => [f.title, f.id]));
+    const secretRows = units.flatMap((u) =>
+      u.secret
+        ? [
+            {
+              campaignId,
+              sourceDocumentId,
+              type: "FACT" as const,
+              source: "DM_ADDED" as const,
+              origin: "AUTHORED" as const,
+              baseVisibility: "DM_ONLY" as const,
+              title: `Secret — ${u.title}`,
+              content: u.secret,
+              subjectId: factIdByTitle.get(u.title) ?? null,
+            },
+          ]
+        : [],
+    );
+    const secrets =
+      secretRows.length > 0
+        ? await tx.knowledgeUnit.createManyAndReturn({ data: secretRows })
+        : [];
+    return [...facts, ...secrets];
   });
   if (created.length === 0) return;
 

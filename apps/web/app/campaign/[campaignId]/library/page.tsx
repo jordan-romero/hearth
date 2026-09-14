@@ -1,9 +1,9 @@
 // The DM's library — campaign material that feeds the memory.
 //
 // Gated twice over, deliberately. requireDm refuses a player outright (the hidden nav tab is
-// presentation, not protection), and everything ingested here lands DM_ONLY, so even after
-// upload nothing reaches a player until the DM reveals it. Players never see this page and
-// never see its contents by accident.
+// presentation, not protection), and everything ingested here lands DM_ONLY unless the DM
+// marks it as something the players already have, so nothing reaches a player by accident.
+// Players never see this page.
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -15,6 +15,7 @@ import {
   SUPPORTED_UPLOAD_EXTENSIONS,
   MAX_UPLOAD_BYTES,
 } from "@hearth/agents";
+import { SubmitButton } from "./submit-button";
 
 // Parsing happens in the worker, but the file still travels through this request.
 export const maxDuration = 60;
@@ -31,10 +32,10 @@ export default async function LibraryPage({
   searchParams,
 }: {
   params: Promise<{ campaignId: string }>;
-  searchParams: Promise<{ error?: string; added?: string }>;
+  searchParams: Promise<{ error?: string; added?: string; already?: string }>;
 }) {
   const { campaignId } = await params;
-  const { error, added } = await searchParams;
+  const { error, added, already } = await searchParams;
   await requireDm(campaignId);
 
   const docs = await listDocuments(campaignId);
@@ -50,37 +51,43 @@ export default async function LibraryPage({
 
     const file = formData.get("file");
     if (!(file instanceof File) || file.size === 0) {
-      redirectTo(campaignId, "Choose a file first.");
+      redirectTo(campaignId, { error: "Choose a file first." });
     }
     const f = file as File;
     if (!isSupportedUpload(f.name)) {
-      redirectTo(
-        campaignId,
-        `Hearth can read ${SUPPORTED_UPLOAD_EXTENSIONS.join(", ")} — not that.`,
-      );
+      redirectTo(campaignId, {
+        error: `Hearth can read ${SUPPORTED_UPLOAD_EXTENSIONS.join(", ")} — not that.`,
+      });
     }
     if (f.size > MAX_UPLOAD_BYTES) {
-      redirectTo(
-        campaignId,
-        `That file is ${(f.size / 1024 / 1024).toFixed(1)}MB — the limit is ${MAX_UPLOAD_BYTES / 1024 / 1024}MB.`,
-      );
+      redirectTo(campaignId, {
+        error: `That file is ${(f.size / 1024 / 1024).toFixed(1)}MB — the limit is ${MAX_UPLOAD_BYTES / 1024 / 1024}MB.`,
+      });
     }
     const extractUnits = formData.get("extract") !== null;
+    const forPlayers = formData.get("forPlayers") !== null;
     const data = Buffer.from(await f.arrayBuffer());
+    let result: Awaited<ReturnType<typeof ingestUpload>> | undefined;
     try {
-      await ingestUpload(
+      result = await ingestUpload(
         campaignId,
         f.name,
         data,
         f.type || undefined,
         extractUnits,
+        forPlayers,
       );
     } catch (err) {
       console.error("library upload failed:", err);
-      redirectTo(campaignId, "Couldn't store that file — try again.");
+      redirectTo(campaignId, {
+        error: "Couldn't store that file — try again.",
+      });
     }
     revalidatePath(`/campaign/${campaignId}/library`);
-    redirectTo(campaignId, undefined, f.name);
+    redirectTo(
+      campaignId,
+      result?.alreadyAdded ? { already: result.name } : { added: f.name },
+    );
   }
 
   return (
@@ -89,9 +96,10 @@ export default async function LibraryPage({
         <h2 className="section-h">Add material</h2>
         <p className="muted" style={{ marginTop: 0, marginBottom: 16 }}>
           Notes, lore, handouts, a session log — up to{" "}
-          {MAX_UPLOAD_BYTES / 1024 / 1024}MB. Everything you add is yours alone
+          {MAX_UPLOAD_BYTES / 1024 / 1024}MB. What you add stays yours alone
           until you reveal it — players can&rsquo;t reach it with{" "}
-          <code>/ask</code>.
+          <code>/ask</code> — unless you mark it as something the players
+          already have.
         </p>
 
         <form className="upload-form" action={upload}>
@@ -106,15 +114,23 @@ export default async function LibraryPage({
             <input type="checkbox" name="extract" defaultChecked />
             Also pull out NPCs, places and facts
           </label>
-          <button className="btn" type="submit">
-            Add to memory
-          </button>
+          <label className="check">
+            <input type="checkbox" name="forPlayers" />
+            Players already have this
+          </label>
+          <SubmitButton pendingLabel="Adding…">Add to memory</SubmitButton>
         </form>
 
         {error && <p className="notice error">{error}</p>}
         {added && (
           <p className="notice ok">
             Added <strong>{added}</strong> — reading it into the memory now.
+          </p>
+        )}
+        {already && (
+          <p className="notice ok">
+            <strong>{already}</strong> is already in the library, so nothing new
+            was added.
           </p>
         )}
       </section>
@@ -161,6 +177,8 @@ export default async function LibraryPage({
                     })}
                     {d._count.chunks > 0 &&
                       ` · ${d._count.chunks} passages · ${d._count.knowledgeUnits} facts`}
+                    {d.baseVisibility === "EVERYONE" &&
+                      " · players can see this"}
                   </span>
                 </div>
                 <span className={`status ${d.status.toLowerCase()}`}>
@@ -176,9 +194,13 @@ export default async function LibraryPage({
 }
 
 /** Server actions can't return values to a page, so outcomes ride back in the URL. */
-function redirectTo(campaignId: string, error?: string, added?: string): never {
+function redirectTo(
+  campaignId: string,
+  outcome: { error?: string; added?: string; already?: string },
+): never {
   const q = new URLSearchParams();
-  if (error) q.set("error", error);
-  if (added) q.set("added", added);
+  if (outcome.error) q.set("error", outcome.error);
+  if (outcome.added) q.set("added", outcome.added);
+  if (outcome.already) q.set("already", outcome.already);
   redirect(`/campaign/${campaignId}/library?${q.toString()}`);
 }

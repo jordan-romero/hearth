@@ -42,6 +42,7 @@ export async function setupCampaign(
   dmName?: string,
   revealChannelId?: string,
   dmPronouns?: string,
+  firstSessionNumber?: number,
 ): Promise<SetupResult> {
   const cleanPronouns = dmPronouns?.trim() || undefined;
   const link = await prisma.campaignDiscord.findUnique({
@@ -67,6 +68,12 @@ export async function setupCampaign(
         data: { pronouns: cleanPronouns },
       });
     }
+    if (firstSessionNumber) {
+      await prisma.campaign.update({
+        where: { id: link.campaign.id },
+        data: { firstSessionNumber },
+      });
+    }
     return {
       campaignId: link.campaign.id,
       campaignName: link.campaign.name,
@@ -77,7 +84,12 @@ export async function setupCampaign(
 
   const user = await upsertUser(discordUserId, displayName);
   const campaign = await prisma.$transaction(async (tx) => {
-    const created = await tx.campaign.create({ data: { name: campaignName } });
+    const created = await tx.campaign.create({
+      data: {
+        name: campaignName,
+        ...(firstSessionNumber ? { firstSessionNumber } : {}),
+      },
+    });
     await tx.campaignDiscord.create({
       data: { campaignId: created.id, guildId, revealChannelId },
     });
@@ -89,6 +101,7 @@ export async function setupCampaign(
         campaignId: created.id,
         role: "DM",
         displayName: dmName?.trim() || displayName,
+        pronouns: cleanPronouns ?? null,
       },
     });
     // Every campaign gets one party, so `/reveal to:party` works from day one.
@@ -123,7 +136,12 @@ export async function joinCampaign(
   discordUserId: string,
   displayName: string,
   characterName: string,
-  pronouns?: string,
+  details: {
+    pronouns?: string;
+    className?: string;
+    ancestry?: string;
+    level?: number;
+  } = {},
 ): Promise<JoinResult> {
   const user = await upsertUser(discordUserId, displayName);
   const membership = await prisma.membership.upsert({
@@ -135,17 +153,21 @@ export async function joinCampaign(
 
   if (membership.role === "DM") return { kind: "dm" };
 
-  const cleanPronouns = pronouns?.trim() || undefined;
+  // Anything left out keeps its current value, so re-running /join just to rename doesn't
+  // wipe the sheet given the first time.
+  const clean = (v?: string) => v?.trim() || undefined;
+  const sheet = {
+    ...(clean(details.pronouns) ? { pronouns: clean(details.pronouns) } : {}),
+    ...(clean(details.className) ? { class: clean(details.className) } : {}),
+    ...(clean(details.ancestry) ? { ancestry: clean(details.ancestry) } : {}),
+    ...(details.level ? { level: details.level } : {}),
+  };
   const party = await prisma.party.findFirst({ where: { campaignId } });
   const existing = membership.characters?.[0];
   if (existing) {
     await prisma.character.update({
       where: { id: existing.id },
-      // Re-running /join just to rename shouldn't wipe pronouns given the first time.
-      data: {
-        name: characterName,
-        ...(cleanPronouns ? { pronouns: cleanPronouns } : {}),
-      },
+      data: { name: characterName, ...sheet },
     });
     return {
       kind: "joined",
@@ -160,7 +182,7 @@ export async function joinCampaign(
       membershipId: membership.id,
       partyId: party?.id ?? null,
       name: characterName,
-      pronouns: cleanPronouns ?? null,
+      ...sheet,
     },
   });
   return {

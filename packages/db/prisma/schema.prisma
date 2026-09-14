@@ -87,15 +87,18 @@ enum GameSessionStatus {
 // ─── Identity & tenancy ──────────────────────────────────────────────────────
 
 model Campaign {
-  id         String   @id @default(cuid())
-  name       String
+  id                 String   @id @default(cuid())
+  name               String
   // Which TTRPG this table plays — a preset key, not an enum, so new systems don't
   // need a migration. Drives ask() terminology (DM/GM/Keeper) and, later, scopes the
   // rules-lookup corpus. "2014 vs 2024" is just two values → two SRD corpora.
-  gameSystem String   @default("dnd-2014")
-  theme      String   @default("firelight") // preset key; see the design track
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  gameSystem         String   @default("dnd-2014")
+  theme              String   @default("firelight") // preset key; see the design track
+  // The number the first recorded session gets. Above 1 for a campaign that was already
+  // running before it came to Hearth, so /record doesn't restart the count.
+  firstSessionNumber Int      @default(1)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   memberships     Membership[]
   parties         Party[]
@@ -491,21 +494,26 @@ enum DocumentStatus {
 /// provenance. Doubles as the DM's "library" (a list of everything they've fed in).
 /// Its text is split into DocumentChunks for retrieval.
 model SourceDocument {
-  id           String         @id @default(cuid())
-  campaignId   String
-  name         String
-  sourceType   SourceType     @default(UPLOAD)
+  id             String         @id @default(cuid())
+  campaignId     String
+  name           String
+  sourceType     SourceType     @default(UPLOAD)
   // Uploaded raw file lives in the `documents` bucket (storagePath); a synced source
   // instead keeps a link back to the original (sourceUrl) — never both.
-  storagePath  String?
-  sourceUrl    String?
-  mimeType     String?
-  status       DocumentStatus @default(PENDING)
+  storagePath    String?
+  sourceUrl      String?
+  mimeType       String?
+  status         DocumentStatus @default(PENDING)
   // Whether to also extract structured DM_ADDED KnowledgeUnits from this doc (a Claude
   // call). On for a single manual upload; bulk connectors set it off (cost-gated).
-  extractUnits Boolean        @default(true)
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  extractUnits   Boolean        @default(true)
+  // DM_ONLY until revealed, or EVERYONE for material the players already have (shared party
+  // notes, handouts). Its passages and extracted facts are stored with the same visibility.
+  baseVisibility BaseVisibility @default(DM_ONLY)
+  // SHA-256 of the uploaded bytes, so the same file sent twice isn't imported twice.
+  contentHash    String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 
   campaign       Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   chunks         DocumentChunk[]
@@ -514,6 +522,7 @@ model SourceDocument {
   reveals        RevealEvent[]
 
   @@index([campaignId])
+  @@index([campaignId, contentHash])
 }
 
 /// One chunk of a SourceDocument's text, embedded for semantic search (the RAG layer).

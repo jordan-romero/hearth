@@ -162,8 +162,8 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
       {
         name: "Getting started",
         value: [
-          "**/setup** `name` `[dm_name]` `[dm_pronouns]` `[reveals]` — (DM) create the campaign; run it again to change your settings",
-          "**/join** `character` `[pronouns]` `[token]` — (players) claim your seat with a character, and optionally a token image",
+          "**/setup** `name` `[dm_name]` `[dm_pronouns]` `[starting_session]` `[reveals]` — (DM) create the campaign; run it again to change your settings",
+          "**/join** `character` `[pronouns]` `[class]` `[ancestry]` `[level]` `[token]` — (players) claim your seat with a character",
         ].join("\n"),
       },
       {
@@ -182,7 +182,7 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
         value: [
           "**/record** — start recording the session in your voice channel",
           "**/stop** — stop recording and file the session into the memory",
-          "**/upload** `file` — add notes, handouts, or lore to the memory",
+          "**/upload** `file` `[for_players]` — add notes, handouts, or lore; set `for_players` if the table already has it",
           "**/reveal** `about` `to` — reveal something to a character or the party",
           "**/npc** `[prompt]` `[live]` — generate an NPC with a matched portrait; `live:true` fits them to the scene you're playing right now",
         ].join("\n"),
