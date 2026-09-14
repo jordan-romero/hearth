@@ -64,14 +64,18 @@ export default async function CampaignOverview({
           <h2 className="section-h">The party</h2>
           <div className="party">
             {characters.map((c) => (
-              <div key={c.id} className="party-member">
+              <Link
+                key={c.id}
+                className="party-member"
+                href={`/campaign/${campaignId}/characters/${c.id}`}
+              >
                 <span className="party-name">{c.name}</span>
                 {(c.ancestry || c.class) && (
                   <span className="muted small">
                     {[c.ancestry, c.class].filter(Boolean).join(" · ")}
                   </span>
                 )}
-              </div>
+              </Link>
             ))}
           </div>
         </section>

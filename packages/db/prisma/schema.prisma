@@ -149,6 +149,9 @@ model Membership {
   // /setup. Campaign-scoped on purpose: one person can DM several campaigns under different
   // names, and a global name would let a later /setup relabel an earlier campaign's history.
   displayName String?
+  // The member's own pronouns at this table. Players' characters carry their own on Character;
+  // this is for the DM, who usually has no character.
+  pronouns    String?
   createdAt   DateTime   @default(now())
 
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -192,14 +195,15 @@ model Character {
   name         String
 
   // light, display-only sheet — no dice/HP/combat logic
-  ancestry  String?
-  class     String?
-  level     Int             @default(1)
-  pronouns  String?
-  status    CharacterStatus @default(ACTIVE)
-  avatarUrl String?
-  bio       String?
-  stats     Json? // ability scores etc., purely for display
+  ancestry         String?
+  class            String?
+  level            Int             @default(1)
+  pronouns         String?
+  status           CharacterStatus @default(ACTIVE)
+  avatarUrl        String?
+  tokenStoragePath String? // the player's uploaded token image, in the portraits bucket
+  bio              String?
+  stats            Json? // ability scores etc., purely for display
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

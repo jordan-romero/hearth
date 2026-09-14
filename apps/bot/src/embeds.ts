@@ -162,8 +162,8 @@ export function helpEmbed(theme: string = DEFAULT_THEME): EmbedBuilder {
       {
         name: "Getting started",
         value: [
-          "**/setup** `name` `[dm_name]` `[reveals]` — (DM) create the campaign; run it again to change where reveals post",
-          "**/join** `character` — claim your seat at the table with a character",
+          "**/setup** `name` `[dm_name]` `[dm_pronouns]` `[reveals]` — (DM) create the campaign; run it again to change your settings",
+          "**/join** `character` `[pronouns]` `[token]` — (players) claim your seat with a character, and optionally a token image",
         ].join("\n"),
       },
       {

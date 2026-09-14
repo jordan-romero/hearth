@@ -41,7 +41,9 @@ export async function setupCampaign(
   campaignName: string,
   dmName?: string,
   revealChannelId?: string,
+  dmPronouns?: string,
 ): Promise<SetupResult> {
+  const cleanPronouns = dmPronouns?.trim() || undefined;
   const link = await prisma.campaignDiscord.findUnique({
     where: { guildId },
     include: { campaign: { select: { id: true, name: true } } },
@@ -55,6 +57,16 @@ export async function setupCampaign(
           data: { revealChannelId },
         })
       : link;
+    if (cleanPronouns) {
+      await prisma.membership.updateMany({
+        where: {
+          campaignId: link.campaign.id,
+          role: "DM",
+          user: { discordUserId },
+        },
+        data: { pronouns: cleanPronouns },
+      });
+    }
     return {
       campaignId: link.campaign.id,
       campaignName: link.campaign.name,
@@ -94,10 +106,15 @@ export async function setupCampaign(
   };
 }
 
-export interface JoinResult {
-  characterName: string;
-  renamed: boolean; // true when an existing character was renamed rather than created
-}
+export type JoinResult =
+  | {
+      kind: "joined";
+      characterId: string;
+      characterName: string;
+      renamed: boolean; // true when an existing character was renamed rather than created
+    }
+  // The DM's seat comes from /setup. A character would put them in the party.
+  | { kind: "dm" };
 
 /** Join the campaign bound to a server as a player with `characterName`. Idempotent: running
  * it again renames the caller's existing character instead of creating duplicates. */
@@ -106,6 +123,7 @@ export async function joinCampaign(
   discordUserId: string,
   displayName: string,
   characterName: string,
+  pronouns?: string,
 ): Promise<JoinResult> {
   const user = await upsertUser(discordUserId, displayName);
   const membership = await prisma.membership.upsert({
@@ -115,22 +133,40 @@ export async function joinCampaign(
     include: { characters: { where: { campaignId }, take: 1 } },
   });
 
+  if (membership.role === "DM") return { kind: "dm" };
+
+  const cleanPronouns = pronouns?.trim() || undefined;
   const party = await prisma.party.findFirst({ where: { campaignId } });
   const existing = membership.characters?.[0];
   if (existing) {
     await prisma.character.update({
       where: { id: existing.id },
-      data: { name: characterName },
+      // Re-running /join just to rename shouldn't wipe pronouns given the first time.
+      data: {
+        name: characterName,
+        ...(cleanPronouns ? { pronouns: cleanPronouns } : {}),
+      },
     });
-    return { characterName, renamed: true };
+    return {
+      kind: "joined",
+      characterId: existing.id,
+      characterName,
+      renamed: true,
+    };
   }
-  await prisma.character.create({
+  const created = await prisma.character.create({
     data: {
       campaignId,
       membershipId: membership.id,
       partyId: party?.id ?? null,
       name: characterName,
+      pronouns: cleanPronouns ?? null,
     },
   });
-  return { characterName, renamed: false };
+  return {
+    kind: "joined",
+    characterId: created.id,
+    characterName,
+    renamed: false,
+  };
 }

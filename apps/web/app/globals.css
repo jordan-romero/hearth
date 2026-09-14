@@ -237,8 +237,91 @@ h2 {
   border-radius: 8px;
   padding: 11px 14px;
 }
+a.party-member {
+  text-decoration: none;
+  color: inherit;
+}
+a.party-member:hover {
+  border-color: var(--ember);
+}
 .party-name {
   font-weight: 500;
+}
+
+/* ── character ──────────────────────────────────────────────────────────── */
+.sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 14px 0 40px;
+}
+.token {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--line);
+  background: var(--panel-2);
+  margin-bottom: 10px;
+}
+.sheet-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  font-size: 28px;
+  margin: 0;
+  text-wrap: balance;
+}
+.sheet-meta {
+  margin: 0;
+  color: var(--ink-2);
+}
+.sheet-bio {
+  margin: 10px 0 0;
+  max-width: 65ch;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+.abilities {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 8px;
+  margin: 16px 0 0;
+}
+.ability {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.ability-k {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.ability-v {
+  margin: 0;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.session-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
 }
 .small {
   font-size: 13px;
