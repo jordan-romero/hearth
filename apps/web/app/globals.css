@@ -112,6 +112,11 @@ h2 {
   text-decoration: none;
 }
 
+.btn:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
 .tag {
   font-family: var(--mono);
   font-size: 11px;

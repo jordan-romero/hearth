@@ -28,6 +28,7 @@ import {
   openTranscriptStream,
   type TranscriptStream,
   scheduleFinalize,
+  nextSessionNumber,
   TRANSCRIBE_QUEUE,
   SESSION_GAP_MS,
   type TranscribeJob,
@@ -191,13 +192,21 @@ async function startRecordingInner(
     : await prisma.gameSession.create({
         data: {
           campaignId,
-          number:
-            ((
+          number: nextSessionNumber(
+            (
               await prisma.gameSession.findFirst({
                 where: { campaignId },
                 orderBy: { number: "desc" },
+                select: { number: true },
               })
-            )?.number ?? 0) + 1,
+            )?.number ?? null,
+            (
+              await prisma.campaign.findUniqueOrThrow({
+                where: { id: campaignId },
+                select: { firstSessionNumber: true },
+              })
+            ).firstSessionNumber,
+          ),
           status: "ACTIVE",
           occurredAt: new Date(),
           lastActivityAt: new Date(),

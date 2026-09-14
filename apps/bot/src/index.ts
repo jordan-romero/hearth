@@ -149,6 +149,13 @@ const uploadCommand = new SlashCommandBuilder()
       .setDescription(
         "Also pull out structured facts (NPCs, places…). Default: yes.",
       ),
+  )
+  .addBooleanOption((o) =>
+    o
+      .setName("for_players")
+      .setDescription(
+        "Players already have this (shared notes, handouts), so everyone can see it. Default: no.",
+      ),
   );
 
 const revealCommand = new SlashCommandBuilder()
@@ -238,6 +245,15 @@ const setupCommand = new SlashCommandBuilder()
       .setDescription("Your pronouns, e.g. she/her, he/him, they/them")
       .setMaxLength(40),
   )
+  .addIntegerOption((o) =>
+    o
+      .setName("starting_session")
+      .setDescription(
+        "Already mid-campaign? The number your next recorded session should get",
+      )
+      .setMinValue(1)
+      .setMaxValue(10000),
+  )
   .addChannelOption((o) =>
     o
       .setName("reveals")
@@ -270,6 +286,25 @@ const joinCommand = new SlashCommandBuilder()
       .setDescription(
         "A token image for your character (PNG, JPG, WebP, or GIF, up to 5 MB)",
       ),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("class")
+      .setDescription("Your character's class, e.g. Ranger or Wizard")
+      .setMaxLength(60),
+  )
+  .addStringOption((o) =>
+    o
+      .setName("ancestry")
+      .setDescription("Your character's ancestry, e.g. Half-elf")
+      .setMaxLength(60),
+  )
+  .addIntegerOption((o) =>
+    o
+      .setName("level")
+      .setDescription("Your character's level")
+      .setMinValue(1)
+      .setMaxValue(30),
   );
 
 const correctCommand = new SlashCommandBuilder()
@@ -528,6 +563,8 @@ async function handleSetup(
     const dmName = interaction.options.getString("dm_name") ?? undefined;
     const dmPronouns =
       interaction.options.getString("dm_pronouns") ?? undefined;
+    const startingSession =
+      interaction.options.getInteger("starting_session") ?? undefined;
     const reveals = interaction.options.getChannel("reveals");
     const result = await setupCampaign(
       guildId,
@@ -537,6 +574,7 @@ async function handleSetup(
       dmName,
       reveals?.id,
       dmPronouns,
+      startingSession,
     );
 
     // Say NOW whether I can actually post there, rather than at the moment someone tries to
@@ -551,6 +589,9 @@ async function handleSetup(
         reveals ? revealWarning : null,
         dmPronouns?.trim()
           ? `Your pronouns are set to **${dmPronouns.trim()}**.`
+          : null,
+        startingSession
+          ? `Until a session is recorded, the first one will be session **${startingSession}**.`
           : null,
       ].filter(Boolean);
       await interaction.editReply(
@@ -654,7 +695,12 @@ async function handleJoin(
       interaction.user.id,
       interaction.user.username,
       characterName,
-      pronouns,
+      {
+        pronouns,
+        className: interaction.options.getString("class") ?? undefined,
+        ancestry: interaction.options.getString("ancestry") ?? undefined,
+        level: interaction.options.getInteger("level") ?? undefined,
+      },
     );
     if (result.kind === "dm") {
       await interaction.editReply(
@@ -1436,19 +1482,23 @@ async function handleUpload(
     const data = Buffer.from(await res.arrayBuffer());
 
     const extractUnits = interaction.options.getBoolean("extract") ?? true;
+    const forPlayers = interaction.options.getBoolean("for_players") ?? false;
     const doc = await ingestUpload(
       viewer.campaignId,
       attachment.name,
       data,
       attachment.contentType ?? undefined,
       extractUnits,
+      forPlayers,
     );
 
     console.log(
-      `📄 upload: "${attachment.name}" (${data.length} bytes) → ${doc.documentId} queued`,
+      `📄 upload: "${attachment.name}" (${data.length} bytes, ${forPlayers ? "for players" : "DM only"}) → ${doc.documentId} queued`,
     );
     await interaction.editReply(
-      `📄 Uploaded **${attachment.name}** — parsing it into the memory.`,
+      forPlayers
+        ? `📄 Uploaded **${attachment.name}** — parsing it into the memory. Everyone at the table can see it.`
+        : `📄 Uploaded **${attachment.name}** — parsing it into the memory. Only you can see it until you reveal it.`,
     );
   } catch (err) {
     console.error("/upload failed:", err);
