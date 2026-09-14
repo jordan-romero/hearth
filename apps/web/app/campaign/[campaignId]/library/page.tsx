@@ -9,15 +9,19 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireDm } from "@/lib/campaign";
 import {
+  ingestDirectUpload,
   ingestUpload,
   listDocuments,
-  isSupportedUpload,
+  prepareDirectUpload,
+  supportsDirectUpload,
+  uploadProblem,
+  UploadRejectedError,
   SUPPORTED_UPLOAD_EXTENSIONS,
   MAX_UPLOAD_BYTES,
 } from "@hearth/agents";
-import { SubmitButton } from "./submit-button";
+import { UploadForm, type FinishInput } from "./upload-form";
 
-// Parsing happens in the worker, but the file still travels through this request.
+// Parsing happens in the worker, but a server-side upload still travels through this request.
 export const maxDuration = 60;
 
 const STATUS_LABEL: Record<string, string> = {
@@ -27,12 +31,14 @@ const STATUS_LABEL: Record<string, string> = {
   FAILED: "failed",
 };
 
+type Outcome = { error?: string; added?: string; already?: string };
+
 export default async function LibraryPage({
   params,
   searchParams,
 }: {
   params: Promise<{ campaignId: string }>;
-  searchParams: Promise<{ error?: string; added?: string; already?: string }>;
+  searchParams: Promise<Outcome>;
 }) {
   const { campaignId } = await params;
   const { error, added, already } = await searchParams;
@@ -43,27 +49,18 @@ export default async function LibraryPage({
   const totalUnits = docs.reduce((n, d) => n + d._count.knowledgeUnits, 0);
   const totalChunks = docs.reduce((n, d) => n + d._count.chunks, 0);
 
+  // Every action below re-checks the DM: a server action is its own entry point, and the page's
+  // guard says nothing about who is calling it.
+
   async function upload(formData: FormData) {
     "use server";
-    // Re-check inside the action: a server action is its own entry point, and the page's
-    // guard says nothing about who is posting to it.
     await requireDm(campaignId);
 
     const file = formData.get("file");
-    if (!(file instanceof File) || file.size === 0) {
-      redirectTo(campaignId, { error: "Choose a file first." });
-    }
-    const f = file as File;
-    if (!isSupportedUpload(f.name)) {
-      redirectTo(campaignId, {
-        error: `Hearth can read ${SUPPORTED_UPLOAD_EXTENSIONS.join(", ")} — not that.`,
-      });
-    }
-    if (f.size > MAX_UPLOAD_BYTES) {
-      redirectTo(campaignId, {
-        error: `That file is ${(f.size / 1024 / 1024).toFixed(1)}MB — the limit is ${MAX_UPLOAD_BYTES / 1024 / 1024}MB.`,
-      });
-    }
+    const f = file instanceof File ? file : null;
+    const problem = uploadProblem(f?.name ?? "", f?.size ?? 0);
+    if (problem || !f) redirectTo(campaignId, { error: problem ?? undefined });
+
     const extractUnits = formData.get("extract") !== null;
     const forPlayers = formData.get("forPlayers") !== null;
     const data = Buffer.from(await f.arrayBuffer());
@@ -90,6 +87,48 @@ export default async function LibraryPage({
     );
   }
 
+  async function prepareUpload(fileName: string, size: number) {
+    "use server";
+    await requireDm(campaignId);
+    const problem = uploadProblem(String(fileName), Number(size));
+    if (problem) return { error: problem };
+    return prepareDirectUpload(campaignId, String(fileName));
+  }
+
+  async function finishUpload(input: FinishInput) {
+    "use server";
+    await requireDm(campaignId);
+    try {
+      const result = await ingestDirectUpload(
+        campaignId,
+        String(input.key),
+        String(input.fileName),
+        input.mimeType ? String(input.mimeType) : undefined,
+        input.extractUnits === true,
+        input.forPlayers === true,
+      );
+      revalidatePath(`/campaign/${campaignId}/library`);
+      return {
+        href: libraryHref(
+          campaignId,
+          result.alreadyAdded
+            ? { already: result.name }
+            : { added: String(input.fileName) },
+        ),
+      };
+    } catch (err) {
+      if (err instanceof UploadRejectedError) {
+        return { href: libraryHref(campaignId, { error: err.message }) };
+      }
+      console.error("library direct upload failed:", err);
+      return {
+        href: libraryHref(campaignId, {
+          error: "Couldn't add that file — try again.",
+        }),
+      };
+    }
+  }
+
   return (
     <>
       <section className="section">
@@ -102,24 +141,13 @@ export default async function LibraryPage({
           already have.
         </p>
 
-        <form className="upload-form" action={upload}>
-          <input
-            type="file"
-            name="file"
-            accept={SUPPORTED_UPLOAD_EXTENSIONS.join(",")}
-            aria-label="Document to add"
-            required
-          />
-          <label className="check">
-            <input type="checkbox" name="extract" defaultChecked />
-            Also pull out NPCs, places and facts
-          </label>
-          <label className="check">
-            <input type="checkbox" name="forPlayers" />
-            Players already have this
-          </label>
-          <SubmitButton pendingLabel="Adding…">Add to memory</SubmitButton>
-        </form>
+        <UploadForm
+          accept={SUPPORTED_UPLOAD_EXTENSIONS.join(",")}
+          direct={supportsDirectUpload()}
+          upload={upload}
+          prepareUpload={prepareUpload}
+          finishUpload={finishUpload}
+        />
 
         {error && <p className="notice error">{error}</p>}
         {added && (
@@ -193,14 +221,15 @@ export default async function LibraryPage({
   );
 }
 
-/** Server actions can't return values to a page, so outcomes ride back in the URL. */
-function redirectTo(
-  campaignId: string,
-  outcome: { error?: string; added?: string; already?: string },
-): never {
+/** Server actions can't return values to a form post, so outcomes ride back in the URL. */
+function libraryHref(campaignId: string, outcome: Outcome): string {
   const q = new URLSearchParams();
   if (outcome.error) q.set("error", outcome.error);
   if (outcome.added) q.set("added", outcome.added);
   if (outcome.already) q.set("already", outcome.already);
-  redirect(`/campaign/${campaignId}/library?${q.toString()}`);
+  return `/campaign/${campaignId}/library?${q.toString()}`;
+}
+
+function redirectTo(campaignId: string, outcome: Outcome): never {
+  redirect(libraryHref(campaignId, outcome));
 }

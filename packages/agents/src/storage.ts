@@ -103,3 +103,38 @@ export const putPortrait = (key: string, data: Buffer): Promise<string> =>
 /** Read a stored portrait back (NPC card + matching). */
 export const getPortrait = (key: string): Promise<Buffer> =>
   getObject(PORTRAITS_BUCKET, key);
+
+// ── Direct uploads ───────────────────────────────────────────────────────────
+// Vercel Functions reject request bodies over 4.5 MB, so the web library has the browser send a
+// document straight to storage with a short-lived signed URL; only its key goes through the
+// server. Local disk has no signed URLs, so dev keeps uploading through the server.
+
+/** Whether documents can go straight from the browser to storage. */
+export const supportsDirectUpload = (): boolean => useSupabase;
+
+/** A signed URL the browser can PUT one document to (valid for two hours). */
+export async function createDocumentUploadUrl(key: string): Promise<string> {
+  const { data, error } = await client()
+    .storage.from(DOCUMENTS_BUCKET)
+    .createSignedUploadUrl(key);
+  if (error || !data)
+    throw new Error(`signed upload URL failed (${key}): ${error?.message}`);
+  return data.signedUrl;
+}
+
+/** Remove a stored document the memory won't keep, such as a duplicate upload. */
+export async function removeDocumentObject(key: string): Promise<void> {
+  if (useSupabase) {
+    const { error } = await client()
+      .storage.from(DOCUMENTS_BUCKET)
+      .remove([key]);
+    if (error)
+      throw new Error(
+        `storage delete failed (${DOCUMENTS_BUCKET}/${key}): ${error.message}`,
+      );
+    return;
+  }
+  await fs.promises.rm(path.join(storageBase(), DOCUMENTS_BUCKET, key), {
+    force: true,
+  });
+}
