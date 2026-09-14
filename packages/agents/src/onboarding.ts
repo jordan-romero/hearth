@@ -43,8 +43,24 @@ export async function setupCampaign(
   revealChannelId?: string,
   dmPronouns?: string,
   firstSessionNumber?: number,
+  channels: {
+    factsChannelId?: string;
+    recapsChannelId?: string;
+    loreChannelId?: string;
+  } = {},
 ): Promise<SetupResult> {
   const cleanPronouns = dmPronouns?.trim() || undefined;
+  const channelChanges = {
+    ...(channels.factsChannelId
+      ? { factsChannelId: channels.factsChannelId }
+      : {}),
+    ...(channels.recapsChannelId
+      ? { recapsChannelId: channels.recapsChannelId }
+      : {}),
+    ...(channels.loreChannelId
+      ? { loreChannelId: channels.loreChannelId }
+      : {}),
+  };
   const link = await prisma.campaignDiscord.findUnique({
     where: { guildId },
     include: { campaign: { select: { id: true, name: true } } },
@@ -52,12 +68,17 @@ export async function setupCampaign(
   if (link) {
     // Already set up, so this is an adjustment rather than a creation — that's the only way
     // to change where reveals go, and re-running /setup is where people will look for it.
-    const updated = revealChannelId
-      ? await prisma.campaignDiscord.update({
-          where: { guildId },
-          data: { revealChannelId },
-        })
-      : link;
+    const discordChanges = {
+      ...(revealChannelId ? { revealChannelId } : {}),
+      ...channelChanges,
+    };
+    const updated =
+      Object.keys(discordChanges).length > 0
+        ? await prisma.campaignDiscord.update({
+            where: { guildId },
+            data: discordChanges,
+          })
+        : link;
     if (cleanPronouns) {
       await prisma.membership.updateMany({
         where: {
@@ -91,7 +112,12 @@ export async function setupCampaign(
       },
     });
     await tx.campaignDiscord.create({
-      data: { campaignId: created.id, guildId, revealChannelId },
+      data: {
+        campaignId: created.id,
+        guildId,
+        revealChannelId,
+        ...channelChanges,
+      },
     });
     // The DM's chosen name labels their lines in every transcript. Stored per-membership, so
     // DMing a second campaign under a different name can't relabel this one's history.
