@@ -53,6 +53,7 @@ import {
   setupCampaign,
   joinCampaign,
   saveCharacterToken,
+  recoverInterruptedRecordings,
   tokenImageType,
   TOKEN_MAX_BYTES,
   type TokenImageType,
@@ -2145,6 +2146,17 @@ const client = new Client({
 
 client.once(Events.ClientReady, (c) => {
   console.log(`🔥 Hearth online as ${c.user.tag}`);
+  void recoverInterruptedRecordings()
+    .then((recovered) => {
+      if (recovered.length > 0) {
+        console.log(
+          `♻️  closed ${recovered.length} recording(s) cut off by a restart — their sessions will finalize`,
+        );
+      }
+    })
+    .catch((err) =>
+      console.error("recovering interrupted recordings failed:", err),
+    );
   if (ALLOWED_GUILDS.size > 0) {
     console.log(
       `🔒 allowlist active — ${ALLOWED_GUILDS.size} approved server(s)`,
