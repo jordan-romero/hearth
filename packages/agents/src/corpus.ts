@@ -27,22 +27,35 @@ import {
 } from "@hearth/core";
 import { prisma } from "@hearth/db";
 
-/** Rough size of a corpus in tokens. Deliberately crude — it gates a budget, it isn't billing. */
-export const charsPerToken = 4;
+/**
+ * Rough size of a corpus in tokens. Crude on purpose — it gates a budget, it isn't billing — but
+ * it has to be crude in the SAFE direction.
+ *
+ * The usual "four characters to a token" rule of thumb was wrong here by half: a real ask on the
+ * campaign's corpus reported 264,769 tokens for text this estimated at 177,640, which works out
+ * at about 2.7 characters per token. Campaign notes are proper nouns, markdown and punctuation,
+ * none of which tokenise like prose. Under-counting is the dangerous direction — the guard stays
+ * quiet while the real prompt and the real bill climb — so this uses 2.5, measured and rounded
+ * down, and errs toward reporting a corpus as larger than it is.
+ */
+export const charsPerToken = 2.5;
 export const estimateTokens = (text: string): number =>
   Math.ceil(text.length / charsPerToken);
 
 /**
  * How much of the library to hand over. Above this, the caller falls back to retrieval.
  *
- * This is a cost guard, not a capacity limit. Corpus answers run on Sonnet, whose context window
- * is a million tokens, so the real campaign's ~178k library uses under a fifth of it — the old
- * 150k ceiling was dropping three of nine documents for no reason but a number chosen before the
- * model was. What the ceiling still buys is protection from a campaign that has grown without
- * anyone noticing: at $2 per million input tokens, a 300k corpus is about sixty cents an ask
- * uncached, and a tenth of that on a cache read.
+ * A cost guard, not a capacity limit. Corpus answers run on Sonnet, whose context window is a
+ * million tokens, so the real campaign's ~265k library uses about a quarter of it; the original
+ * 150k ceiling was dropping three of nine documents for no reason but a number picked before the
+ * model was.
+ *
+ * Half a million leaves that campaign room to roughly double before anything is dropped, which
+ * matters because dropping is silent in the only way that counts — the answer just gets worse.
+ * At $2 per million input tokens a corpus this size is about a dollar an ask uncached and a dime
+ * on a cache read, and a campaign that outgrows it wants searching, not a bigger prompt.
  */
-export const DEFAULT_BUDGET_TOKENS = 300_000;
+export const DEFAULT_BUDGET_TOKENS = 500_000;
 
 /** A document passage, with the grants needed to filter it. */
 export interface CorpusChunk extends FilterableKnowledgeUnit {
