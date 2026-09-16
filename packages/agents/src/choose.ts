@@ -9,6 +9,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { RetrievedUnit, RetrievedChunk } from "./retrieve.js";
+import { CORPUS_MODEL, type Corpus } from "./corpus.js";
 
 // Picking among candidates is reading comprehension, not deep reasoning — the same call ask()
 // makes, on the same cheap model.
@@ -162,5 +163,188 @@ export async function rankRevealCandidates(
       err,
     );
     return fallback(refs, limit);
+  }
+}
+
+// ─── Choosing from the whole library ─────────────────────────────────────────
+// Ranking a retrieved shortlist only ever reorders what similarity already chose, so the wrong
+// Moira can still be the only Moira on offer. Given the corpus, the model picks from everything
+// the viewer may see instead — the same material /ask reads, in the same cacheable block, so a
+// reveal during a session reads a cache that is already warm.
+
+const CORPUS_SYSTEM = `You help a Dungeon Master find the right thing to reveal to their players.
+You are given the campaign's material and what the DM asked to reveal. Every fact is labelled [U1], [U2], … and every document passage [P1], [P2], ….
+Find the items that genuinely match the request, best first.
+Rules:
+- Match on what the text IS ABOUT, not on surface similarity. A different person with a similar-looking name (Moira vs Morwyn), or a different numbered session (session 1 vs session 81), is NOT a match.
+- Prefer the passage or fact that actually answers the request over one that merely mentions it. If a recap or an entry spans several passages, name the FIRST passage of it — the whole piece is released together.
+- Return only genuine matches, at most 4. If nothing matches, return an empty list; that is a useful answer, not a failure.
+- Use the labels exactly as they appear. Never invent one.
+Answer immediately, without deliberating at length: the material is in front of you and the DM is waiting.
+Reply with ONLY a JSON array, at most 4 entries, each {"ref": "<a label such as P17 or U4>", "why": "<at most 8 words on why it matches>"}.`;
+
+/** A thing the DM could release, named by id. The caller resolves it to its content. */
+export interface RevealPick {
+  kind: "unit" | "passage";
+  id: string;
+  why?: string;
+}
+
+/** A reference the model named, before it has been looked up in the corpus index. */
+interface RawPick {
+  ref: string;
+  why: string;
+}
+
+/**
+ * Read the model's reply as a list of corpus references.
+ *
+ * Kept separate from parseRankingReply rather than widening it: that one guards a different
+ * shape (positional refs) and is tested against it, and loosening a guard to serve a second
+ * caller is how both stop being guarded. Ids here are only ever accepted if they also turn out
+ * to exist — this is a shape check, not a trust boundary.
+ */
+export function parseCorpusPicks(text: string): RawPick[] | null {
+  // Read the entries, not the wrapper.
+  //
+  // Two failures taught this. A reply cut off mid-entry made JSON.parse throw, discarding every
+  // good pick before the truncation; and a reply that was a single bare object rather than an
+  // array — a correct answer, with the right label — was thrown away for want of a bracket. Both
+  // reached the DM as "nothing in your library matches", on a library that plainly matched.
+  //
+  // So each object is read on its own, wherever it appears. A truncated tail costs one candidate
+  // instead of all of them, and the brackets are incidental. This is safe to be generous about
+  // because a label means nothing until it is found in the corpus index.
+  const picks: RawPick[] = [];
+  let sawObject = false;
+  for (const raw of text.matchAll(/\{[^{}]*\}/g)) {
+    let row: unknown;
+    try {
+      row = JSON.parse(raw[0]);
+    } catch {
+      continue; // an incomplete object at the end — nothing to salvage from it
+    }
+    sawObject = true;
+    if (typeof row !== "object" || row === null || !("ref" in row)) continue;
+    const ref = String((row as { ref: unknown }).ref)
+      .trim()
+      .toUpperCase();
+    // A label, not an id: "U12" or "P7". Anything else is dropped here, and even a well-formed
+    // label means nothing until it is found in the corpus index.
+    if (!/^[UP]\d{1,5}$/.test(ref)) continue;
+    const why =
+      "why" in row ? String((row as { why: unknown }).why).trim() : "";
+    picks.push({ ref, why });
+  }
+  // An empty list is a real answer ("nothing matched") only when the reply actually was one.
+  // Prose, or a reply with no complete object in it, is a failure and has to say so — the DM
+  // deserves to know the difference between "there is nothing" and "I couldn't read the reply".
+  if (picks.length === 0 && !sawObject && !/\[\s*\]/.test(text)) return null;
+  return picks;
+}
+
+/**
+ * Pick what to reveal by reading the viewer's whole permitted library.
+ *
+ * Returns an empty list both when nothing matches and when the model can't be reached — there is
+ * no retrieval order to fall back on here, and inventing candidates for a one-way action is worse
+ * than saying "nothing matched". The caller decides what to do with an empty list.
+ */
+export async function chooseFromCorpus(
+  question: string,
+  corpus: Corpus,
+  limit = 4,
+): Promise<RevealPick[]> {
+  if (!corpus.shared && !corpus.personal) return [];
+
+  const blocks: Anthropic.TextBlockParam[] = [];
+  if (corpus.shared) {
+    // Byte-identical to what ask() sends, prefix included, so both share one cache entry.
+    blocks.push({
+      type: "text",
+      text: `Campaign material:\n\n${corpus.shared}`,
+      cache_control: { type: "ephemeral", ttl: "1h" },
+    });
+  }
+  if (corpus.personal) {
+    blocks.push({
+      type: "text",
+      text: `Known to the asker alone:\n\n${corpus.personal}`,
+    });
+  }
+  blocks.push({
+    type: "text",
+    text: `The DM asked to reveal: "${question}"`,
+  });
+
+  try {
+    const client = new Anthropic(); // reads ANTHROPIC_API_KEY
+    const started = Date.now();
+    const msg = await client.messages.create({
+      model: CORPUS_MODEL,
+      // Room to think AND answer. max_tokens caps total output, thinking included, and this
+      // model thinks before replying — at 400 a question needing a moment's thought spent the
+      // whole budget on it and returned no text at all; at 2000 it thought for 23 seconds and
+      // was cut off mid-entry. The reply is ~300 characters, so this is nearly all headroom.
+      max_tokens: 8000,
+      system: CORPUS_SYSTEM,
+      messages: [{ role: "user", content: blocks }],
+    });
+    const usage = msg.usage as Anthropic.Usage & {
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+    };
+    console.log(
+      `[corpus reveal] in=${usage.input_tokens} ` +
+        `cacheWrite=${usage.cache_creation_input_tokens ?? 0} ` +
+        `cacheRead=${usage.cache_read_input_tokens ?? 0} ${Date.now() - started}ms`,
+    );
+    const text = msg.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("")
+      .trim();
+    const picks = parseCorpusPicks(text);
+    // "Nothing matched" and "I couldn't read the reply" look identical to the DM — an empty list
+    // either way — so say which happened. A reveal that finds nothing in a library that plainly
+    // contains the answer is a bug, and without this line there is nothing to look at.
+    if (!picks || picks.length === 0) {
+      console.log(
+        `[corpus reveal] no picks for ${JSON.stringify(question)}: ` +
+          `${picks ? "model returned an empty list" : "reply did not parse"}, ` +
+          // stop=max_tokens with no text means the budget went on thinking — the failure that
+          // masqueraded as "nothing matched" and took three runs to find without this.
+          `stop=${msg.stop_reason}, textLen=${text.length}, ` +
+          `prefix=${JSON.stringify(text.slice(0, 160))}`,
+      );
+    }
+    if (!picks) return [];
+
+    // A label becomes a real record here, or it becomes nothing. The model can only have named
+    // something in the corpus it was given; anything else — a label for an item that wasn't
+    // included, or one it made up — finds no entry and is dropped rather than guessed at.
+    const resolved: RevealPick[] = [];
+    const seen = new Set<string>();
+    for (const pick of picks) {
+      const ref = corpus.index.get(pick.ref);
+      if (!ref || seen.has(ref.id)) continue;
+      seen.add(ref.id);
+      resolved.push({
+        kind: ref.kind,
+        id: ref.id,
+        ...(pick.why ? { why: pick.why } : {}),
+      });
+      if (resolved.length >= limit) break;
+    }
+    if (resolved.length === 0 && picks.length > 0) {
+      console.log(
+        `[corpus reveal] ${picks.length} label(s) named for ${JSON.stringify(question)}, ` +
+          `none in the index: ${picks.map((p) => p.ref).join(", ")}`,
+      );
+    }
+    return resolved;
+  } catch (err) {
+    console.error("corpus reveal choice failed:", err);
+    return [];
   }
 }

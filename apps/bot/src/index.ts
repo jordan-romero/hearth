@@ -28,10 +28,14 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@hearth/db";
 import {
   ask,
+  buildCorpus,
+  chooseFromCorpus,
   getPortrait,
   joinPassages,
   rankRevealCandidates,
   retrieveContext,
+  type RevealCandidate,
+  type RevealPick,
   revealPassages,
   sectionPassages,
   sectionTitle,
@@ -626,6 +630,33 @@ async function handleSetup(
  * Reveals and shared NPCs are posted to a channel, and a PRIVATE channel needs the bot invited
  * to it explicitly — being in the server isn't enough. Finding that out when a share fails is
  * a bad time to find it out. */
+/**
+ * What stands between me and posting in `channelId`.
+ *
+ * An empty list means I can post there. `null` means the channel itself is out of reach, which is
+ * a different problem from a missing permission and deserves different words.
+ *
+ * This is checked at setup AND before a reveal is granted. A reveal is one-way: granting it and
+ * then discovering the announcement can't be delivered leaves a player knowing something nobody
+ * told them.
+ */
+async function revealChannelBlockers(
+  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  channelId: string,
+): Promise<string[] | null> {
+  const channel = await interaction.guild?.channels
+    .fetch(channelId)
+    .catch(() => null);
+  if (!channel || !channel.isTextBased()) return null;
+  const me = interaction.guild?.members.me;
+  const perms = me ? channel.permissionsFor(me) : null;
+  return [
+    perms?.has(PermissionFlagsBits.ViewChannel) ? null : "View Channel",
+    perms?.has(PermissionFlagsBits.SendMessages) ? null : "Send Messages",
+    perms?.has(PermissionFlagsBits.EmbedLinks) ? null : "Embed Links",
+  ].filter((p): p is string => p !== null);
+}
+
 async function describeRevealChannel(
   interaction: ChatInputCommandInteraction,
   channelId: string | null,
@@ -633,19 +664,10 @@ async function describeRevealChannel(
   if (!channelId) {
     return "ℹ️ No reveals channel set — I'll post reveals wherever the command was run. `/setup reveals:#channel` to pin it down.";
   }
-  const channel = await interaction.guild?.channels
-    .fetch(channelId)
-    .catch(() => null);
-  if (!channel || !channel.isTextBased()) {
+  const missing = await revealChannelBlockers(interaction, channelId);
+  if (missing === null) {
     return `⚠️ I can't see <#${channelId}> — pick a channel I can read.`;
   }
-  const me = interaction.guild?.members.me;
-  const perms = me ? channel.permissionsFor(me) : null;
-  const missing = [
-    perms?.has(PermissionFlagsBits.ViewChannel) ? null : "View Channel",
-    perms?.has(PermissionFlagsBits.SendMessages) ? null : "Send Messages",
-    perms?.has(PermissionFlagsBits.EmbedLinks) ? null : "Embed Links",
-  ].filter(Boolean);
   if (missing.length > 0) {
     return `⚠️ Reveals will go to <#${channelId}>, but I can't post there yet — grant me **${missing.join(", ")}** (a private channel needs me added to it directly).`;
   }
@@ -1579,9 +1601,62 @@ async function resolveRevealChannelId(
   return settings?.revealChannelId ?? interaction.channelId ?? "";
 }
 
-/** /reveal — DM only. Find the best matching fact + document for `about`, then show the DM
- * exactly what they'd release, with Confirm/Cancel buttons — nothing is granted until they
- * click. (A one-way action, so it must be previewed first.) */
+/**
+ * Turn the ids a model named back into things that can actually be offered.
+ *
+ * This is where an id stops being a claim and becomes a row. The reply parser checked the SHAPE
+ * of each reference; nothing has yet checked that it exists, belongs to this campaign, or hasn't
+ * been retired by a correction. A reveal is one-way, so anything that fails those checks is
+ * dropped silently rather than shown to the DM as something they could release.
+ */
+async function resolvePicks(
+  campaignId: string,
+  picks: RevealPick[],
+): Promise<RevealCandidate[]> {
+  const resolved: RevealCandidate[] = [];
+  for (const pick of picks) {
+    if (pick.kind === "unit") {
+      const unit = await prisma.knowledgeUnit.findFirst({
+        where: { id: pick.id, campaignId, supersededByCorrectionId: null },
+        select: { id: true, title: true, content: true },
+      });
+      if (unit) {
+        resolved.push({
+          kind: "unit",
+          id: unit.id,
+          title: unit.title,
+          body: unit.content,
+          ...(pick.why ? { why: pick.why } : {}),
+        });
+      }
+      continue;
+    }
+    const chunk = await prisma.documentChunk.findFirst({
+      where: { id: pick.id, campaignId, supersededByCorrectionId: null },
+      select: {
+        id: true,
+        text: true,
+        sourceDocument: { select: { name: true } },
+      },
+    });
+    if (chunk) {
+      resolved.push({
+        kind: "passage",
+        id: chunk.id,
+        title: chunk.sourceDocument.name,
+        // A fallback only: the preview widens a passage to its whole section, and uses this if
+        // that comes back empty.
+        body: chunk.text,
+        ...(pick.why ? { why: pick.why } : {}),
+      });
+    }
+  }
+  return resolved;
+}
+
+/** /reveal — DM only. Find what `about` refers to — from the whole library when it fits, from
+ * retrieval when it doesn't — then show the DM exactly what they'd release, with Confirm/Cancel
+ * buttons. Nothing is granted until they click. (A one-way action, so it must be previewed.) */
 async function handleReveal(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
@@ -1612,16 +1687,47 @@ async function handleReveal(
   const channelId = isParty
     ? await resolveRevealChannelId(interaction, viewer.campaignId)
     : "";
+  // Check that the announcement can actually be delivered BEFORE anything is granted. A reveal
+  // is one-way: granting first and discovering at announce time that the channel is unreachable
+  // leaves a player holding knowledge nobody ever told them, and no way to take it back.
+  if (isParty && channelId) {
+    const missing = await revealChannelBlockers(interaction, channelId);
+    if (missing === null) {
+      await interaction.editReply(
+        `I can't see <#${channelId}>, so nothing has been revealed. Point me at a channel I can read with \`/setup reveals:#channel\`, or name one here with \`in:\`.`,
+      );
+      return;
+    }
+    if (missing.length > 0) {
+      await interaction.editReply(
+        `I can't post in <#${channelId}>, so nothing has been revealed. Grant me **${missing.join(", ")}** there — a private channel needs me added to it directly — or choose another with \`/setup reveals:#channel\`.`,
+      );
+      return;
+    }
+  }
   const suffix = `${scope}:${channelId}`;
 
-  // Retrieve widely, then let the model pick among the candidates rather than committing to
-  // the nearest by meaning: "Moira" looks like "Morwyn" to an embedding, and a reveal is
-  // one-way. The DM chooses from what it puts up.
-  const { units, chunks } = await retrieveContext(viewer, about, {
-    unitLimit: 12,
-    chunkLimit: 6,
-  });
-  const candidates = await rankRevealCandidates(about, units, chunks);
+  // Choose from the whole library when it fits, and only fall back to retrieval when it doesn't.
+  //
+  // Ranking a retrieved shortlist can only reorder what similarity already picked, so the wrong
+  // Moira can still be the only Moira on the list. Reading everything the DM may see removes that
+  // failure at the source — and it sends the same cacheable block /ask does, so a reveal during a
+  // session usually reads a cache that is already warm.
+  const corpus = await buildCorpus(viewer);
+  let candidates: RevealCandidate[] = [];
+  if (corpus.manifest.complete && corpus.manifest.tokens > 0) {
+    candidates = await resolvePicks(
+      viewer.campaignId,
+      await chooseFromCorpus(about, corpus),
+    );
+  }
+  if (candidates.length === 0 && !corpus.manifest.complete) {
+    const { units, chunks } = await retrieveContext(viewer, about, {
+      unitLimit: 12,
+      chunkLimit: 6,
+    });
+    candidates = await rankRevealCandidates(about, units, chunks);
+  }
   if (candidates.length === 0) {
     await interaction.editReply(`Nothing in the memory matched "${about}".`);
     return;
@@ -1632,50 +1738,72 @@ async function handleReveal(
       ? `📣 Will be announced in <#${channelId}>`
       : "📣 (no announce channel available — it'll still be revealed)"
     : `✉️ Will be sent privately to ${target.label}`;
+  // Work out what is actually on offer BEFORE writing any of it down. Two passages can sit in
+  // the same section and both widen to the same piece, so a model naming both would offer the DM
+  // the same recap twice — identical down to the word count, with no way to tell the buttons
+  // apart. Dropping those duplicates changes how many offers there are, which decides both the
+  // numbering and whether this screen says "pick" or "confirm"; deciding any of that from the
+  // candidate list would number the buttons wrongly the moment one was dropped.
+  interface Offer {
+    label: string;
+    line: string;
+    customId: string;
+    style: ButtonStyle;
+  }
+  const offers: Offer[] = [];
+  const shownSections = new Set<string>();
+  for (const candidate of candidates) {
+    const why = candidate.why ? ` — _${candidate.why}_` : "";
+    if (candidate.kind === "unit") {
+      offers.push({
+        label: trimLabel(candidate.title),
+        line: `📌 **${candidate.title}**${why}\n> ${preview(candidate.body)}`,
+        customId: `rv:u:${candidate.id}:${suffix}`,
+        style: ButtonStyle.Success,
+      });
+      continue;
+    }
+    // Widen the matched passage to the whole section it sits in. A passage is a ~1500-char slice,
+    // so revealing one hands over part of a recap; the DM meant the recap. The button carries the
+    // anchor and the section is worked out again on click — the boundary rules are deterministic,
+    // and a Discord custom id can't hold a list of passage ids.
+    const passages = await sectionPassages(candidate.id);
+    const body = passages.length ? joinPassages(passages) : candidate.body;
+    const title = sectionTitle(passages, candidate.title);
+    // A section's identity is its first passage: any anchor inside it widens to the same piece.
+    const sectionKey = passages[0]?.id ?? candidate.id;
+    if (shownSections.has(sectionKey)) continue;
+    shownSections.add(sectionKey);
+    // Say how much this releases before they press it.
+    const size =
+      passages.length > 1
+        ? ` · ${passages.length} passages, ~${wordCount(body)} words`
+        : ` · ~${wordCount(body)} words`;
+    offers.push({
+      label: trimLabel(title),
+      line: `📄 **${title}** — from ${candidate.title}${size}${why}\n> ${preview(body)}`,
+      customId: `rv:s:${candidate.id}:${suffix}`,
+      style: ButtonStyle.Primary,
+    });
+  }
+
   const lines = [
-    candidates.length > 1
+    offers.length > 1
       ? `**Reveal to ${target.label}** — pick what to release:`
       : `**Reveal to ${target.label}** — confirm what to release:`,
     destination,
   ];
   const buttons: ButtonBuilder[] = [];
-  for (const [i, candidate] of candidates.entries()) {
-    const why = candidate.why ? ` — _${candidate.why}_` : "";
-    const n = candidates.length > 1 ? `${i + 1}. ` : "";
-    if (candidate.kind === "unit") {
-      lines.push(
-        `\n${n}📌 **${candidate.title}**${why}\n> ${preview(candidate.body)}`,
-      );
-      buttons.push(
-        new ButtonBuilder()
-          .setCustomId(`rv:u:${candidate.id}:${suffix}`)
-          .setLabel(`${n}${trimLabel(candidate.title)}`)
-          .setStyle(ButtonStyle.Success),
-      );
-    } else {
-      // Widen the matched passage to the whole section it sits in. A passage is a ~1500-char
-      // slice, so revealing one hands over part of a recap; the DM meant the recap. The button
-      // carries the anchor and the section is worked out again on click — the boundary rules are
-      // deterministic, and a Discord custom id can't hold a list of passage ids.
-      const passages = await sectionPassages(candidate.id);
-      const body = passages.length ? joinPassages(passages) : candidate.body;
-      const title = sectionTitle(passages, candidate.title);
-      // Say how much this releases before they press it.
-      const size =
-        passages.length > 1
-          ? ` · ${passages.length} passages, ~${wordCount(body)} words`
-          : ` · ~${wordCount(body)} words`;
-      lines.push(
-        `\n${n}📄 **${title}** — from ${candidate.title}${size}${why}\n> ${preview(body)}`,
-      );
-      buttons.push(
-        new ButtonBuilder()
-          .setCustomId(`rv:s:${candidate.id}:${suffix}`)
-          .setLabel(`${n}${trimLabel(title)}`)
-          .setStyle(ButtonStyle.Primary),
-      );
-    }
-  }
+  offers.forEach((offer, i) => {
+    const n = offers.length > 1 ? `${i + 1}. ` : "";
+    lines.push(`\n${n}${offer.line}`);
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId(offer.customId)
+        .setLabel(`${n}${offer.label}`)
+        .setStyle(offer.style),
+    );
+  });
   buttons.push(
     new ButtonBuilder()
       .setCustomId("rv:x")
@@ -1750,8 +1878,11 @@ function revealEmbeds(
 
 /** After a grant is created, surface it: DM the player (character reveal) or post to the
  * reveals channel (party reveal) with the ✨ discovered embed — the reveal IS the announcement,
- * so the content rides along. Returns a short note for the DM's confirmation. The reveal still
- * stands even if the announcement itself fails (closed DMs, missing channel, …). */
+ * so the content rides along.
+ *
+ * Returns whether it actually reached anyone, and a note for the DM's confirmation. The grant
+ * stands even when delivery fails (closed DMs, missing channel, …), so the caller has to be able
+ * to say so — telling the DM a reveal landed when nobody saw it is worse than saying nothing. */
 async function announceReveal(
   kind: string,
   targetId: string,
@@ -1759,7 +1890,7 @@ async function announceReveal(
   scopeId: string,
   chanId: string,
   theme: string,
-): Promise<string> {
+): Promise<{ delivered: boolean; note: string }> {
   let itemTitle: string;
   let body: string;
   if (kind === "u") {
@@ -1805,26 +1936,36 @@ async function announceReveal(
       });
       const discordUserId = character?.membership.user.discordUserId;
       if (!discordUserId)
-        return "— revealed (couldn't find the player to notify)";
+        return {
+          delivered: false,
+          note: "— but I couldn't find the player to notify",
+        };
       const user = await client.users.fetch(discordUserId);
       await user.send({ embeds: revealEmbeds("You", itemTitle, body, theme) });
-      return `— sent privately to ${character?.name ?? "them"}`;
+      return {
+        delivered: true,
+        note: `— sent privately to ${character?.name ?? "them"}`,
+      };
     }
-    if (!chanId) return "— revealed (no announce channel set)";
+    if (!chanId)
+      return { delivered: false, note: "— but no announce channel was set" };
     const channel = await client.channels.fetch(chanId);
     if (channel && channel.isTextBased() && !channel.isDMBased()) {
       await channel.send({
         embeds: revealEmbeds("The party", itemTitle, body, theme),
       });
-      return `— announced in <#${chanId}>`;
+      return { delivered: true, note: `— announced in <#${chanId}>` };
     }
-    return "— revealed (couldn't reach that channel)";
+    return { delivered: false, note: "— but I couldn't reach that channel" };
   } catch (err) {
     console.error("reveal announce failed:", err);
     const missingAccess = (err as { code?: number }).code === 50001;
-    return missingAccess
-      ? "— revealed, but I can't post in that channel — grant me View Channel + Send Messages + Embed Links there"
-      : "— revealed, but the announcement couldn't be delivered";
+    return {
+      delivered: false,
+      note: missingAccess
+        ? "— but I can't post in that channel. Grant me **View Channel, Send Messages, Embed Links** there, then run `/reveal` again to deliver it"
+        : "— but the announcement couldn't be delivered",
+    };
   }
 }
 
@@ -1892,7 +2033,7 @@ async function handleRevealButton(
     });
     return;
   }
-  const note = await announceReveal(
+  const { delivered, note } = await announceReveal(
     kind!,
     targetId!,
     scopeType!,
@@ -1900,8 +2041,12 @@ async function handleRevealButton(
     chanId ?? "",
     viewer.theme,
   );
+  // Lead with what actually happened. The grant stands either way, so a ✅ above a message
+  // admitting the announcement failed tells the DM the table knows something it doesn't.
   await interaction.editReply({
-    content: `✅ Revealed ${note}`,
+    content: delivered
+      ? `✅ Revealed ${note}`
+      : `⚠️ Revealed, but nobody was told ${note}`,
     components: [],
   });
 }

@@ -6,18 +6,16 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Viewer } from "@hearth/core";
 import { prisma } from "@hearth/db";
 import { retrieveContext } from "./retrieve.js";
-import { buildCorpus, type Corpus } from "./corpus.js";
+import { buildCorpus, CORPUS_MODEL, type Corpus } from "./corpus.js";
 import { noKnowledgeReply } from "./no-knowledge.js";
 
 // Live Q&A runs on Haiku — it's grounded answer-from-context, not deep reasoning,
 // and Haiku is ~3x cheaper (see the pricing model). Extraction stays on Sonnet.
 const MODEL = "claude-haiku-4-5";
 
-// Answering from the whole library is a different job from answering from a dozen retrieved
-// lines: the model has to find the relevant part of a campaign itself, across a hundred sessions
-// of material. That judgment is worth Sonnet, and its context is what makes handing over the
-// library possible at all. Retrieval-backed answers stay on Haiku.
-const CORPUS_MODEL = "claude-sonnet-5";
+// Corpus answers run on CORPUS_MODEL (imported below, alongside the corpus itself, so /ask and
+// /reveal can't drift onto different models — they share a cache entry, and a cache entry is per
+// model). Retrieval-backed answers stay on Haiku.
 
 // Player view: answer as the character, strictly from what they may know. Retrieval has
 // already stripped anything hidden from them, so the model can't leak — but it must not
@@ -88,7 +86,11 @@ async function askFromCorpus(
     blocks.push({
       type: "text",
       text: `Campaign material:\n\n${corpus.shared}`,
-      cache_control: { type: "ephemeral" },
+      // An hour, not the default five minutes. A table asks a question, plays for twenty
+      // minutes, then asks another — at five minutes the cache is cold nearly every time and
+      // each question pays the full write. The longer write costs 2x base instead of 1.25x and
+      // reads stay at a tenth, so one write per session beats ten.
+      cache_control: { type: "ephemeral", ttl: "1h" },
     });
   }
   if (corpus.personal) {
