@@ -1647,15 +1647,16 @@ async function handleReveal(
           .setStyle(ButtonStyle.Success),
       );
     } else {
-      // A document reveal opens everything in it — say so, and style it as the loud option.
+      // One passage, not the document holding it. `/reveal` used to offer the whole document,
+      // which for a session log means releasing every session at once.
       lines.push(
-        `\n${n}📄 **${candidate.title}** — the ENTIRE document${why}\n> ${preview(candidate.body)}`,
+        `\n${n}📄 **From ${candidate.title}**${why}\n> ${preview(candidate.body)}`,
       );
       buttons.push(
         new ButtonBuilder()
-          .setCustomId(`rv:d:${candidate.id}:${suffix}`)
-          .setLabel(`${n}ALL of ${trimLabel(candidate.title)}`)
-          .setStyle(ButtonStyle.Danger),
+          .setCustomId(`rv:p:${candidate.id}:${suffix}`)
+          .setLabel(`${n}From ${trimLabel(candidate.title)}`)
+          .setStyle(ButtonStyle.Primary),
       );
     }
   });
@@ -1695,7 +1696,17 @@ async function announceReveal(
     });
     itemTitle = u?.title ?? "a memory";
     body = u?.content ?? "";
+  } else if (kind === "p") {
+    // Same reason as above: a correction can retire a passage between the preview and the click.
+    const c = await prisma.documentChunk.findFirst({
+      where: { id: targetId, supersededByCorrectionId: null },
+      select: { text: true, sourceDocument: { select: { name: true } } },
+    });
+    itemTitle = c ? `From ${c.sourceDocument.name}` : "a passage";
+    body = c?.text ?? "";
   } else {
+    // Whole-document grants still exist and are still honoured — /reveal just no longer offers
+    // one, so a document can only be released deliberately rather than as a near-miss.
     const d = await prisma.sourceDocument.findUnique({
       where: { id: targetId },
       select: { name: true },
@@ -1770,7 +1781,11 @@ async function handleRevealButton(
   // Ack now — announcing (DB + Discord sends) can take longer than the 3s button window.
   await interaction.deferUpdate();
   const revealTarget =
-    kind === "u" ? { unitId: targetId } : { documentId: targetId };
+    kind === "u"
+      ? { unitId: targetId }
+      : kind === "p"
+        ? { chunkId: targetId }
+        : { documentId: targetId };
   const scope =
     scopeType === "c" ? { characterId: scopeId } : { partyId: scopeId };
   const { revealed } = await revealTo(revealTarget, scope, membership.id);
