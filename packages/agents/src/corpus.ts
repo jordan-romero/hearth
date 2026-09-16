@@ -3,8 +3,9 @@
 // Retrieval picks a handful of pieces and hopes they were the right ones. That works until the
 // question names something an embedding can't distinguish — one character from another with a
 // similar name, one numbered session from another — and then the answer is confidently wrong.
-// A campaign's whole library is small enough to hand over in full (Ondera's ten documents are
-// ~178k tokens), so the model can read it and decide for itself.
+// A campaign's whole library is small enough to hand over in full (the real campaign's nine
+// documents are ~178k tokens, against a million-token context window), so the model can read it
+// and decide for itself.
 //
 // Two rules shape everything here:
 //
@@ -31,8 +32,17 @@ export const charsPerToken = 4;
 export const estimateTokens = (text: string): number =>
   Math.ceil(text.length / charsPerToken);
 
-/** How much of the library to hand over. Above this, the caller falls back to retrieval. */
-export const DEFAULT_BUDGET_TOKENS = 150_000;
+/**
+ * How much of the library to hand over. Above this, the caller falls back to retrieval.
+ *
+ * This is a cost guard, not a capacity limit. Corpus answers run on Sonnet, whose context window
+ * is a million tokens, so the real campaign's ~178k library uses under a fifth of it — the old
+ * 150k ceiling was dropping three of nine documents for no reason but a number chosen before the
+ * model was. What the ceiling still buys is protection from a campaign that has grown without
+ * anyone noticing: at $2 per million input tokens, a 300k corpus is about sixty cents an ask
+ * uncached, and a tenth of that on a cache read.
+ */
+export const DEFAULT_BUDGET_TOKENS = 300_000;
 
 /** A document passage, with the grants needed to filter it. */
 export interface CorpusChunk extends FilterableKnowledgeUnit {
@@ -48,6 +58,9 @@ export interface CorpusUnit extends FilterableKnowledgeUnit {
   content: string;
   type: string;
   authorName: string | null;
+  /** The document this was extracted from, or null when it came from play, a journal or a
+   * correction. Facts whose document is already in the corpus are left out as duplicates. */
+  sourceDocumentId: string | null;
 }
 
 /**
@@ -66,6 +79,10 @@ export interface Corpus {
     tokens: number;
     /** Documents dropped because the budget ran out, largest-first order preserved. */
     omittedDocuments: string[];
+    /** Facts left out because the document they were extracted from is already here. */
+    duplicateFactsOmitted: number;
+    /** Facts left out because the budget ran out — distinct from the ones that were duplicates. */
+    omittedFacts: number;
     /** True when nothing was dropped: the viewer's whole permitted library is in the prompt. */
     complete: boolean;
   };
@@ -130,20 +147,14 @@ export function assembleCorpus(
   const cacheable = (item: FilterableKnowledgeUnit): boolean =>
     viewer.role === "DM" || isShared(item);
 
-  const sharedFacts = visibleUnits
-    .filter(cacheable)
-    .sort((a, b) => a.id.localeCompare(b.id));
-  const personalFacts = visibleUnits
-    .filter((u) => !cacheable(u))
-    .sort((a, b) => a.id.localeCompare(b.id));
-
-  // Facts before passages: they are the campaign's distilled state, and if the budget runs out
-  // mid-way the summary is worth more than the raw text it came from.
-  if (sharedFacts.length > 0) {
-    const text = sharedFacts.map(renderUnit).join("\n");
-    sharedParts.push(`Known facts:\n${text}`);
-    tokens += estimateTokens(text);
-  }
+  // Documents first, then only the facts that aren't already inside them.
+  //
+  // Every extracted fact comes FROM a document, so sending both sends the same content twice. In
+  // the real campaign all 980 facts were derived from uploads: including them turned a 178k-token
+  // library into 233k, past what a context window holds, which forced whole documents to be
+  // dropped. A fact whose source document is in the corpus adds nothing the model can't read for
+  // itself. What survives the cut is what has no document behind it — play, journals, corrections.
+  const includedDocIds = new Set<string>();
 
   for (const docName of docNames) {
     const passages = byDoc
@@ -160,6 +171,8 @@ export function assembleCorpus(
     tokens += cost;
     passageCount += passages.length;
     documents.push(docName);
+    for (const passage of passages)
+      includedDocIds.add(passage.sourceDocumentId);
     // A document is cacheable only when every passage in it is; a document holding anything
     // revealed to this viewer alone belongs in the personal block, never in the shared cache.
     (passages.every(cacheable) ? sharedParts : personalParts).push(
@@ -167,10 +180,42 @@ export function assembleCorpus(
     );
   }
 
+  // A dropped document's facts are kept: they are the only trace of it left in the corpus.
+  const keptFacts = visibleUnits.filter(
+    (u) => !u.sourceDocumentId || !includedDocIds.has(u.sourceDocumentId),
+  );
+  const duplicateFactsOmitted = visibleUnits.length - keptFacts.length;
+
+  const sharedFacts = keptFacts
+    .filter(cacheable)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const personalFacts = keptFacts
+    .filter((u) => !cacheable(u))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  // The budget is a ceiling, not a suggestion. Appending facts without checking it is how a
+  // prompt quietly grows past what the model will accept — the real campaign's corpus reported
+  // 164,773 tokens against a budget of 150,000 before this check existed.
+  let omittedFacts = 0;
+
+  if (sharedFacts.length > 0) {
+    const text = sharedFacts.map(renderUnit).join("\n");
+    const cost = estimateTokens(text);
+    if (tokens + cost > budgetTokens) omittedFacts += sharedFacts.length;
+    else {
+      sharedParts.push(`Known facts:\n${text}`);
+      tokens += cost;
+    }
+  }
+
   if (personalFacts.length > 0) {
     const text = personalFacts.map(renderUnit).join("\n");
-    personalParts.push(`Known to you specifically:\n${text}`);
-    tokens += estimateTokens(text);
+    const cost = estimateTokens(text);
+    if (tokens + cost > budgetTokens) omittedFacts += personalFacts.length;
+    else {
+      personalParts.push(`Known to you specifically:\n${text}`);
+      tokens += cost;
+    }
   }
 
   return {
@@ -178,11 +223,16 @@ export function assembleCorpus(
     personal: personalParts.join("\n\n"),
     manifest: {
       documents,
-      factCount: visibleUnits.length,
+      // What is actually in the prompt, not what was visible — the deduplicated facts are gone.
+      factCount: keptFacts.length,
       passageCount,
       tokens,
       omittedDocuments,
-      complete: omittedDocuments.length === 0,
+      duplicateFactsOmitted,
+      omittedFacts,
+      // Whole means whole: a corpus that had to leave anything behind must say so, or a caller
+      // will answer from a gap believing it saw everything.
+      complete: omittedDocuments.length === 0 && omittedFacts === 0,
     },
   };
 }
@@ -232,6 +282,7 @@ export async function buildCorpus(
         title: true,
         content: true,
         type: true,
+        sourceDocumentId: true,
         authorMembership: {
           select: { characters: { select: { name: true } } },
         },
@@ -278,6 +329,7 @@ export async function buildCorpus(
     title: r.title,
     content: r.content,
     type: r.type,
+    sourceDocumentId: r.sourceDocumentId,
     authorName: r.authorMembership?.characters[0]?.name ?? null,
     ...grantsFor(grants, (g) => g.knowledgeUnitId === r.id),
   }));
