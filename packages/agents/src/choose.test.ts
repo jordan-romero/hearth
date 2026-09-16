@@ -14,14 +14,14 @@ describe("parseRankingReply", () => {
   it("reads it out of a code fence or surrounding prose", () => {
     expect(
       parseRankingReply(
-        'Here you go:\n```json\n[{"ref":"D2","why":"her dossier"}]\n```',
+        'Here you go:\n```json\n[{"ref":"P2","why":"her dossier"}]\n```',
       ),
-    ).toEqual([{ ref: "D2", why: "her dossier" }]);
+    ).toEqual([{ ref: "P2", why: "her dossier" }]);
   });
 
   it("keeps the model's order", () => {
-    const picks = parseRankingReply('[{"ref":"U5"},{"ref":"U1"},{"ref":"D1"}]');
-    expect(picks?.map((p) => p.ref)).toEqual(["U5", "U1", "D1"]);
+    const picks = parseRankingReply('[{"ref":"U5"},{"ref":"U1"},{"ref":"P1"}]');
+    expect(picks?.map((p) => p.ref)).toEqual(["U5", "U1", "P1"]);
   });
 
   it("treats an empty list as a real answer, not a failure", () => {

@@ -22,12 +22,12 @@ Rules:
 - Prefer a specific entry that answers the request over a broad one that merely mentions it.
 - Include only genuine matches. If only one candidate matches, return only that one. If none match, return an empty list — that is a useful answer, not a failure.
 - Never invent a reference that is not in the list.
-Reply with ONLY a JSON array, at most 4 entries, each {"ref": "<the reference, e.g. U3 or D2>", "why": "<at most 8 words on why it matches>"}.`;
+Reply with ONLY a JSON array, at most 4 entries, each {"ref": "<the reference, e.g. U3 or P2>", "why": "<at most 8 words on why it matches>"}.`;
 
 /** One thing the DM could release, in the order the model ranked it. */
 export interface RevealCandidate {
-  kind: "unit" | "doc";
-  /** KnowledgeUnit id, or SourceDocument id for a whole-document candidate. */
+  kind: "unit" | "passage";
+  /** KnowledgeUnit id, or DocumentChunk id for a passage candidate. */
   id: string;
   title: string;
   body: string;
@@ -51,22 +51,19 @@ function asCandidates(
     });
     lines.push(`[${ref}] ${u.title} (${u.type}): ${u.content}`);
   });
-  // One candidate per document, not per passage: revealing a document releases all of it, so
-  // the DM should be choosing a document, not a passage that happens to sit inside one.
-  const seen = new Set<string>();
-  chunks.forEach((c) => {
-    if (seen.has(c.sourceDocumentId)) return;
-    seen.add(c.sourceDocumentId);
-    const ref = `D${seen.size}`;
+  // One candidate per passage, never the document it sits in. Revealing a document opens every
+  // page of it, and a campaign's session log can be a hundred sessions long — so offering the
+  // document as the answer to "tell them about session 1" means offering to release everything.
+  // A passage is the smallest honest unit, and the DM can pick another if one isn't enough.
+  chunks.forEach((c, i) => {
+    const ref = `P${i + 1}`;
     refs.set(ref, {
-      kind: "doc",
-      id: c.sourceDocumentId,
+      kind: "passage",
+      id: c.id,
       title: c.docName,
       body: c.text,
     });
-    lines.push(
-      `[${ref}] the WHOLE document "${c.docName}", which contains: ${c.text}`,
-    );
+    lines.push(`[${ref}] a passage from "${c.docName}": ${c.text}`);
   });
   return { refs, lines };
 }
@@ -95,7 +92,7 @@ export function parseRankingReply(
     const ref = String((row as { ref: unknown }).ref)
       .trim()
       .toUpperCase();
-    if (!/^[UD]\d+$/.test(ref)) continue;
+    if (!/^[UP]\d+$/.test(ref)) continue;
     const why =
       "why" in row ? String((row as { why: unknown }).why).trim() : "";
     picks.push({ ref, why });
