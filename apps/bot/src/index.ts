@@ -63,6 +63,13 @@ import {
 } from "@hearth/agents";
 import { startRecording, stopRecording } from "./capture.js";
 import {
+  CHANNEL_SYNC_INTENTS,
+  CHANNEL_SYNC_PARTIALS,
+  importChannelHistory,
+  knowledgeChannelProblem,
+  registerChannelSync,
+} from "./channels.js";
+import {
   answerEmbed,
   revealEmbed,
   journalEmbed,
@@ -261,6 +268,37 @@ const setupCommand = new SlashCommandBuilder()
         "Where reveals and shared NPCs get posted (run /setup again any time to change it)",
       )
       .addChannelTypes(ChannelType.GuildText),
+  )
+  .addChannelOption((o) =>
+    o
+      .setName("facts")
+      .setDescription(
+        "Channel of permanent facts everyone knows; posts, edits, and deletes stay in sync",
+      )
+      .addChannelTypes(ChannelType.GuildText),
+  )
+  .addChannelOption((o) =>
+    o
+      .setName("recaps")
+      .setDescription(
+        "Channel where players post recaps; no approval needed, and you can /correct them",
+      )
+      .addChannelTypes(ChannelType.GuildText),
+  )
+  .addChannelOption((o) =>
+    o
+      .setName("lore")
+      .setDescription(
+        "Channel of campaign lore everyone knows; posts, edits, and deletes stay in sync",
+      )
+      .addChannelTypes(ChannelType.GuildText),
+  )
+  .addBooleanOption((o) =>
+    o
+      .setName("import_history")
+      .setDescription(
+        "Also read posts already in those channels (up to 1,000 each). Default: no.",
+      ),
   );
 
 const joinCommand = new SlashCommandBuilder()
@@ -566,6 +604,33 @@ async function handleSetup(
     const startingSession =
       interaction.options.getInteger("starting_session") ?? undefined;
     const reveals = interaction.options.getChannel("reveals");
+    const importHistory =
+      interaction.options.getBoolean("import_history") ?? false;
+
+    // Every post in a table-knowledge channel becomes something all players know, so check each
+    // channel before saving it rather than leaking a private channel's posts.
+    const KNOWLEDGE_KINDS = ["facts", "recaps", "lore"] as const;
+    type KnowledgeKind = (typeof KNOWLEDGE_KINDS)[number];
+    const accepted: { kind: KnowledgeKind; id: string }[] = [];
+    const channelNotes: string[] = [];
+    for (const kind of KNOWLEDGE_KINDS) {
+      const channel = interaction.options.getChannel(kind);
+      if (!channel) continue;
+      const problem = interaction.guild
+        ? await knowledgeChannelProblem(interaction.guild, channel.id)
+        : "run /setup in a server.";
+      if (problem) {
+        channelNotes.push(`⚠️ Not saved as your ${kind} channel: ${problem}`);
+      } else {
+        accepted.push({ kind, id: channel.id });
+        channelNotes.push(
+          `✅ <#${channel.id}> is your ${kind} channel — posts there are remembered as things everyone knows.`,
+        );
+      }
+    }
+    const channelIdOf = (kind: KnowledgeKind) =>
+      accepted.find((c) => c.kind === kind)?.id;
+
     const result = await setupCampaign(
       guildId,
       interaction.user.id,
@@ -575,7 +640,49 @@ async function handleSetup(
       reveals?.id,
       dmPronouns,
       startingSession,
+      {
+        factsChannelId: channelIdOf("facts"),
+        recapsChannelId: channelIdOf("recaps"),
+        loreChannelId: channelIdOf("lore"),
+      },
     );
+
+    if (importHistory && accepted.length > 0 && interaction.guild) {
+      const guild = interaction.guild;
+      channelNotes.push(
+        "📚 Reading the posts already in those channels — I'll tell you here when it's done.",
+      );
+      // Can take a while (one extraction per post), so it runs after the reply.
+      void (async () => {
+        const lines: string[] = [];
+        for (const { kind, id } of accepted) {
+          try {
+            const count = await importChannelHistory(
+              guild,
+              id,
+              result.campaignId,
+              kind,
+            );
+            lines.push(`<#${id}>: ${count} post(s) added`);
+          } catch (err) {
+            console.error(`history import failed for channel ${id}:`, err);
+            lines.push(`<#${id}>: couldn't read its history`);
+          }
+        }
+        await interaction
+          .followUp({
+            content: `📚 History import finished.\n${lines.join("\n")}`,
+            flags: MessageFlags.Ephemeral,
+          })
+          .catch((err) =>
+            console.error("history import follow-up failed:", err),
+          );
+      })();
+    } else if (importHistory) {
+      channelNotes.push(
+        "ℹ️ `import_history` needs at least one of `facts`, `recaps`, or `lore` in the same command.",
+      );
+    }
 
     // Say NOW whether I can actually post there, rather than at the moment someone tries to
     // share something and it fails.
@@ -593,6 +700,7 @@ async function handleSetup(
         startingSession
           ? `Until a session is recorded, the first one will be session **${startingSession}**.`
           : null,
+        ...channelNotes,
       ].filter(Boolean);
       await interaction.editReply(
         changes.length > 0
@@ -604,7 +712,8 @@ async function handleSetup(
     await interaction.editReply(
       `🔥 **${result.campaignName}** is live and you're the DM.\n` +
         "Players join with `/join character:<name>`. Then `/record` to capture a session, `/upload` your notes, and `/help` for everything else." +
-        `\n${revealWarning}`,
+        `\n${revealWarning}` +
+        (channelNotes.length > 0 ? `\n${channelNotes.join("\n")}` : ""),
     );
   } catch (err) {
     console.error("/setup failed:", err);
@@ -2191,8 +2300,14 @@ async function handleNpcEditSubmit(
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildVoiceStates,
+    ...CHANNEL_SYNC_INTENTS,
+  ],
+  partials: CHANNEL_SYNC_PARTIALS,
 });
+registerChannelSync(client, isGuildAllowed);
 
 client.once(Events.ClientReady, (c) => {
   console.log(`🔥 Hearth online as ${c.user.tag}`);

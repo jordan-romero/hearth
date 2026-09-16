@@ -124,6 +124,11 @@ model CampaignDiscord {
   guildId         String   @unique
   revealChannelId String? // default channel for /reveal + /npc share
   voiceChannelId  String? // preferred capture channel (advisory)
+  // Channels the DM designates as table knowledge. Every post in them is remembered as
+  // something everyone knows, and follows the post's edits and deletion.
+  factsChannelId  String? // permanent facts
+  recapsChannelId String? // recaps written by players
+  loreChannelId   String? // lore
   createdAt       DateTime @default(now())
 
   campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
@@ -512,6 +517,8 @@ model SourceDocument {
   baseVisibility BaseVisibility @default(DM_ONLY)
   // SHA-256 of the uploaded bytes, so the same file sent twice isn't imported twice.
   contentHash    String?
+  // For a post synced from a Discord channel: its message id, so an edit or delete finds it.
+  externalId     String?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -521,6 +528,7 @@ model SourceDocument {
   grants         KnowledgeGrant[] // document-level reveals (opens all its chunks)
   reveals        RevealEvent[]
 
+  @@unique([campaignId, externalId])
   @@index([campaignId])
   @@index([campaignId, contentHash])
 }
