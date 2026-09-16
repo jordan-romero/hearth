@@ -6,11 +6,18 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Viewer } from "@hearth/core";
 import { prisma } from "@hearth/db";
 import { retrieveContext } from "./retrieve.js";
+import { buildCorpus, type Corpus } from "./corpus.js";
 import { noKnowledgeReply } from "./no-knowledge.js";
 
 // Live Q&A runs on Haiku — it's grounded answer-from-context, not deep reasoning,
 // and Haiku is ~3x cheaper (see the pricing model). Extraction stays on Sonnet.
 const MODEL = "claude-haiku-4-5";
+
+// Answering from the whole library is a different job from answering from a dozen retrieved
+// lines: the model has to find the relevant part of a campaign itself, across a hundred sessions
+// of material. That judgment is worth Sonnet, and its context is what makes handing over the
+// library possible at all. Retrieval-backed answers stay on Haiku.
+const CORPUS_MODEL = "claude-sonnet-5";
 
 // Player view: answer as the character, strictly from what they may know. Retrieval has
 // already stripped anything hidden from them, so the model can't leak — but it must not
@@ -62,11 +69,91 @@ async function logAsk(
   }
 }
 
+/**
+ * Answer from the viewer's whole permitted library rather than from retrieved fragments.
+ *
+ * The shared block is marked for caching: it is byte-identical between calls for everyone in the
+ * campaign, so the second question of a session re-reads it at a fraction of the price. The
+ * personal block is never cached — it differs per viewer, and a shared cache holding one
+ * character's secrets is exactly the leak the permission spine exists to prevent.
+ */
+async function askFromCorpus(
+  viewer: Viewer,
+  question: string,
+  corpus: Corpus,
+  opts: { askedByMembershipId?: string },
+): Promise<AskResult> {
+  const blocks: Anthropic.TextBlockParam[] = [];
+  if (corpus.shared) {
+    blocks.push({
+      type: "text",
+      text: `Campaign material:\n\n${corpus.shared}`,
+      cache_control: { type: "ephemeral" },
+    });
+  }
+  if (corpus.personal) {
+    blocks.push({
+      type: "text",
+      text: `Known to the asker alone:\n\n${corpus.personal}`,
+    });
+  }
+  blocks.push({ type: "text", text: `Question: ${question}` });
+
+  const client = new Anthropic(); // reads ANTHROPIC_API_KEY
+  const started = Date.now();
+  const msg = await client.messages.create({
+    model: CORPUS_MODEL,
+    max_tokens: 800,
+    system: viewer.role === "DM" ? SYSTEM_DM : SYSTEM_PLAYER,
+    messages: [{ role: "user", content: blocks }],
+  });
+  // What this actually cost, so the decision to send a whole library can be judged on numbers
+  // rather than assumed. A cache read is a fraction of the price of the same tokens uncached.
+  const usage = msg.usage as Anthropic.Usage & {
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
+  console.log(
+    `[corpus ask] ${corpus.manifest.documents.length} docs, ${corpus.manifest.factCount} facts, ` +
+      `in=${usage.input_tokens} cacheWrite=${usage.cache_creation_input_tokens ?? 0} ` +
+      `cacheRead=${usage.cache_read_input_tokens ?? 0} out=${usage.output_tokens} ` +
+      `${Date.now() - started}ms`,
+  );
+
+  const answer = msg.content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("")
+    .trim();
+
+  const result: AskResult = {
+    answer,
+    sources: corpus.manifest.documents.map((name) => ({
+      title: name,
+      type: "DOCUMENT",
+    })),
+  };
+  await logAsk(viewer, question, result, opts.askedByMembershipId);
+  return result;
+}
+
 export async function ask(
   viewer: Viewer,
   question: string,
   opts: { askedByMembershipId?: string } = {},
 ): Promise<AskResult> {
+  // Read the whole library when it fits.
+  //
+  // Retrieval hands the model a handful of pieces chosen by similarity, which is exactly the
+  // step that gets "Moira" and "Morwyn" confused, or session 1 and session 81. When the viewer's
+  // permitted material fits in a prompt there is no reason to choose for the model at all — give
+  // it everything it may see and let it read. Retrieval stays as the path for a library too big
+  // to hand over whole, and for anything the corpus had to leave out.
+  const corpus = await buildCorpus(viewer);
+  if (corpus.manifest.complete && corpus.manifest.tokens > 0) {
+    return askFromCorpus(viewer, question, corpus, opts);
+  }
+
   const { units, chunks } = await retrieveContext(viewer, question);
 
   // Nothing retrieved → nothing to ground on. Skip the model and return a canned line

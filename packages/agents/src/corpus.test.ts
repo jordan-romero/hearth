@@ -19,6 +19,9 @@ function unit(over: Partial<CorpusUnit> & Pick<CorpusUnit, "id">): CorpusUnit {
     content: `content-${over.id}`,
     type: "FACT",
     authorName: null,
+    // Null by default: a fact with no document behind it is never deduped, so the cases that
+    // aren't about deduplication are unaffected by it.
+    sourceDocumentId: null,
     grantedCharacterIds: [],
     grantedPartyIds: [],
     ...over,
@@ -247,5 +250,92 @@ describe("the budget", () => {
       1_000_000,
     );
     expect(all(corpus)).not.toContain("content-secret");
+  });
+
+  it("treats the budget as a ceiling, not a suggestion", () => {
+    // Facts used to be appended without checking, so the corpus could exceed its own budget —
+    // the real campaign reported 164,773 tokens against a budget of 150,000.
+    const budget = estimateTokens("x".repeat(4000)) + 10;
+    const corpus = assembleCorpus(
+      dm,
+      [unit({ id: "from-play", content: "y".repeat(4000) })],
+      [
+        chunk({
+          id: "k1",
+          docName: "A.md",
+          sourceDocumentId: "A.md",
+          text: "x".repeat(4000),
+        }),
+      ],
+      budget,
+    );
+    expect(corpus.manifest.tokens).toBeLessThanOrEqual(budget);
+    expect(corpus.manifest.omittedFacts).toBe(1);
+    expect(corpus.manifest.complete).toBe(false);
+    expect(all(corpus)).not.toContain("yyyy");
+  });
+});
+
+describe("not sending the same content twice", () => {
+  // Every fact in the real campaign was extracted from an uploaded document. Sending both turned
+  // a 178k-token library into 233k — past a context window — and forced documents to be dropped.
+  it("leaves out a fact extracted from a document that is already here", () => {
+    const corpus = assembleCorpus(
+      dm,
+      [
+        unit({ id: "derived", sourceDocumentId: "doc-1" }),
+        unit({ id: "from-play" }), // no document behind it
+      ],
+      [chunk({ id: "k1", sourceDocumentId: "doc-1" })],
+    );
+    expect(all(corpus)).not.toContain("content-derived");
+    expect(all(corpus)).toContain("content-from-play");
+    expect(corpus.manifest.duplicateFactsOmitted).toBe(1);
+    expect(corpus.manifest.factCount).toBe(1);
+  });
+
+  it("keeps a fact whose document was dropped — it is the only trace of it left", () => {
+    // Headroom for one small fact, but nowhere near enough for the second document: this is
+    // about what survives a drop, not about the ceiling itself.
+    const budget = estimateTokens("x".repeat(4000)) + 60;
+    const big = (id: string, docName: string) =>
+      chunk({
+        id,
+        docName,
+        sourceDocumentId: docName,
+        baseVisibility: "EVERYONE",
+        text: "x".repeat(4000),
+      });
+    const corpus = assembleCorpus(
+      dm,
+      [unit({ id: "from-b", sourceDocumentId: "B.md" })],
+      [big("k1", "A.md"), big("k2", "B.md")],
+      budget,
+    );
+    expect(corpus.manifest.omittedDocuments).toEqual(["B.md"]);
+    expect(all(corpus)).toContain("content-from-b");
+    expect(corpus.manifest.duplicateFactsOmitted).toBe(0);
+  });
+
+  it("deduplicates a player's corpus against what the player can actually see", () => {
+    const corpus = assembleCorpus(
+      alice,
+      [
+        unit({
+          id: "derived",
+          baseVisibility: "EVERYONE",
+          sourceDocumentId: "doc-1",
+        }),
+      ],
+      [
+        chunk({
+          id: "k1",
+          baseVisibility: "EVERYONE",
+          sourceDocumentId: "doc-1",
+        }),
+      ],
+    );
+    expect(all(corpus)).not.toContain("content-derived");
+    expect(corpus.manifest.duplicateFactsOmitted).toBe(1);
   });
 });
