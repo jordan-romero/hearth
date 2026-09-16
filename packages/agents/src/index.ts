@@ -3,6 +3,7 @@ export * from "./retrieve.js";
 export * from "./ask.js";
 export * from "./choose.js";
 export * from "./corpus.js";
+export * from "./sections.js";
 export * from "./jobs.js";
 export * from "./storage.js";
 export * from "./queue.js";

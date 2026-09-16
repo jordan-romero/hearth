@@ -11,6 +11,7 @@ import {
   ChannelType,
   ChatInputCommandInteraction,
   Client,
+  EmbedBuilder,
   Events,
   GatewayIntentBits,
   MessageFlags,
@@ -28,8 +29,13 @@ import { prisma } from "@hearth/db";
 import {
   ask,
   getPortrait,
+  joinPassages,
   rankRevealCandidates,
   retrieveContext,
+  revealPassages,
+  sectionPassages,
+  sectionTitle,
+  wordCount,
   revealTo,
   addJournalNote,
   generateNpc,
@@ -1633,7 +1639,7 @@ async function handleReveal(
     destination,
   ];
   const buttons: ButtonBuilder[] = [];
-  candidates.forEach((candidate, i) => {
+  for (const [i, candidate] of candidates.entries()) {
     const why = candidate.why ? ` — _${candidate.why}_` : "";
     const n = candidates.length > 1 ? `${i + 1}. ` : "";
     if (candidate.kind === "unit") {
@@ -1647,19 +1653,29 @@ async function handleReveal(
           .setStyle(ButtonStyle.Success),
       );
     } else {
-      // One passage, not the document holding it. `/reveal` used to offer the whole document,
-      // which for a session log means releasing every session at once.
+      // Widen the matched passage to the whole section it sits in. A passage is a ~1500-char
+      // slice, so revealing one hands over part of a recap; the DM meant the recap. The button
+      // carries the anchor and the section is worked out again on click — the boundary rules are
+      // deterministic, and a Discord custom id can't hold a list of passage ids.
+      const passages = await sectionPassages(candidate.id);
+      const body = passages.length ? joinPassages(passages) : candidate.body;
+      const title = sectionTitle(passages, candidate.title);
+      // Say how much this releases before they press it.
+      const size =
+        passages.length > 1
+          ? ` · ${passages.length} passages, ~${wordCount(body)} words`
+          : ` · ~${wordCount(body)} words`;
       lines.push(
-        `\n${n}📄 **From ${candidate.title}**${why}\n> ${preview(candidate.body)}`,
+        `\n${n}📄 **${title}** — from ${candidate.title}${size}${why}\n> ${preview(body)}`,
       );
       buttons.push(
         new ButtonBuilder()
-          .setCustomId(`rv:p:${candidate.id}:${suffix}`)
-          .setLabel(`${n}From ${trimLabel(candidate.title)}`)
+          .setCustomId(`rv:s:${candidate.id}:${suffix}`)
+          .setLabel(`${n}${trimLabel(title)}`)
           .setStyle(ButtonStyle.Primary),
       );
     }
-  });
+  }
   buttons.push(
     new ButtonBuilder()
       .setCustomId("rv:x")
@@ -1671,6 +1687,65 @@ async function handleReveal(
     content: lines.join("\n"),
     components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)],
   });
+}
+
+// Discord caps an embed's description at 4096 characters, and revealEmbed truncates to fit. A
+// revealed section runs longer than that, and silently cutting it would hand the party a fragment
+// while telling the DM the piece was sent — the same failure this change exists to remove. So a
+// long body goes out as several embeds (Discord allows ten per message), split on paragraph
+// breaks. If it somehow still doesn't fit, the last embed says so rather than ending mid-sentence.
+const EMBED_BODY_LIMIT = 3800; // headroom for the title line revealEmbed prepends
+const MAX_EMBEDS = 10;
+
+function splitForEmbeds(text: string): string[] {
+  if (text.length <= EMBED_BODY_LIMIT) return [text];
+  const parts: string[] = [];
+  let current = "";
+  for (const para of text.split(/\n{2,}/)) {
+    let block = para;
+    // A single paragraph longer than the limit has to be cut somewhere; cut it on whitespace.
+    while (block.length > EMBED_BODY_LIMIT) {
+      const window = block.slice(0, EMBED_BODY_LIMIT);
+      const cut = window.lastIndexOf(" ");
+      const at = cut > EMBED_BODY_LIMIT / 2 ? cut : EMBED_BODY_LIMIT;
+      if (current) parts.push(current);
+      current = "";
+      parts.push(block.slice(0, at).trim());
+      block = block.slice(at).trim();
+    }
+    if (!current) current = block;
+    else if (current.length + block.length + 2 <= EMBED_BODY_LIMIT)
+      current += `\n\n${block}`;
+    else {
+      parts.push(current);
+      current = block;
+    }
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+/** The reveal as one or more embeds — several when the piece is longer than one embed holds. */
+function revealEmbeds(
+  subjectLabel: string,
+  itemTitle: string,
+  body: string,
+  theme: string,
+): EmbedBuilder[] {
+  const parts = splitForEmbeds(body);
+  const shown = parts.slice(0, MAX_EMBEDS);
+  if (parts.length > MAX_EMBEDS) {
+    shown[MAX_EMBEDS - 1] +=
+      "\n\n*(this piece is longer than one message holds — ask the memory for the rest)*";
+  }
+  return shown.map((part, i) =>
+    revealEmbed(
+      subjectLabel,
+      i === 0 ? itemTitle : `${itemTitle} (continued)`,
+      part,
+      theme,
+    ),
+  );
 }
 
 /** After a grant is created, surface it: DM the player (character reveal) or post to the
@@ -1696,6 +1771,13 @@ async function announceReveal(
     });
     itemTitle = u?.title ?? "a memory";
     body = u?.content ?? "";
+  } else if (kind === "s") {
+    // The whole section, joined and de-overlapped — what the DM was shown the size of.
+    const passages = await sectionPassages(targetId);
+    itemTitle = passages.length
+      ? sectionTitle(passages, passages[0]!.docName)
+      : "a passage";
+    body = joinPassages(passages);
   } else if (kind === "p") {
     // Same reason as above: a correction can retire a passage between the preview and the click.
     const c = await prisma.documentChunk.findFirst({
@@ -1725,14 +1807,14 @@ async function announceReveal(
       if (!discordUserId)
         return "— revealed (couldn't find the player to notify)";
       const user = await client.users.fetch(discordUserId);
-      await user.send({ embeds: [revealEmbed("You", itemTitle, body, theme)] });
+      await user.send({ embeds: revealEmbeds("You", itemTitle, body, theme) });
       return `— sent privately to ${character?.name ?? "them"}`;
     }
     if (!chanId) return "— revealed (no announce channel set)";
     const channel = await client.channels.fetch(chanId);
     if (channel && channel.isTextBased() && !channel.isDMBased()) {
       await channel.send({
-        embeds: [revealEmbed("The party", itemTitle, body, theme)],
+        embeds: revealEmbeds("The party", itemTitle, body, theme),
       });
       return `— announced in <#${chanId}>`;
     }
@@ -1780,15 +1862,29 @@ async function handleRevealButton(
   }
   // Ack now — announcing (DB + Discord sends) can take longer than the 3s button window.
   await interaction.deferUpdate();
-  const revealTarget =
-    kind === "u"
-      ? { unitId: targetId }
-      : kind === "p"
-        ? { chunkId: targetId }
-        : { documentId: targetId };
   const scope =
     scopeType === "c" ? { characterId: scopeId } : { partyId: scopeId };
-  const { revealed } = await revealTo(revealTarget, scope, membership.id);
+  // A section is many passages released together — either the piece went out or it didn't. The
+  // button carries only the anchor, so the section is worked out again here; the boundary rules
+  // are deterministic, so this is the same section the DM was shown.
+  let revealed: boolean;
+  if (kind === "s") {
+    const passages = await sectionPassages(targetId!);
+    const result = await revealPassages(
+      passages.map((p) => p.id),
+      scope,
+      membership.id,
+    );
+    revealed = result.revealed > 0;
+  } else {
+    const revealTarget =
+      kind === "u"
+        ? { unitId: targetId }
+        : kind === "p"
+          ? { chunkId: targetId }
+          : { documentId: targetId };
+    revealed = (await revealTo(revealTarget, scope, membership.id)).revealed;
+  }
   if (!revealed) {
     await interaction.editReply({
       content: "That was already revealed.",
