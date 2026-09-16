@@ -5,6 +5,57 @@
 // dossier" case). Idempotent — re-revealing the same thing is a no-op.
 
 import { prisma } from "@hearth/db";
+import { sectionFor } from "./sections.js";
+
+/** A passage of a section, with the document it belongs to. */
+export interface SectionPassageRow {
+  id: string;
+  chunkIndex: number;
+  text: string;
+  docName: string;
+}
+
+/**
+ * The passages forming the section that contains `anchorChunkId`, in order.
+ *
+ * Called twice for one reveal — once to preview the section and once when the DM confirms —
+ * rather than carrying a list of ids through a Discord button, whose custom id is far too small
+ * to hold them. The boundary rules are deterministic, so both calls see the same section.
+ *
+ * A passage retired by a correction is left out, which can split a section in two; the DM then
+ * reveals the part their anchor sits in. That is the safe direction to be wrong in.
+ */
+export async function sectionPassages(
+  anchorChunkId: string,
+): Promise<SectionPassageRow[]> {
+  const anchor = await prisma.documentChunk.findUnique({
+    where: { id: anchorChunkId },
+    select: { sourceDocumentId: true, chunkIndex: true },
+  });
+  if (!anchor) return [];
+  const rows = await prisma.documentChunk.findMany({
+    where: {
+      sourceDocumentId: anchor.sourceDocumentId,
+      supersededByCorrectionId: null,
+    },
+    select: {
+      id: true,
+      chunkIndex: true,
+      text: true,
+      sourceDocument: { select: { name: true } },
+    },
+    orderBy: { chunkIndex: "asc" },
+  });
+  return sectionFor(
+    rows.map((r) => ({
+      id: r.id,
+      chunkIndex: r.chunkIndex,
+      text: r.text,
+      docName: r.sourceDocument.name,
+    })),
+    anchor.chunkIndex,
+  );
+}
 
 export interface RevealTarget {
   unitId?: string;
@@ -14,6 +65,29 @@ export interface RevealTarget {
 export interface RevealScope {
   characterId?: string;
   partyId?: string;
+}
+
+/**
+ * Reveal a run of passages — a whole section — as one act.
+ *
+ * A single passage is a slice of a piece, so revealing one hands over part of a recap. This
+ * grants every passage in the section together: either the DM released the piece or they did
+ * not. Passages already revealed are skipped rather than failing the rest, so re-revealing an
+ * overlapping section tops it up instead of erroring.
+ *
+ * Returns how many passages were newly revealed (0 when the section was already open).
+ */
+export async function revealPassages(
+  chunkIds: string[],
+  scope: RevealScope,
+  byMembershipId: string,
+): Promise<{ revealed: number }> {
+  let revealed = 0;
+  for (const chunkId of chunkIds) {
+    const result = await revealTo({ chunkId }, scope, byMembershipId);
+    if (result.revealed) revealed += 1;
+  }
+  return { revealed };
 }
 
 /** Reveal a unit / chunk / document to a character or party. Returns whether a new grant
