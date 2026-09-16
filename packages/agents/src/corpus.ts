@@ -28,6 +28,16 @@ import {
 import { prisma } from "@hearth/db";
 
 /**
+ * The model that reads a corpus.
+ *
+ * Finding the relevant part of a hundred sessions is a different job from summarising a dozen
+ * retrieved lines, and a million-token context is what makes handing over a library possible at
+ * all. It lives here rather than in each caller so that answering and revealing can't drift onto
+ * different models — they send the same cacheable block, and a cache entry is per model.
+ */
+export const CORPUS_MODEL = "claude-sonnet-5";
+
+/**
  * Rough size of a corpus in tokens. Crude on purpose — it gates a budget, it isn't billing — but
  * it has to be crude in the SAFE direction.
  *
@@ -76,6 +86,12 @@ export interface CorpusUnit extends FilterableKnowledgeUnit {
   sourceDocumentId: string | null;
 }
 
+/** What a reference in the rendered corpus points at. */
+export interface CorpusRef {
+  kind: "unit" | "passage";
+  id: string;
+}
+
 /**
  * What goes in the prompt. `shared` is identical for everyone in the campaign and is what the
  * cache is keyed on; `personal` is what this viewer alone may see and must never be cached
@@ -84,6 +100,12 @@ export interface CorpusUnit extends FilterableKnowledgeUnit {
 export interface Corpus {
   shared: string;
   personal: string;
+  /**
+   * Reference label ("U12", "P7") to the row it names, built while rendering so the two cannot
+   * disagree. This is how a model's answer becomes a real record: it names a label, and only
+   * labels in here resolve to anything.
+   */
+  index: Map<string, CorpusRef>;
   /** What made it in, and what didn't — so a thin answer can be explained rather than guessed at. */
   manifest: {
     documents: string[];
@@ -106,16 +128,25 @@ function isShared(item: FilterableKnowledgeUnit): boolean {
   return item.baseVisibility === "EVERYONE" || item.baseVisibility === "PUBLIC";
 }
 
-function renderUnit(unit: CorpusUnit): string {
+// Items are labelled with a short SEQUENTIAL number, never their database id.
+//
+// Embedding real ids looked tidy and failed badly: asked to copy a 25-character cuid out of a
+// 276,000-token prompt, the model returned ids that were the right shape, the right length, and
+// entirely invented — near-misses of real ones, resolving to no row at all. Transcribing long
+// opaque strings is the thing to ask of a model least. A two-digit number it can copy, and a
+// wrong one either misses the index and is dropped or names something real. It is also cheaper:
+// five hundred embedded cuids cost more tokens than five hundred numbers.
+
+function renderUnit(unit: CorpusUnit, ref: number): string {
   // A journal note is written in the first person; without the author it reads as the asker's.
   const by = unit.authorName
     ? ` — ${unit.authorName}'s own note, in their words`
     : "";
-  return `[fact] ${unit.title} (${unit.type}${by}): ${unit.content}`;
+  return `[U${ref}] ${unit.title} (${unit.type}${by}): ${unit.content}`;
 }
 
-function renderChunk(chunk: CorpusChunk): string {
-  return `[${chunk.docName} #${chunk.chunkIndex}] ${chunk.text}`;
+function renderChunk(chunk: CorpusChunk, ref: number): string {
+  return `[P${ref}] ${chunk.docName} #${chunk.chunkIndex}: ${chunk.text}`;
 }
 
 /**
@@ -169,11 +200,22 @@ export function assembleCorpus(
   // itself. What survives the cut is what has no document behind it — play, journals, corrections.
   const includedDocIds = new Set<string>();
 
+  // Labels run across the whole corpus, not per document, so "P17" means one thing. Built here,
+  // beside the text it labels, because an index assembled separately is an index that can drift.
+  const index = new Map<string, CorpusRef>();
+  let nextPassageRef = 0;
+  let nextUnitRef = 0;
+
   for (const docName of docNames) {
     const passages = byDoc
       .get(docName)!
       .sort((a, b) => a.chunkIndex - b.chunkIndex);
-    const text = passages.map(renderChunk).join("\n");
+    // Render before the budget check, since a dropped document must not consume labels — the
+    // numbering has to describe what is actually in the prompt.
+    const startRef = nextPassageRef;
+    const text = passages
+      .map((passage, i) => renderChunk(passage, startRef + i + 1))
+      .join("\n");
     const cost = estimateTokens(text);
     // A document goes in whole or not at all: half a document reads as a complete one, and the
     // model would answer from it as if nothing were missing.
@@ -184,8 +226,11 @@ export function assembleCorpus(
     tokens += cost;
     passageCount += passages.length;
     documents.push(docName);
-    for (const passage of passages)
+    passages.forEach((passage, i) => {
+      index.set(`P${startRef + i + 1}`, { kind: "passage", id: passage.id });
       includedDocIds.add(passage.sourceDocumentId);
+    });
+    nextPassageRef += passages.length;
     // A document is cacheable only when every passage in it is; a document holding anything
     // revealed to this viewer alone belongs in the personal block, never in the shared cache.
     (passages.every(cacheable) ? sharedParts : personalParts).push(
@@ -211,22 +256,39 @@ export function assembleCorpus(
   // 164,773 tokens against a budget of 150,000 before this check existed.
   let omittedFacts = 0;
 
+  // Labels are only spent on facts that actually go in: registering them before the budget check
+  // would leave the index naming material the model never saw.
+  const renderFacts = (facts: CorpusUnit[]): string => {
+    const startRef = nextUnitRef;
+    return facts
+      .map((fact, i) => renderUnit(fact, startRef + i + 1))
+      .join("\n");
+  };
+  const registerFacts = (facts: CorpusUnit[]): void => {
+    facts.forEach((fact, i) => {
+      index.set(`U${nextUnitRef + i + 1}`, { kind: "unit", id: fact.id });
+    });
+    nextUnitRef += facts.length;
+  };
+
   if (sharedFacts.length > 0) {
-    const text = sharedFacts.map(renderUnit).join("\n");
+    const text = renderFacts(sharedFacts);
     const cost = estimateTokens(text);
     if (tokens + cost > budgetTokens) omittedFacts += sharedFacts.length;
     else {
       sharedParts.push(`Known facts:\n${text}`);
+      registerFacts(sharedFacts);
       tokens += cost;
     }
   }
 
   if (personalFacts.length > 0) {
-    const text = personalFacts.map(renderUnit).join("\n");
+    const text = renderFacts(personalFacts);
     const cost = estimateTokens(text);
     if (tokens + cost > budgetTokens) omittedFacts += personalFacts.length;
     else {
       personalParts.push(`Known to you specifically:\n${text}`);
+      registerFacts(personalFacts);
       tokens += cost;
     }
   }
@@ -234,6 +296,7 @@ export function assembleCorpus(
   return {
     shared: sharedParts.join("\n\n"),
     personal: personalParts.join("\n\n"),
+    index,
     manifest: {
       documents,
       // What is actually in the prompt, not what was visible — the deduplicated facts are gone.
