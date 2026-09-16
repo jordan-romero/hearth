@@ -28,6 +28,7 @@ import { prisma } from "@hearth/db";
 import {
   ask,
   getPortrait,
+  rankRevealCandidates,
   retrieveContext,
   revealTo,
   addJournalNote,
@@ -1607,13 +1608,15 @@ async function handleReveal(
     : "";
   const suffix = `${scope}:${channelId}`;
 
+  // Retrieve widely, then let the model pick among the candidates rather than committing to
+  // the nearest by meaning: "Moira" looks like "Morwyn" to an embedding, and a reveal is
+  // one-way. The DM chooses from what it puts up.
   const { units, chunks } = await retrieveContext(viewer, about, {
-    unitLimit: 1,
-    chunkLimit: 1,
+    unitLimit: 12,
+    chunkLimit: 6,
   });
-  const unit = units[0];
-  const chunk = chunks[0];
-  if (!unit && !chunk) {
+  const candidates = await rankRevealCandidates(about, units, chunks);
+  if (candidates.length === 0) {
     await interaction.editReply(`Nothing in the memory matched "${about}".`);
     return;
   }
@@ -1624,32 +1627,38 @@ async function handleReveal(
       : "📣 (no announce channel available — it'll still be revealed)"
     : `✉️ Will be sent privately to ${target.label}`;
   const lines = [
-    `**Reveal to ${target.label}** — confirm what to release:`,
+    candidates.length > 1
+      ? `**Reveal to ${target.label}** — pick what to release:`
+      : `**Reveal to ${target.label}** — confirm what to release:`,
     destination,
   ];
   const buttons: ButtonBuilder[] = [];
-  if (unit) {
-    lines.push(
-      `\n📌 **${unit.title}** (${unit.type})\n> ${preview(unit.content)}`,
-    );
-    buttons.push(
-      new ButtonBuilder()
-        .setCustomId(`rv:u:${unit.id}:${suffix}`)
-        .setLabel(`Reveal: ${trimLabel(unit.title)}`)
-        .setStyle(ButtonStyle.Success),
-    );
-  }
-  if (chunk) {
-    lines.push(
-      `\n📄 **${chunk.docName}** (whole document)\n> ${preview(chunk.text)}`,
-    );
-    buttons.push(
-      new ButtonBuilder()
-        .setCustomId(`rv:d:${chunk.sourceDocumentId}:${suffix}`)
-        .setLabel(`Reveal doc: ${trimLabel(chunk.docName)}`)
-        .setStyle(ButtonStyle.Primary),
-    );
-  }
+  candidates.forEach((candidate, i) => {
+    const why = candidate.why ? ` — _${candidate.why}_` : "";
+    const n = candidates.length > 1 ? `${i + 1}. ` : "";
+    if (candidate.kind === "unit") {
+      lines.push(
+        `\n${n}📌 **${candidate.title}**${why}\n> ${preview(candidate.body)}`,
+      );
+      buttons.push(
+        new ButtonBuilder()
+          .setCustomId(`rv:u:${candidate.id}:${suffix}`)
+          .setLabel(`${n}${trimLabel(candidate.title)}`)
+          .setStyle(ButtonStyle.Success),
+      );
+    } else {
+      // A document reveal opens everything in it — say so, and style it as the loud option.
+      lines.push(
+        `\n${n}📄 **${candidate.title}** — the ENTIRE document${why}\n> ${preview(candidate.body)}`,
+      );
+      buttons.push(
+        new ButtonBuilder()
+          .setCustomId(`rv:d:${candidate.id}:${suffix}`)
+          .setLabel(`${n}ALL of ${trimLabel(candidate.title)}`)
+          .setStyle(ButtonStyle.Danger),
+      );
+    }
+  });
   buttons.push(
     new ButtonBuilder()
       .setCustomId("rv:x")
