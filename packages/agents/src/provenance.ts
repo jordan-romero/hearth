@@ -369,3 +369,36 @@ export async function proposeSources(
     },
   };
 }
+
+/** Find where a quote really is in a document: the preferred passage if it holds the words, else
+ * the nearest passage that does. The same rule verifySources applies, for other kinds of claim
+ * (graph relationships, entity evidence) that also need to be pinned to exact words. */
+export function locateQuote(
+  quote: string,
+  passages: Map<string, ProvenancePassage>,
+  preferredLabel?: string,
+):
+  | { passage: ProvenancePassage; relabelled: boolean }
+  | { reason: RejectReason } {
+  const lengthProblem = checkQuote(quote, "");
+  if (lengthProblem !== "not-in-passage") return { reason: lengthProblem! };
+  const ordered = [...passages.values()];
+  const preferred = preferredLabel
+    ? passages.get(preferredLabel.trim().toUpperCase())
+    : undefined;
+  if (preferred && checkQuote(quote, preferred.text) === null)
+    return { passage: preferred, relabelled: false };
+  const from = preferred ? ordered.indexOf(preferred) : 0;
+  const q = normalizeForQuote(quote);
+  let best = -1;
+  ordered.forEach((p, i) => {
+    if (
+      normalizeForQuote(p.text).includes(q) &&
+      (best < 0 || Math.abs(i - from) < Math.abs(best - from))
+    )
+      best = i;
+  });
+  return best < 0
+    ? { reason: preferred ? "not-in-passage" : "unknown-passage" }
+    : { passage: ordered[best]!, relabelled: true };
+}

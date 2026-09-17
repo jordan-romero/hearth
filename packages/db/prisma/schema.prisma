@@ -35,6 +35,16 @@ enum KnowledgeSource {
   CORRECTION // DM-approved canon fix — authoritative, outranks whatever it supersedes
 }
 
+/// What an entity in the campaign graph is.
+enum EntityKind {
+  PERSON
+  PLACE
+  FACTION
+  ITEM
+  CREATURE
+  OTHER
+}
+
 /// Whether a fact has been traced to its source (see FactSource).
 enum FactProvenance {
   UNCHECKED // not looked for yet
@@ -114,6 +124,8 @@ model Campaign {
   knowledgeUnits  KnowledgeUnit[]
   sourceDocuments SourceDocument[]
   documentChunks  DocumentChunk[]
+  entities        Entity[]
+  entityRelations EntityRelation[]
   assets          Asset[]
   askLogs         AskLog[]
   corrections     Correction[]
@@ -212,6 +224,7 @@ model Character {
   status           CharacterStatus @default(ACTIVE)
   avatarUrl        String?
   tokenStoragePath String? // the player's uploaded token image, in the portraits bucket
+  entity           Entity?
   bio              String?
   stats            Json? // ability scores etc., purely for display
 
@@ -317,6 +330,7 @@ model KnowledgeUnit {
   supersededByCorrection Correction?      @relation("Superseded", fields: [supersededByCorrectionId], references: [id], onDelete: SetNull)
   correctionResultOf     Correction?      @relation("CorrectionResult")
   sources                FactSource[]
+  entities               FactEntity[]
 
   @@index([campaignId, baseVisibility])
   @@index([campaignId, type])
@@ -462,9 +476,11 @@ model TranscriptSegment {
   isLive        Boolean  @default(false)
   createdAt     DateTime @default(now())
 
-  recording Recording  @relation(fields: [recordingId], references: [id], onDelete: Cascade)
-  audioClip AudioClip? @relation(fields: [audioClipId], references: [id], onDelete: SetNull)
-  character Character? @relation(fields: [characterId], references: [id], onDelete: SetNull)
+  recording       Recording        @relation(fields: [recordingId], references: [id], onDelete: Cascade)
+  audioClip       AudioClip?       @relation(fields: [audioClipId], references: [id], onDelete: SetNull)
+  relationSources RelationSource[]
+  entityMentions  EntityMention[]
+  character       Character?       @relation(fields: [characterId], references: [id], onDelete: SetNull)
 
   @@index([recordingId, startMs])
   @@index([characterId])
@@ -562,11 +578,13 @@ model DocumentChunk {
 
   createdAt DateTime @default(now())
 
-  sourceDocument SourceDocument   @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
-  campaign       Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  grants         KnowledgeGrant[] // chunk-level reveals
-  reveals        RevealEvent[]
-  factSources    FactSource[]
+  sourceDocument  SourceDocument   @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+  campaign        Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  grants          KnowledgeGrant[] // chunk-level reveals
+  reveals         RevealEvent[]
+  factSources     FactSource[]
+  relationSources RelationSource[]
+  entityMentions  EntityMention[]
 
   @@unique([sourceDocumentId, chunkIndex])
   @@index([campaignId, baseVisibility])
@@ -749,4 +767,119 @@ model ShareRequest {
 
   @@index([campaignId, status])
   @@index([knowledgeUnitId])
+}
+
+// ── Campaign graph ─────────────────────────────────────────────────────────────────────────────
+//
+// The people, places, factions and things in a campaign, and how they're connected, so a question
+// about one of them can gather everything about it in code instead of hoping a model finds it in a
+// library of prose. Built beside facts and passages, never by recreating them (a reveal is deleted
+// with either). Nothing here stores visibility: what a viewer may see is derived from the passages
+// and facts behind it, so the graph can't show a player more than those already do.
+
+/// Someone or something the campaign talks about.
+model Entity {
+  id          String     @id @default(cuid())
+  campaignId  String
+  kind        EntityKind
+  name        String
+  /// Set when the entity IS a player character.
+  characterId String?    @unique
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  campaign      Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  character     Character?       @relation(fields: [characterId], references: [id], onDelete: SetNull)
+  aliases       EntityAlias[]
+  relationsFrom EntityRelation[] @relation("RelationSubject")
+  relationsTo   EntityRelation[] @relation("RelationObject")
+  facts         FactEntity[]
+  mentions      EntityMention[]
+
+  @@index([campaignId])
+}
+
+/// Every name an entity goes by, the primary name included. `normalized` is what lookups match on,
+/// so "Moira" and "Morwyn" stay two different people however similar they look.
+model EntityAlias {
+  id         String @id @default(cuid())
+  entityId   String
+  campaignId String
+  alias      String
+  normalized String
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, normalized])
+  @@index([campaignId, normalized])
+}
+
+/// A connection between two entities: subject → relation → object ("Moira" → "runs" → "the Gilded
+/// Anchor"). Only as visible as the passages that state it.
+model EntityRelation {
+  id         String   @id @default(cuid())
+  campaignId String
+  subjectId  String
+  relation   String
+  objectId   String
+  createdAt  DateTime @default(now())
+
+  campaign Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  subject  Entity           @relation("RelationSubject", fields: [subjectId], references: [id], onDelete: Cascade)
+  object   Entity           @relation("RelationObject", fields: [objectId], references: [id], onDelete: Cascade)
+  sources  RelationSource[]
+
+  @@unique([subjectId, relation, objectId])
+  @@index([campaignId])
+  @@index([objectId])
+}
+
+/// Where a relationship is stated, with the exact words — verified in code, like FactSource. The
+/// words are in a document passage or in a session transcript line (exactly one of the two), so the
+/// graph grows from uploads and from play through the same path.
+model RelationSource {
+  id                  String  @id @default(cuid())
+  relationId          String
+  documentChunkId     String?
+  transcriptSegmentId String?
+  quote               String
+
+  relation          EntityRelation     @relation(fields: [relationId], references: [id], onDelete: Cascade)
+  documentChunk     DocumentChunk?     @relation(fields: [documentChunkId], references: [id], onDelete: Cascade)
+  transcriptSegment TranscriptSegment? @relation(fields: [transcriptSegmentId], references: [id], onDelete: Cascade)
+
+  @@unique([relationId, documentChunkId])
+  @@unique([relationId, transcriptSegmentId])
+  @@index([documentChunkId])
+  @@index([transcriptSegmentId])
+}
+
+/// Which entities a fact is about. Matched by code on names and aliases, not chosen by a model.
+model FactEntity {
+  knowledgeUnitId String
+  entityId        String
+
+  knowledgeUnit KnowledgeUnit @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
+  entity        Entity        @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@id([knowledgeUnitId, entityId])
+  @@index([entityId])
+}
+
+/// Which passages and transcript lines mention an entity by one of its names — matched by code.
+/// Exactly one of the two is set.
+model EntityMention {
+  id                  String  @id @default(cuid())
+  entityId            String
+  documentChunkId     String?
+  transcriptSegmentId String?
+
+  entity            Entity             @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  documentChunk     DocumentChunk?     @relation(fields: [documentChunkId], references: [id], onDelete: Cascade)
+  transcriptSegment TranscriptSegment? @relation(fields: [transcriptSegmentId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, documentChunkId])
+  @@unique([entityId, transcriptSegmentId])
+  @@index([documentChunkId])
+  @@index([transcriptSegmentId])
 }
