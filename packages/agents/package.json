@@ -12,6 +12,7 @@
     "seed": "dotenv -e ../../.env -- tsx src/seed.ts",
     "demo": "dotenv -e ../../.env -- tsx src/demo.ts",
     "link": "dotenv -e ../../.env -- tsx src/link.ts",
+    "backfill:sources": "dotenv -e ../../.env -- tsx src/backfill-sources.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

@@ -35,6 +35,13 @@ enum KnowledgeSource {
   CORRECTION // DM-approved canon fix — authoritative, outranks whatever it supersedes
 }
 
+/// Whether a fact has been traced to its source (see FactSource).
+enum FactProvenance {
+  UNCHECKED // not looked for yet
+  SOURCED // at least one source whose quote was verified in the passage
+  UNSOURCED // looked for, none verified — extraction paraphrased or invented it; not used
+}
+
 /// How a DM_ADDED unit originated (provenance/trust). SESSION units are PLAYED.
 enum KnowledgeOrigin {
   PLAYED
@@ -281,6 +288,12 @@ model KnowledgeUnit {
   // still points at something real.
   supersededByCorrectionId String?
 
+  // Whether this fact has been traced to exact words in its source. A document fact that couldn't
+  // be is UNSOURCED and is not used — not answered from, offered as a reveal, or built on —
+  // because nobody can review it: the DM would have to read their own notes against it, and the
+  // players mustn't. It is kept, not deleted, so a reveal already granted on it survives.
+  provenance FactProvenance @default(UNCHECKED)
+
   // relationships-as-knowledge (self references)
   subjectId String?
   objectId  String?
@@ -303,6 +316,7 @@ model KnowledgeUnit {
   shareRequests          ShareRequest[]
   supersededByCorrection Correction?      @relation("Superseded", fields: [supersededByCorrectionId], references: [id], onDelete: SetNull)
   correctionResultOf     Correction?      @relation("CorrectionResult")
+  sources                FactSource[]
 
   @@index([campaignId, baseVisibility])
   @@index([campaignId, type])
@@ -552,11 +566,36 @@ model DocumentChunk {
   campaign       Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   grants         KnowledgeGrant[] // chunk-level reveals
   reveals        RevealEvent[]
+  factSources    FactSource[]
 
   @@unique([sourceDocumentId, chunkIndex])
   @@index([campaignId, baseVisibility])
   @@index([sourceDocumentId])
   @@index([supersededByCorrectionId])
+}
+
+/// Where a fact was found: one passage, and the exact words in it that support the fact. A fact
+/// folded from several mentions has several. The quote is checked against the passage text by
+/// code before a row is written, so a source can't be invented — only found.
+///
+/// Links are added beside facts and passages, never by rebuilding them: a KnowledgeGrant is
+/// deleted with the fact or passage it targets, so recreating either would silently take back a
+/// reveal a player already has. A link dies with either end, which is right — it describes them.
+///
+/// DM-only. A source names a document and quotes it, which can give away what a fact alone does
+/// not, so nothing a player sees carries these.
+model FactSource {
+  id              String   @id @default(cuid())
+  knowledgeUnitId String
+  documentChunkId String
+  quote           String
+  createdAt       DateTime @default(now())
+
+  knowledgeUnit KnowledgeUnit @relation(fields: [knowledgeUnitId], references: [id], onDelete: Cascade)
+  documentChunk DocumentChunk @relation(fields: [documentChunkId], references: [id], onDelete: Cascade)
+
+  @@unique([knowledgeUnitId, documentChunkId])
+  @@index([documentChunkId])
 }
 
 /// A reusable media asset — NPC portraits/tokens today (maps/handouts later). Embedded for
