@@ -865,16 +865,24 @@ async function handleRecap(
       );
       return;
     }
-    await interaction.editReply({
-      embeds: [
-        recapEmbed(
-          last.title ?? `Session ${last.number}`,
-          last.recap,
-          `Session ${last.number} · last time`,
-          viewer.theme,
-        ),
-      ],
-    });
+    // A long session's recap runs past one embed (4,096 characters); cutting it would end the
+    // story mid-sentence. Send it whole, one embed per message.
+    const title = last.title ?? `Session ${last.number}`;
+    const parts = splitForEmbeds(last.recap);
+    const embeds = parts.map((part, i) =>
+      recapEmbed(
+        i === 0 ? title : `${title} (continued ${i + 1}/${parts.length})`,
+        part,
+        `Session ${last.number} · last time`,
+        viewer.theme,
+      ),
+    );
+    await interaction.editReply({ embeds: [embeds[0]!] });
+    for (const embed of embeds.slice(1))
+      await interaction.followUp({
+        embeds: [embed],
+        flags: MessageFlags.Ephemeral,
+      });
   } catch (err) {
     console.error("/recap failed:", err);
     await interaction
