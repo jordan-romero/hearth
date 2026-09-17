@@ -7,6 +7,7 @@ import {
   transcribeClip,
   extractSession,
   buildGraph,
+  writeRecapsForSession,
   sessionSource,
   embedTexts,
   toVectorLiteral,
@@ -237,6 +238,21 @@ async function finalizeSession(gameSessionId: string): Promise<void> {
     );
   } catch (err) {
     console.error(`[finalize] graph build failed for ${gameSessionId}:`, err);
+  }
+
+  // Each character's own recap — what they were there for, nothing told privately to someone else —
+  // plus the same in their voice. Never blocks finalizing: without it, players see the table recap.
+  try {
+    const recaps = await writeRecapsForSession(gameSession.id);
+    console.log(
+      `[finalize] session ${gameSessionId}: character recaps written=${recaps.written} ` +
+        `of ${recaps.characters}, failed=${recaps.failed}`,
+    );
+  } catch (err) {
+    console.error(
+      `[finalize] character recaps failed for ${gameSessionId}:`,
+      err,
+    );
   }
 
   await finalize(gameSession.id);

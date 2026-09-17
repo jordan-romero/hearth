@@ -219,11 +219,12 @@ model Character {
   // light, display-only sheet — no dice/HP/combat logic
   ancestry         String?
   class            String?
-  level            Int             @default(1)
+  level            Int              @default(1)
   pronouns         String?
-  status           CharacterStatus @default(ACTIVE)
+  status           CharacterStatus  @default(ACTIVE)
   avatarUrl        String?
   tokenStoragePath String? // the player's uploaded token image, in the portraits bucket
+  recaps           CharacterRecap[]
   entity           Entity?
   bio              String?
   stats            Json? // ability scores etc., purely for display
@@ -249,17 +250,18 @@ model Character {
 /// A game session. Empty until Phase 2 (capture) — created now so SESSION
 /// provenance and the Auth.js `Session` naming collision are both handled early.
 model GameSession {
-  id             String            @id @default(cuid())
-  campaignId     String
-  number         Int
-  title          String?
-  occurredAt     DateTime?
-  status         GameSessionStatus @default(COMPLETE)
-  recap          String? // prose summary written by extraction; also feeds the timeline
+  id              String            @id @default(cuid())
+  campaignId      String
+  number          Int
+  title           String?
+  occurredAt      DateTime?
+  status          GameSessionStatus @default(COMPLETE)
+  recap           String? // prose summary written by extraction; also feeds the timeline
+  characterRecaps CharacterRecap[]
   // Last time this session saw activity (a /record or /stop). Drives the merge window —
   // a /record within the window resumes this session — and the auto-finalize timeout.
-  lastActivityAt DateTime?
-  createdAt      DateTime          @default(now())
+  lastActivityAt  DateTime?
+  createdAt       DateTime          @default(now())
 
   campaign       Campaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   knowledgeUnits KnowledgeUnit[]
@@ -882,4 +884,24 @@ model EntityMention {
   @@unique([entityId, transcriptSegmentId])
   @@index([documentChunkId])
   @@index([transcriptSegmentId])
+}
+
+/// A session as one character lived it. The session recap is the whole table's story, and can hold
+/// what only one character learned — a whisper, a vision, a conversation in another room. A player's
+/// /recap reads their character's version instead: only what that character was there for, with
+/// anything told privately to someone else left out. `inCharacter` is the same, remembered in the
+/// character's own voice.
+model CharacterRecap {
+  id            String   @id @default(cuid())
+  gameSessionId String
+  characterId   String
+  summary       String
+  inCharacter   String
+  createdAt     DateTime @default(now())
+
+  gameSession GameSession @relation(fields: [gameSessionId], references: [id], onDelete: Cascade)
+  character   Character   @relation(fields: [characterId], references: [id], onDelete: Cascade)
+
+  @@unique([gameSessionId, characterId])
+  @@index([characterId])
 }
