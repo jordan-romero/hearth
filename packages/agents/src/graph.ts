@@ -246,13 +246,29 @@ export interface GraphRelation {
 
 /** Keep relationships whose quote is verbatim and whose passage names both ends. The quote may say
  * "she" — the passage must still name who "she" is, or the link is a guess. */
+/** A proposed relationship that failed a check where both ends were real entities — kept for
+ * diagnosis only, and only ever written to private files. */
+export interface RejectedRelation {
+  subject: GraphEntity;
+  object: GraphEntity;
+  relation: string;
+  passageId: string | null;
+  quote: string;
+  reason: string;
+}
+
 export function verifyRelations(
   input: unknown,
   passages: Map<string, ProvenancePassage>,
   entities: Map<string, GraphEntity>,
-): { relations: GraphRelation[]; rejected: Record<string, number> } {
+): {
+  relations: GraphRelation[];
+  rejected: Record<string, number>;
+  rejectedRelations: RejectedRelation[];
+} {
   const rejected: Record<string, number> = {};
   const reject = (r: string) => (rejected[r] = (rejected[r] ?? 0) + 1);
+  const rejectedRelations: RejectedRelation[] = [];
   const relations: GraphRelation[] = [];
   const seen = new Set<string>();
 
@@ -277,6 +293,14 @@ export function verifyRelations(
     const located = locateQuote(str(item.quote), passages, str(item.passage));
     if ("reason" in located) {
       reject(located.reason);
+      rejectedRelations.push({
+        subject,
+        object,
+        relation,
+        passageId: null,
+        quote: str(item.quote),
+        reason: located.reason,
+      });
       continue;
     }
     if (
@@ -284,6 +308,14 @@ export function verifyRelations(
       !nameAppears(object.aliases, located.passage.text)
     ) {
       reject("ends-not-named");
+      rejectedRelations.push({
+        subject,
+        object,
+        relation,
+        passageId: located.passage.id,
+        quote: str(item.quote),
+        reason: "ends-not-named",
+      });
       continue;
     }
     const key = `${normalizeName(subject.name)}|${relation}|${normalizeName(object.name)}|${located.passage.id}`;
@@ -296,7 +328,7 @@ export function verifyRelations(
       evidence: { passageId: located.passage.id, quote: str(item.quote) },
     });
   }
-  return { relations, rejected };
+  return { relations, rejected, rejectedRelations };
 }
 
 // ── Links worked out by code ─────────────────────────────────────────────────────────────────────

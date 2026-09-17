@@ -76,10 +76,12 @@ try {
     0,
   );
   const tokens = chars / CHARS_PER_TOKEN;
-  // Each source is read twice (entities, then relationships), with the entity list alongside;
-  // output is a fraction of input. Deliberately generous.
+  // Each source is read twice (entities, then relationships) with the entity list alongside, and the
+  // model writes — and thinks — a lot per window. Calibrated on the live campaign's dry run: about
+  // 2.6x the material in input and 0.8x in output. The first estimate assumed 0.2x output and came
+  // in at half the real $3.74.
   const estimate =
-    (tokens * 2.3 * PRICE.input + tokens * 0.2 * PRICE.output) / 1_000_000;
+    (tokens * 2.6 * PRICE.input + tokens * 0.8 * PRICE.output) / 1_000_000;
   console.log(
     `${command}: ${sources.length} source(s), ~${Math.round(tokens / 1000)}k tokens — estimated ~$${estimate.toFixed(2)}`,
   );
