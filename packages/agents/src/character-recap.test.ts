@@ -111,10 +111,12 @@ describe("chooseRecap", () => {
     });
   });
 
-  it("falls back to the table's recap when the character has none", () => {
-    expect(chooseRecap("PLAYER", "Everything.", null, true)).toEqual({
-      kind: "table",
-      text: "Everything.",
-    });
+  it("never shows a player the table's recap, even when their character has none", () => {
+    expect(
+      chooseRecap("PLAYER", "Everything, secrets too.", null, false),
+    ).toEqual({ kind: "none" });
+    expect(
+      chooseRecap("PLAYER", "Everything, secrets too.", null, true),
+    ).toEqual({ kind: "none" });
   });
 });

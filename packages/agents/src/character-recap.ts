@@ -112,13 +112,13 @@ async function recapFor(
   const inCharacter =
     typeof input?.in_character === "string" ? input.in_character.trim() : "";
   // A cut-off or empty recap is worse than none: the player would read half a session as if it
-  // were all of it. They fall back to the table's recap instead.
+  // were all of it.
   if (msg.stop_reason === "max_tokens" || !summary || !inCharacter) return null;
   return { characterId: character.id, summary, inCharacter };
 }
 
 /** One recap per character. A character whose recap fails is simply left out — the others still
- * get theirs, and that player sees the table's recap. */
+ * get theirs. */
 export async function writeCharacterRecaps(
   transcript: string,
   characters: RecapCharacter[],
@@ -146,18 +146,21 @@ export async function writeCharacterRecaps(
 
 export type RecapChoice =
   | { kind: "table"; text: string }
-  | { kind: "character"; text: string; voice: boolean };
+  | { kind: "character"; text: string; voice: boolean }
+  | { kind: "none" };
 
 /** What /recap shows. The DM gets the table's recap. A player gets their character's — in their
- * voice if they asked — or the table's recap when their character has none (they weren't recorded
- * taking part, or it couldn't be written). */
+ * voice if they asked — and never the table's: it can hold what another character learned
+ * privately, so a player whose character has no recap (not recorded taking part, or it couldn't be
+ * written) gets a note instead. No spoilers. */
 export function chooseRecap(
   role: "DM" | "PLAYER",
   tableRecap: string,
   own: { summary: string; inCharacter: string } | null,
   voice: boolean,
 ): RecapChoice {
-  if (role === "DM" || !own) return { kind: "table", text: tableRecap };
+  if (role === "DM") return { kind: "table", text: tableRecap };
+  if (!own) return { kind: "none" };
   return voice
     ? { kind: "character", text: own.inCharacter, voice: true }
     : { kind: "character", text: own.summary, voice: false };

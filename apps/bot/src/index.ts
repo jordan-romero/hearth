@@ -892,6 +892,14 @@ async function handleRecap(
           })
         : null;
     const choice = chooseRecap(viewer.role, last.recap, own, voice);
+    if (choice.kind === "none") {
+      // The table's recap can hold what another character learned privately — never a player's.
+      await interaction.editReply(
+        `There's no recap of Session ${last.number} for ${viewer.characterName ?? "your character"} — ` +
+          `Hearth only writes one for characters it recorded taking part. Ask your DM what you missed.`,
+      );
+      return;
+    }
     const sessionTitle = last.title ?? `Session ${last.number}`;
     const title =
       choice.kind === "character" && choice.voice
