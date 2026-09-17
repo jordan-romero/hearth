@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { matchEntities } from "./graph-context.js";
+import { matchEntities, withShortNames } from "./graph-context.js";
 
 const aliases = [
   { entityId: "moira", alias: "Moira Vane" },
@@ -46,5 +46,20 @@ describe("matchEntities", () => {
 
   it("returns nothing when no subject is named, so /ask reads the whole library", () => {
     expect(matchEntities("What happened last session?", aliases)).toEqual([]);
+  });
+});
+
+describe("withShortNames", () => {
+  it("lets a question use a short name unique to one entity", () => {
+    const rows = [
+      { entityId: "moira", alias: "Moira Vane" },
+      { entityId: "hale", alias: "Captain Hale Morrow" },
+      { entityId: "hale2", alias: "Hale Brightwater" },
+    ];
+    expect(
+      matchEntities("what does moira want?", withShortNames(rows)),
+    ).toEqual(["moira"]);
+    // "Hale" belongs to two people, so it names neither.
+    expect(matchEntities("where is hale?", withShortNames(rows))).toEqual([]);
   });
 });

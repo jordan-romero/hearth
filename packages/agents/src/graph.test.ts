@@ -6,6 +6,8 @@ import {
   nameAppears,
   normalizeName,
   renderEntities,
+  shortNameAppears,
+  uniqueShortNames,
   verifyEntities,
   verifyRelations,
   windows,
@@ -311,5 +313,192 @@ describe("session transcripts as sources", () => {
 
   it("windows a document without losing passages", () => {
     expect(windows([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+  });
+});
+
+describe("naming both ends — sections, short names, short quotes", () => {
+  const dossier = renderPassages([
+    {
+      id: "h",
+      chunkIndex: 0,
+      text: "## Moira Vane\n\nThe widow who keeps the Gilded Anchor.",
+    },
+    {
+      id: "b1",
+      chunkIndex: 1,
+      text: "She lost her husband to the sea two winters past.",
+    },
+    {
+      id: "b2",
+      chunkIndex: 2,
+      text: "She owes the Harbour Guild more than she lets on.",
+    },
+    { id: "n", chunkIndex: 3, text: "## Tobin Reed\n\nTobin rows the ferry." },
+  ]).index;
+  const moira = entity("Moira Vane", ["the Widow"]);
+  const guild = entity("Harbour Guild", [], "FACTION");
+  const tobin = entity("Tobin Reed");
+  const index = renderEntities([moira, guild, tobin]).index;
+
+  it("counts a subject named in its section's heading", () => {
+    const { relations } = verifyRelations(
+      {
+        relations: [
+          {
+            subject: "E1",
+            relation: "owes money to",
+            object: "E2",
+            passage: "P3",
+            quote: "She owes the Harbour Guild more than she lets on",
+          },
+        ],
+      },
+      dossier,
+      index,
+    );
+    expect(relations).toHaveLength(1);
+  });
+
+  it("never reaches past the heading into the section before", () => {
+    const { relations, rejected } = verifyRelations(
+      {
+        relations: [
+          {
+            subject: "E3",
+            relation: "owes money to",
+            object: "E2",
+            passage: "P3",
+            quote: "She owes the Harbour Guild more than she lets on",
+          },
+        ],
+      },
+      dossier,
+      index,
+    );
+    expect(relations).toEqual([]);
+    expect(rejected["ends-not-named"]).toBe(1);
+  });
+
+  it("accepts a short name that belongs to one entity, written as a name", () => {
+    const doc = renderPassages([
+      {
+        id: "p",
+        chunkIndex: 0,
+        text: "Tobin and Moira argued over the fare until dawn.",
+      },
+    ]).index;
+    const { relations } = verifyRelations(
+      {
+        relations: [
+          {
+            subject: "E3",
+            relation: "argued with",
+            object: "E1",
+            passage: "P1",
+            quote: "Tobin and Moira argued over the fare",
+          },
+        ],
+      },
+      doc,
+      index,
+    );
+    expect(relations).toHaveLength(1);
+  });
+
+  it("never uses a short name two entities share", () => {
+    const moiraAsh = entity("Moira Ash");
+    const shared = renderEntities([moira, moiraAsh, tobin]).index;
+    const doc = renderPassages([
+      {
+        id: "p",
+        chunkIndex: 0,
+        text: "Tobin and Moira argued over the fare until dawn.",
+      },
+    ]).index;
+    const { relations } = verifyRelations(
+      {
+        relations: [
+          {
+            subject: "E3",
+            relation: "argued with",
+            object: "E1",
+            passage: "P1",
+            quote: "Tobin and Moira argued over the fare",
+          },
+        ],
+      },
+      doc,
+      shared,
+    );
+    expect(relations).toEqual([]);
+  });
+
+  it("accepts a short quote only when it names both ends itself", () => {
+    const doc = renderPassages([
+      {
+        id: "p",
+        chunkIndex: 0,
+        text: "Tobin is Moira's cousin, though neither says so.",
+      },
+    ]).index;
+    const ok = verifyRelations(
+      {
+        relations: [
+          {
+            subject: "E3",
+            relation: "is cousin of",
+            object: "E1",
+            passage: "P1",
+            quote: "Tobin is Moira's cousin",
+          },
+        ],
+      },
+      doc,
+      index,
+    );
+    expect(ok.relations).toHaveLength(1);
+    const tooShort = verifyRelations(
+      {
+        relations: [
+          {
+            subject: "E3",
+            relation: "is cousin of",
+            object: "E1",
+            passage: "P1",
+            quote: "is cousin",
+          },
+        ],
+      },
+      doc,
+      index,
+    );
+    expect(tooShort.relations).toEqual([]);
+    expect(tooShort.rejected["too-short"]).toBe(1);
+  });
+});
+
+describe("short names", () => {
+  it("are unique single words of four letters or more, never titles or place words", () => {
+    const a = entity("Moira Vane");
+    const b = entity("Captain Hale Morrow", ["the Captain"]);
+    const c = entity("Hale Brightwater");
+    const short = uniqueShortNames([a, b, c]);
+    expect(short.get(a)).toEqual(["moira", "vane"]);
+    expect(short.get(b)).toEqual(["morrow"]); // "hale" is shared, "captain" is a title
+    expect(short.get(c)).toEqual(["brightwater"]);
+  });
+
+  it("only match when written as a name", () => {
+    expect(shortNameAppears(["rose"], "She picked a rose.")).toBe(false);
+    expect(shortNameAppears(["rose"], "Rose picked it.")).toBe(true);
+  });
+
+  it("let a passage that only says 'Moira' count as mentioning Moira Vane", () => {
+    const moira = entity("Moira Vane");
+    const mentions = findMentions(
+      [moira],
+      [{ id: "p", chunkIndex: 0, text: "Moira laughed." }],
+    );
+    expect(mentions.get(moira)).toEqual(["p"]);
   });
 });
