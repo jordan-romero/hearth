@@ -86,9 +86,10 @@ export function normalizeForQuote(text: string): string {
 export function checkQuote(
   quote: string,
   passageText: string,
+  minChars = MIN_QUOTE_CHARS,
 ): RejectReason | null {
   const q = normalizeForQuote(quote);
-  if (q.length < MIN_QUOTE_CHARS) return "too-short";
+  if (q.length < minChars) return "too-short";
   if (q.length > MAX_QUOTE_CHARS) return "too-long";
   return normalizeForQuote(passageText).includes(q) ? null : "not-in-passage";
 }
@@ -377,16 +378,17 @@ export function locateQuote(
   quote: string,
   passages: Map<string, ProvenancePassage>,
   preferredLabel?: string,
+  minChars = MIN_QUOTE_CHARS,
 ):
   | { passage: ProvenancePassage; relabelled: boolean }
   | { reason: RejectReason } {
-  const lengthProblem = checkQuote(quote, "");
+  const lengthProblem = checkQuote(quote, "", minChars);
   if (lengthProblem !== "not-in-passage") return { reason: lengthProblem! };
   const ordered = [...passages.values()];
   const preferred = preferredLabel
     ? passages.get(preferredLabel.trim().toUpperCase())
     : undefined;
-  if (preferred && checkQuote(quote, preferred.text) === null)
+  if (preferred && checkQuote(quote, preferred.text, minChars) === null)
     return { passage: preferred, relabelled: false };
   const from = preferred ? ordered.indexOf(preferred) : 0;
   const q = normalizeForQuote(quote);

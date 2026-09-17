@@ -16,6 +16,7 @@ import {
   type ProvenancePassage,
   type RejectReason,
 } from "./provenance.js";
+import { opensSection } from "./sections.js";
 
 export const GRAPH_MODEL = "claude-sonnet-5";
 
@@ -33,6 +34,8 @@ export const ENTITY_KINDS = [
 export type EntityKindName = (typeof ENTITY_KINDS)[number];
 
 const MAX_NAME = 80;
+/** The shortest quote accepted for a relationship whose quote names both ends. */
+const MIN_NAMING_QUOTE = 8;
 const MAX_RELATION = 60;
 
 // ── Names ────────────────────────────────────────────────────────────────────────────────────────
@@ -60,6 +63,86 @@ export function nameAppears(names: string[], text: string): boolean {
     const needle = normalizeName(n);
     return needle.length > 0 && hay.includes(` ${needle} `);
   });
+}
+
+/** Words too common to stand for one entity on their own, whatever the campaign. */
+const NOT_A_NAME = new Set(
+  (
+    "the and of in on at to for with from by lord lady sir dame king queen prince princess captain " +
+    "house clan order guild temple tower city town village keep castle mount mountain river lake sea " +
+    "forest wood woods old young great high low north south east west black white red blue green " +
+    "gold golden silver iron stone dark light first last saint brother sister father mother master"
+  ).split(" "),
+);
+
+/** Short names each entity can be called by, safely: single words from its names that belong to
+ * no other entity in the campaign, at least four letters, and not a common title or place word.
+ * "Moira" stands for Moira Vane only if nobody else in the campaign is a Moira. */
+export function uniqueShortNames(
+  entities: GraphEntity[],
+): Map<GraphEntity, string[]> {
+  const owners = new Map<string, Set<GraphEntity>>();
+  for (const e of entities)
+    for (const alias of e.aliases)
+      for (const word of normalizeName(alias).split(" ")) {
+        if (!owners.has(word)) owners.set(word, new Set());
+        owners.get(word)!.add(e);
+      }
+  const out = new Map<GraphEntity, string[]>();
+  for (const e of entities) {
+    const full = new Set(e.aliases.map(normalizeName));
+    const words = [
+      ...new Set(e.aliases.flatMap((a) => normalizeName(a).split(" "))),
+    ].filter(
+      (w) =>
+        w.length >= 4 &&
+        !NOT_A_NAME.has(w) &&
+        !full.has(w) &&
+        owners.get(w)!.size === 1,
+    );
+    out.set(e, words);
+  }
+  return out;
+}
+
+/** Whether a short name appears in the text written as a name — capitalized — so "rose" in a
+ * sentence isn't read as "the Black Rose". */
+export function shortNameAppears(words: string[], text: string): boolean {
+  if (words.length === 0) return false;
+  const wanted = new Set(words);
+  for (const token of text.match(/[\p{L}\p{N}]+/gu) ?? []) {
+    const first = token[0]!;
+    if (
+      first === first.toLocaleUpperCase() &&
+      first !== first.toLocaleLowerCase()
+    )
+      if (wanted.has(normalizeName(token))) return true;
+  }
+  return false;
+}
+
+/** How far back a relationship may look for a name the passage itself doesn't repeat. */
+const SECTION_LOOKBACK = 5;
+
+/** The passage, plus the passages before it in the same section when there is one: a dossier names
+ * its subject in the heading and describes them for paragraphs without repeating the name. Only
+ * when a heading opens the section within a few passages — in a document without headings, a name
+ * from a neighbouring passage is as likely to be someone else's, so only the passage itself counts. */
+export function sectionSoFar(
+  passage: ProvenancePassage,
+  passages: Map<string, ProvenancePassage>,
+): string[] {
+  const ordered = [...passages.values()].sort(
+    (a, b) => a.chunkIndex - b.chunkIndex,
+  );
+  const at = ordered.findIndex((p) => p.id === passage.id);
+  if (at < 0 || opensSection(passage.text)) return [passage.text];
+  const earlier: string[] = [];
+  for (let i = at - 1; i >= 0 && at - i <= SECTION_LOOKBACK; i--) {
+    earlier.push(ordered[i]!.text);
+    if (opensSection(ordered[i]!.text)) return [passage.text, ...earlier];
+  }
+  return [passage.text];
 }
 
 // ── Entities ─────────────────────────────────────────────────────────────────────────────────────
@@ -271,6 +354,9 @@ export function verifyRelations(
   const rejectedRelations: RejectedRelation[] = [];
   const relations: GraphRelation[] = [];
   const seen = new Set<string>();
+  const short = uniqueShortNames([...new Set(entities.values())]);
+  const named = (e: GraphEntity, text: string) =>
+    nameAppears(e.aliases, text) || shortNameAppears(short.get(e) ?? [], text);
 
   const list = (input as { relations?: unknown })?.relations;
   for (const raw of Array.isArray(list) ? list : []) {
@@ -290,7 +376,21 @@ export function verifyRelations(
       reject("bad-relation");
       continue;
     }
-    const located = locateQuote(str(item.quote), passages, str(item.passage));
+    let located = locateQuote(str(item.quote), passages, str(item.passage));
+    // "Moira's brother" is a whole relationship in fifteen characters. A quote under the usual
+    // minimum is fine when it names both ends itself — that's what makes a short quote evidence.
+    if (
+      "reason" in located &&
+      located.reason === "too-short" &&
+      named(subject, str(item.quote)) &&
+      named(object, str(item.quote))
+    )
+      located = locateQuote(
+        str(item.quote),
+        passages,
+        str(item.passage),
+        MIN_NAMING_QUOTE,
+      );
     if ("reason" in located) {
       reject(located.reason);
       rejectedRelations.push({
@@ -303,10 +403,12 @@ export function verifyRelations(
       });
       continue;
     }
-    if (
-      !nameAppears(subject.aliases, located.passage.text) ||
-      !nameAppears(object.aliases, located.passage.text)
-    ) {
+    // Both ends must be named where the relationship is stated: in the passage, or earlier in the
+    // same section (a dossier names its subject once, in the heading), by a full name or by a short
+    // name that belongs to that entity alone.
+    const context = sectionSoFar(located.passage, passages);
+    const end = (e: GraphEntity) => context.some((text) => named(e, text));
+    if (!end(subject) || !end(object)) {
       reject("ends-not-named");
       rejectedRelations.push({
         subject,
@@ -338,8 +440,10 @@ export function findMentions(
   entities: GraphEntity[],
   passages: ProvenancePassage[],
 ): Map<GraphEntity, string[]> {
+  const short = uniqueShortNames(entities);
   const texts = passages.map((p) => ({
     id: p.id,
+    text: p.text,
     hay: normalizedText(p.text),
   }));
   const out = new Map<GraphEntity, string[]>();
@@ -347,10 +451,15 @@ export function findMentions(
     const needles = e.aliases
       .map((a) => ` ${normalizeName(a)} `)
       .filter((n) => n.trim());
+    const words = short.get(e) ?? [];
     out.set(
       e,
       texts
-        .filter((t) => needles.some((n) => t.hay.includes(n)))
+        .filter(
+          (t) =>
+            needles.some((n) => t.hay.includes(n)) ||
+            shortNameAppears(words, t.text),
+        )
         .map((t) => t.id),
     );
   }
@@ -363,10 +472,14 @@ export function factsAbout(
   entities: GraphEntity[],
   facts: { id: string; title: string; content: string }[],
 ): Map<string, GraphEntity[]> {
+  const short = uniqueShortNames(entities);
   const out = new Map<string, GraphEntity[]>();
   for (const f of facts) {
-    const about = entities.filter((e) =>
-      nameAppears(e.aliases, `${f.title} ${f.content}`),
+    const text = `${f.title} ${f.content}`;
+    const about = entities.filter(
+      (e) =>
+        nameAppears(e.aliases, text) ||
+        shortNameAppears(short.get(e) ?? [], text),
     );
     if (about.length) out.set(f.id, about);
   }

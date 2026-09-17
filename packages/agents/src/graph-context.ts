@@ -10,7 +10,7 @@
 import { canView, type Viewer } from "@hearth/core";
 import { prisma } from "@hearth/db";
 import { assembleCorpus, loadCorpusMaterial, type Corpus } from "./corpus.js";
-import { normalizeName } from "./graph.js";
+import { normalizeName, uniqueShortNames, type GraphEntity } from "./graph.js";
 
 /** A generous ceiling for one subject's material — far above what almost any subject has. */
 const SUBJECT_BUDGET_TOKENS = 150_000;
@@ -42,6 +42,28 @@ export function matchEntities(question: string, aliases: AliasRow[]): string[] {
   return matched;
 }
 
+/** Add each entity's unambiguous short names ("Moira" for Moira Vane, when nobody else is a Moira),
+ * so a question can use the name people actually say. */
+export function withShortNames(aliases: AliasRow[]): AliasRow[] {
+  const byEntity = new Map<string, GraphEntity>();
+  for (const a of aliases) {
+    const e = byEntity.get(a.entityId);
+    if (e) e.aliases.push(a.alias);
+    else
+      byEntity.set(a.entityId, {
+        kind: "OTHER",
+        name: a.alias,
+        aliases: [a.alias],
+        evidence: [],
+      });
+  }
+  const short = uniqueShortNames([...byEntity.values()]);
+  const extra = [...byEntity].flatMap(([entityId, e]) =>
+    (short.get(e) ?? []).map((alias) => ({ entityId, alias })),
+  );
+  return [...aliases, ...extra];
+}
+
 export interface SubjectContext {
   subjects: string[];
   corpus: Corpus;
@@ -69,7 +91,7 @@ export async function gatherSubjectContext(
     where: { campaignId: viewer.campaignId },
     select: { entityId: true, alias: true },
   });
-  const ids = matchEntities(question, aliases);
+  const ids = matchEntities(question, withShortNames(aliases));
   if (ids.length === 0) return null;
 
   const entities = await prisma.entity.findMany({
