@@ -25,6 +25,7 @@ import {
   opusDecoderKind,
   type OpusBurstDecoder,
 } from "./opus-decoder.js";
+import { isBotUser } from "./voice-bots.js";
 import { prisma } from "@hearth/db";
 import {
   getQueue,
@@ -44,6 +45,9 @@ interface ActiveRecording {
   startedAtMs: number;
   speakerMap: Map<string, string>; // discordUserId → characterId
   capturing: Set<string>;
+  // Speakers already checked for being a bot, and the bots among them (never recorded).
+  checkedSpeakers: Set<string>;
+  bots: Set<string>;
   // Counted so /stop can say whether live transcription actually did anything. Without this a
   // silent failure at someone else's table is invisible to us.
   liveSegments: number;
@@ -227,6 +231,8 @@ async function startRecordingInner(
     startedAtMs: Date.now(),
     speakerMap: await loadSpeakerMap(campaignId),
     capturing: new Set(),
+    checkedSpeakers: new Set(),
+    bots: new Set(),
     liveSegments: 0,
     liveFailures: 0,
   };
@@ -252,8 +258,20 @@ async function startRecordingInner(
     // Diagnostics: if clips come back empty, these say WHERE it broke — whether Discord is
     // sending speaking events at all, and whether a subscribed stream yields any audio.
     connection.receiver.speaking.on("start", (userId) => {
-      console.log(`🎙  speaking start: ${userId}`);
-      void captureBurst(connection.receiver, userId, state);
+      if (state.bots.has(userId)) return;
+      void (async () => {
+        if (!state.checkedSpeakers.has(userId)) {
+          state.checkedSpeakers.add(userId);
+          if (await isBotUser(channel.guild, userId)) {
+            state.bots.add(userId);
+            console.log(`🎵 not recording bot ${userId} (music/ambience)`);
+            return;
+          }
+        }
+        if (state.bots.has(userId)) return;
+        console.log(`🎙  speaking start: ${userId}`);
+        await captureBurst(connection.receiver, userId, state);
+      })();
     });
     connection.receiver.speaking.on("end", (userId) => {
       console.log(`🎙  speaking end:   ${userId}`);
