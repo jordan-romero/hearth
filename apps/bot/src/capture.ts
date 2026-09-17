@@ -20,7 +20,7 @@ import {
   joinVoiceChannel,
   VoiceConnectionStatus,
 } from "@discordjs/voice";
-import { opus } from "prism-media";
+import { BurstDecoder } from "./opus-decoder.js";
 import { prisma } from "@hearth/db";
 import {
   getQueue,
@@ -302,7 +302,12 @@ async function writeLiveSegment(
   });
 }
 
-/** Capture one speaking burst → mono WAV clip → store → AudioClip → enqueue. */
+/** Capture one speaking burst → mono WAV clip → store → AudioClip → enqueue.
+ *
+ * Whatever happens inside, the speaker is released afterwards. The slot used to be cleared only on
+ * the happy path, so one decoder crash left that speaker marked "already capturing" and silently
+ * skipped for the rest of the session — which, with the decoder crashing for everyone, meant
+ * nobody was recorded. */
 async function captureBurst(
   receiver: import("@discordjs/voice").VoiceReceiver,
   userId: string,
@@ -310,21 +315,41 @@ async function captureBurst(
 ): Promise<void> {
   if (state.capturing.has(userId)) return;
   state.capturing.add(userId);
+  try {
+    await captureBurstInner(receiver, userId, state);
+  } catch (err) {
+    console.error(`capture: burst from ${userId} failed:`, err);
+  } finally {
+    state.capturing.delete(userId);
+  }
+}
+
+async function captureBurstInner(
+  receiver: import("@discordjs/voice").VoiceReceiver,
+  userId: string,
+  state: ActiveRecording,
+): Promise<void> {
   const startMs = Date.now() - state.startedAtMs;
 
   const opusStream = receiver.subscribe(userId, {
     end: { behavior: EndBehaviorType.AfterSilence, duration: 1500 },
   });
-  const decoder = new opus.Decoder({
-    rate: SAMPLE_RATE,
-    channels: DECODE_CHANNELS,
-    frameSize: 960,
-  });
+  let decoder: BurstDecoder;
+  try {
+    decoder = new BurstDecoder(DECODE_CHANNELS, SAMPLE_RATE);
+  } catch (err) {
+    // The heap it was on is retired; the next burst decodes on a fresh one.
+    console.error(
+      `capture: no decoder for ${userId} — this burst is lost, the next starts clean:`,
+      err,
+    );
+    opusStream.destroy();
+    return;
+  }
 
   const chunks: Buffer[] = [];
   let opusPackets = 0;
-  opusStream.on("data", () => opusPackets++);
-  const pcm = opusStream.pipe(decoder);
+  let decodeFailed = false;
 
   // Live transcription, opened lazily once the burst passes LIVE_AFTER_MS. `opening` guards
   // against starting a second socket while the first is still connecting.
@@ -344,7 +369,7 @@ async function captureBurst(
     );
   };
 
-  pcm.on("data", (c: Buffer) => {
+  const onPcm = (c: Buffer) => {
     chunks.push(c);
     const mono = stereoToMono(c);
     if (live) {
@@ -367,18 +392,37 @@ async function captureBurst(
         state.liveFailures++;
         console.error("[stream] could not open live socket:", err.message);
       });
+  };
+
+  opusStream.on("data", (packet: Buffer) => {
+    opusPackets++;
+    if (decodeFailed) return;
+    let pcm: Buffer | null;
+    try {
+      pcm = decoder.decode(packet);
+    } catch (err) {
+      // Keep what this burst already decoded; the next burst starts on a fresh heap.
+      decodeFailed = true;
+      console.error(
+        `capture: decoder failed mid-burst for ${userId} — keeping what was decoded:`,
+        err,
+      );
+      return;
+    }
+    if (pcm && pcm.length > 0) onPcm(pcm);
   });
 
   await new Promise<void>((resolve) => {
-    pcm.on("end", () => resolve());
-    pcm.on("error", (e: unknown) => {
-      console.error("capture decode error:", e);
+    opusStream.once("end", () => resolve());
+    opusStream.once("close", () => resolve());
+    opusStream.once("error", (e: unknown) => {
+      console.error("capture stream error:", e);
       resolve();
     });
   });
+  decoder.close();
   // `live` is assigned from an async callback, so TypeScript can't see it may be set here.
   await (live as TranscriptStream | null)?.close();
-  state.capturing.delete(userId);
 
   const pcmData = Buffer.concat(chunks);
   console.log(
