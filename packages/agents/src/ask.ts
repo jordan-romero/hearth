@@ -3,7 +3,11 @@
 // is never handed a secret it could leak.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { gatherSubjectContext, type SubjectContext } from "./graph-context.js";
+import {
+  gatherSubjectContext,
+  wantsBriefing,
+  type SubjectContext,
+} from "./graph-context.js";
 import type { Viewer } from "@hearth/core";
 import { prisma } from "@hearth/db";
 import { retrieveContext } from "./retrieve.js";
@@ -169,7 +173,12 @@ export async function ask(
   // DM only, for now. Gathering everything about an entity joins up all its names, and for a player
   // that join can be the spoiler: asking about "the Widow" and getting Moira's history reveals they
   // are the same person. Players need a rule for which names their character knows first.
-  if (viewer.role === "DM") {
+  //
+  // Only when the DM asks for the whole picture. A pointed question — "what's Morwyn's mother's name
+  // and how did she die?" — is not a request for everything about Morwyn: the briefing answers the
+  // wrong question, at length, and can miss the answer entirely when it's written about the mother
+  // in passages that never mention Morwyn. Those go to the full library, which reads everything.
+  if (viewer.role === "DM" && wantsBriefing(question)) {
     try {
       const subject = await gatherSubjectContext(viewer, question);
       if (subject) return await askFromSubject(viewer, question, subject, opts);

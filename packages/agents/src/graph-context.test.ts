@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { matchEntities, withShortNames } from "./graph-context.js";
+import {
+  matchEntities,
+  wantsBriefing,
+  withShortNames,
+} from "./graph-context.js";
 
 const aliases = [
   { entityId: "moira", alias: "Moira Vane" },
@@ -61,5 +65,33 @@ describe("withShortNames", () => {
     ).toEqual(["moira"]);
     // "Hale" belongs to two people, so it names neither.
     expect(matchEntities("where is hale?", withShortNames(rows))).toEqual([]);
+  });
+});
+
+describe("wantsBriefing", () => {
+  it("is true only when the question asks for the whole picture", () => {
+    for (const q of [
+      "Tell me everything about the Widow",
+      "tell me about Moira Vane",
+      "Brief me on House Vane",
+      "Give me a rundown on the Gilded Anchor",
+      "What do we know about Morwyn?",
+      "Who is Morwyn?",
+      "What is the Harbour Guild",
+      "catch me up on Tobin",
+    ])
+      expect(wantsBriefing(q), q).toBe(true);
+  });
+
+  it("is false for a specific question about someone", () => {
+    for (const q of [
+      "What is Morwyn's mom's name and how did she die?",
+      "Who killed Morwyn's mother?",
+      "How much does Moira owe the Harbour Guild?",
+      "Where is Tobin now?",
+      "Is the Widow working with the Guild, and does Tobin know?",
+      "What happened last session?",
+    ])
+      expect(wantsBriefing(q), q).toBe(false);
   });
 });
