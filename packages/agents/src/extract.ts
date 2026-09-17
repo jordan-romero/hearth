@@ -32,35 +32,53 @@ export interface Extraction {
   units: ExtractedUnit[];
 }
 
-const SYSTEM = `You are the archivist of a tabletop RPG campaign. You are given the raw, speaker-attributed transcript of one game session and must distill it into the campaign's memory.
+const RECAP_SYSTEM = `You are the archivist of a tabletop RPG campaign. You are given the raw, speaker-attributed transcript of one whole game session.
 
 The transcript is messy: it mixes in-fiction play with out-of-character table talk (dice, rules debates, snacks, scheduling). Capture ONLY what is true within the story.
 
-Produce two things via the record_session tool:
-1. recap — a tight, in-world prose summary of what happened this session (a few short paragraphs). Past tense, no meta-commentary about the players or the recording.
-2. units — discrete facts a player might later ask the memory about. One unit per distinct NPC, location, event, revealed fact, notable item, or open thread/quest. Give each a short title and a self-contained content sentence or two.
+Write the session's recap with the record_recap tool: an in-world prose summary of what happened, in order — a few paragraphs for a short session, more for a long one, so that nothing important is dropped. Past tense, no meta-commentary about the players or the recording.
+
+Rules:
+- Never invent details not supported by the transcript. If something is ambiguous, omit it.
+- Ignore pure table logistics and OOC banter.
+- If nothing of substance happened, say so in a sentence.`;
+
+const SESSION_UNITS_SYSTEM = `You are the archivist of a tabletop RPG campaign. You are given one part of the raw, speaker-attributed transcript of a game session (the part number is given; a long session is read in parts).
+
+The transcript is messy: it mixes in-fiction play with out-of-character table talk (dice, rules debates, snacks, scheduling). Capture ONLY what is true within the story.
+
+Record, with the record_units tool, discrete facts a player might later ask the memory about — one unit per distinct NPC, location, event, revealed fact, notable item, or open thread/quest in THIS part. Give each a short title (the subject's name, so facts about the same subject from different parts line up) and a self-contained content sentence or two.
 
 Rules:
 - Never invent details not supported by the transcript. If something is ambiguous, omit it.
 - Ignore pure table logistics and OOC banter — they are not campaign memory.
 - Prefer fewer, higher-signal units over many trivial ones.
-- If nothing of substance happened, return a brief recap and an empty units list.`;
+- If nothing of substance happened in this part, return an empty units list.`;
 
-const TOOL: Anthropic.Tool = {
-  name: "record_session",
-  description:
-    "Record the session recap and the knowledge units extracted from it.",
+const RECAP_TOOL: Anthropic.Tool = {
+  name: "record_recap",
+  description: "Record the session recap.",
   input_schema: {
     type: "object",
     properties: {
       recap: {
         type: "string",
-        description:
-          "In-world prose summary of the session (a few short paragraphs).",
+        description: "In-world prose summary of the whole session.",
       },
+    },
+    required: ["recap"],
+  },
+};
+
+const SESSION_UNITS_TOOL: Anthropic.Tool = {
+  name: "record_units",
+  description: "Record the knowledge units from this part of the session.",
+  input_schema: {
+    type: "object",
+    properties: {
       units: {
         type: "array",
-        description: "Discrete knowledge atoms extracted from the session.",
+        description: "Discrete knowledge atoms from this part of the session.",
         items: {
           type: "object",
           properties: {
@@ -82,38 +100,136 @@ const TOOL: Anthropic.Tool = {
         },
       },
     },
-    required: ["recap", "units"],
+    required: ["units"],
   },
 };
 
-/** Distill a speaker-attributed transcript into a recap + knowledge units. */
-export async function extractSession(transcript: string): Promise<Extraction> {
-  const client = new Anthropic(); // reads ANTHROPIC_API_KEY
-  const msg = await client.messages.create({
-    model: MODEL,
-    max_tokens: 8192, // a whole session's recap + units; forced tool_use must not truncate
-    system: SYSTEM,
-    tools: [TOOL],
-    tool_choice: { type: "tool", name: TOOL.name },
-    messages: [
-      { role: "user", content: `Session transcript:\n\n${transcript}` },
-    ],
-  });
+/** Characters of transcript per facts call — the same size documents are read in. */
+export const SESSION_WINDOW = 24_000;
+/** Below this, a part that still overflows isn't split again: something else is wrong. */
+const MIN_SPLIT = 3_000;
+const SESSION_CONCURRENCY = 3;
 
+async function forcedTool(
+  client: Anthropic,
+  system: string,
+  tool: Anthropic.Tool,
+  content: string,
+  maxTokens: number,
+): Promise<{ input: Record<string, unknown> | null; truncated: boolean }> {
+  const msg = await client.messages
+    .stream({
+      model: MODEL,
+      max_tokens: maxTokens,
+      system,
+      tools: [tool],
+      tool_choice: { type: "tool", name: tool.name },
+      messages: [{ role: "user", content }],
+    })
+    .finalMessage();
   const block = msg.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
   );
-  if (!block)
-    throw new Error("extractSession: model returned no tool_use block");
-
-  const input = block.input as { recap?: string; units?: ExtractedUnit[] };
-  const validTypes = new Set<string>(EXTRACTABLE_TYPES);
   return {
-    recap: input.recap?.trim() ?? "",
-    units: (input.units ?? []).filter(
-      (u) => u.title?.trim() && u.content?.trim() && validTypes.has(u.type),
-    ),
+    input: (block?.input as Record<string, unknown> | undefined) ?? null,
+    truncated: msg.stop_reason === "max_tokens",
   };
+}
+
+async function sessionUnitsFor(
+  client: Anthropic,
+  text: string,
+  label: string,
+): Promise<ExtractedUnit[]> {
+  const { input, truncated } = await forcedTool(
+    client,
+    SESSION_UNITS_SYSTEM,
+    SESSION_UNITS_TOOL,
+    `Session transcript, ${label}:\n\n${text}`,
+    32_000,
+  );
+  // A reply cut off mid-list would silently lose every fact after the cut. Read the part in two
+  // halves instead; only give up when a part is already small and still won't fit.
+  if (truncated || !input) {
+    if (text.length < MIN_SPLIT)
+      throw new Error(
+        `extractSession: ${label} (${text.length} chars) ${truncated ? "overflowed" : "returned no units"} even at its smallest`,
+      );
+    const halves = extractionWindows(text, Math.ceil(text.length / 2));
+    const parts = await Promise.all(
+      halves.map((h, i) =>
+        sessionUnitsFor(client, h, `${label}, half ${i + 1}`),
+      ),
+    );
+    return parts.flat();
+  }
+  const validTypes = new Set<string>(EXTRACTABLE_TYPES);
+  const units = Array.isArray(input.units)
+    ? (input.units as ExtractedUnit[])
+    : [];
+  return units
+    .filter(
+      (u) => u?.title?.trim() && u?.content?.trim() && validTypes.has(u.type),
+    )
+    .map((u) => ({
+      type: u.type,
+      title: u.title.trim(),
+      content: u.content.trim(),
+    }));
+}
+
+/** Distill a speaker-attributed transcript into a recap + knowledge units — however long it is.
+ *
+ * This used to be one reply holding the recap AND every fact, capped at 8,192 tokens, so a long
+ * session overflowed the reply, threw, and was never finalized — silently. Now the recap is its own
+ * call over the whole transcript (its output stays short however long the session), and facts are
+ * read in parts the size documents are read in, then merged by subject. */
+export async function extractSession(
+  transcript: string,
+  client: Anthropic = new Anthropic(),
+): Promise<Extraction> {
+  const parts = extractionWindows(transcript, SESSION_WINDOW);
+
+  const recapCall = forcedTool(
+    client,
+    RECAP_SYSTEM,
+    RECAP_TOOL,
+    `Session transcript:\n\n${transcript}`,
+    16_000,
+  ).then(({ input, truncated }) => {
+    const recap = typeof input?.recap === "string" ? input.recap.trim() : "";
+    if (!recap || truncated)
+      throw new Error(
+        `extractSession: recap ${truncated ? "was cut off" : "came back empty"} for a ${transcript.length}-char transcript`,
+      );
+    return recap;
+  });
+
+  const unitLists: ExtractedUnit[][] = new Array(parts.length);
+  const unitsCall = (async () => {
+    for (let i = 0; i < parts.length; i += SESSION_CONCURRENCY) {
+      await Promise.all(
+        parts.slice(i, i + SESSION_CONCURRENCY).map(async (part, j) => {
+          unitLists[i + j] = await sessionUnitsFor(
+            client,
+            part,
+            `part ${i + j + 1} of ${parts.length}`,
+          );
+        }),
+      );
+    }
+  })();
+
+  const [recap] = await Promise.all([recapCall, unitsCall]);
+  // Facts about the same subject from different parts become one, in the order they came up.
+  const units = mergeDocUnits(unitLists.flat()).map(
+    ({ type, title, content }) => ({
+      type,
+      title,
+      content,
+    }),
+  );
+  return { recap, units };
 }
 
 const DOC_SYSTEM = `You are the archivist of a tabletop RPG campaign. You are given the text of one of the DM's documents (notes, a handout, lore, an NPC dossier), possibly one section of a longer document, and must distill it into discrete knowledge units for the campaign's memory.
