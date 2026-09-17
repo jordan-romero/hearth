@@ -70,6 +70,67 @@ export function answerEmbed(
   return embed;
 }
 
+/** Longest body one embed carries, with headroom for a title line (Discord allows 4096). */
+export const EMBED_BODY_LIMIT = 3800;
+
+/** Split long text into embed-sized parts on paragraph breaks, so nothing is cut mid-thought. */
+export function splitForEmbeds(text: string): string[] {
+  if (text.length <= EMBED_BODY_LIMIT) return [text];
+  const parts: string[] = [];
+  let current = "";
+  for (const para of text.split(/\n{2,}/)) {
+    let block = para;
+    // A single paragraph longer than the limit has to be cut somewhere; cut it on whitespace.
+    while (block.length > EMBED_BODY_LIMIT) {
+      const window = block.slice(0, EMBED_BODY_LIMIT);
+      const cut = window.lastIndexOf(" ");
+      const at = cut > EMBED_BODY_LIMIT / 2 ? cut : EMBED_BODY_LIMIT;
+      if (current) parts.push(current);
+      current = "";
+      parts.push(block.slice(0, at).trim());
+      block = block.slice(at).trim();
+    }
+    if (!current) current = block;
+    else if (current.length + block.length + 2 <= EMBED_BODY_LIMIT)
+      current += `\n\n${block}`;
+    else {
+      parts.push(current);
+      current = block;
+    }
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+/** An /ask answer as one or more embeds. A DM's briefing can run far past one embed, and cutting it
+ * off would hand the DM part of what they asked for as if it were all of it. The first part carries
+ * the question and title; sources (DM only) go on the last. */
+export function answerEmbeds(
+  viewer: Viewer,
+  characterName: string | null,
+  question: string,
+  result: AnswerLike,
+  theme: string = DEFAULT_THEME,
+): EmbedBuilder[] {
+  const parts = splitForEmbeds(result.answer);
+  return parts.map((part, i) => {
+    const embed = answerEmbed(
+      viewer,
+      characterName,
+      question,
+      {
+        answer: part,
+        sources: i === parts.length - 1 ? result.sources : [],
+      },
+      theme,
+    );
+    if (i > 0) {
+      embed.setAuthor(null).setTitle(`(continued ${i + 1}/${parts.length})`);
+    }
+    return embed;
+  });
+}
+
 /** The announcement embed when the DM reveals something — "discovered" (newly shown), the
  * counterpart to /ask's "remembers". `subjectLabel` is "You" (DM'd to one player) or "The
  * party" (posted to the reveals channel). The reveal IS the announcement, so content rides

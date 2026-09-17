@@ -74,7 +74,8 @@ import {
 } from "@hearth/agents";
 import { startRecording, stopRecording } from "./capture.js";
 import {
-  answerEmbed,
+  answerEmbeds,
+  splitForEmbeds,
   revealEmbed,
   journalEmbed,
   npcEmbed,
@@ -474,17 +475,21 @@ async function handleAsk(
     const result = await ask(viewer, question, {
       askedByMembershipId: viewer.membershipId,
     });
-    await interaction.editReply({
-      embeds: [
-        answerEmbed(
-          viewer,
-          viewer.characterName,
-          question,
-          result,
-          viewer.theme,
-        ),
-      ],
-    });
+    // One embed per message: a long briefing spans several, and Discord caps a message's embeds
+    // at 6,000 characters in total.
+    const [first, ...rest] = answerEmbeds(
+      viewer,
+      viewer.characterName,
+      question,
+      result,
+      viewer.theme,
+    );
+    await interaction.editReply({ embeds: [first!] });
+    for (const embed of rest)
+      await interaction.followUp({
+        embeds: [embed],
+        flags: MessageFlags.Ephemeral,
+      });
   } catch (err) {
     console.error("/ask failed:", err);
     // Never let the fallback itself throw and leave the interaction hanging.
@@ -1831,36 +1836,7 @@ async function handleReveal(
 // while telling the DM the piece was sent — the same failure this change exists to remove. So a
 // long body goes out as several embeds (Discord allows ten per message), split on paragraph
 // breaks. If it somehow still doesn't fit, the last embed says so rather than ending mid-sentence.
-const EMBED_BODY_LIMIT = 3800; // headroom for the title line revealEmbed prepends
 const MAX_EMBEDS = 10;
-
-function splitForEmbeds(text: string): string[] {
-  if (text.length <= EMBED_BODY_LIMIT) return [text];
-  const parts: string[] = [];
-  let current = "";
-  for (const para of text.split(/\n{2,}/)) {
-    let block = para;
-    // A single paragraph longer than the limit has to be cut somewhere; cut it on whitespace.
-    while (block.length > EMBED_BODY_LIMIT) {
-      const window = block.slice(0, EMBED_BODY_LIMIT);
-      const cut = window.lastIndexOf(" ");
-      const at = cut > EMBED_BODY_LIMIT / 2 ? cut : EMBED_BODY_LIMIT;
-      if (current) parts.push(current);
-      current = "";
-      parts.push(block.slice(0, at).trim());
-      block = block.slice(at).trim();
-    }
-    if (!current) current = block;
-    else if (current.length + block.length + 2 <= EMBED_BODY_LIMIT)
-      current += `\n\n${block}`;
-    else {
-      parts.push(current);
-      current = block;
-    }
-  }
-  if (current) parts.push(current);
-  return parts;
-}
 
 /** The reveal as one or more embeds — several when the piece is longer than one embed holds. */
 function revealEmbeds(

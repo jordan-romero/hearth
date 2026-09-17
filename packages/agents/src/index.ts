@@ -30,3 +30,4 @@ export * from "./provenance.js";
 export * from "./link-sources.js";
 export * from "./graph.js";
 export * from "./graph-build.js";
+export * from "./graph-context.js";

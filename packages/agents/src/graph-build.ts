@@ -22,6 +22,7 @@ import {
   type GraphEntity,
   type GraphRelation,
   type GraphUsage,
+  type RejectedRelation,
 } from "./graph.js";
 import { renderPassages, type ProvenancePassage } from "./provenance.js";
 
@@ -161,6 +162,8 @@ const tally = (into: Record<string, number>, from: Record<string, number>) => {
 interface Extraction {
   entities: GraphEntity[];
   relations: GraphRelation[];
+  /** For diagnosis only. */
+  rejectedRelations: RejectedRelation[];
   report: GraphBuildReport;
 }
 
@@ -216,35 +219,38 @@ export async function extractGraph(
   // Relationships, against the full list, windows in parallel.
   const rendered = renderEntities(entities);
   const relations: GraphRelation[] = [];
-  for (let i = 0; i < parts.length; i += RELATION_CONCURRENCY) {
+  const rejectedRelations: RejectedRelation[] = [];
+  const readRelations = async (part: ProvenancePassage[]) => {
+    try {
+      const reply = await proposeRelations(
+        client,
+        rendered.text,
+        renderWindow(part, labels),
+      );
+      report.usage = add(report.usage, reply.usage);
+      if (!reply.input || reply.stopReason === "max_tokens") {
+        report.failedWindows++;
+        return;
+      }
+      const verified = verifyRelations(reply.input, labels, rendered.index);
+      relations.push(...verified.relations);
+      rejectedRelations.push(...verified.rejectedRelations);
+      tally(report.rejected, verified.rejected);
+    } catch (err) {
+      report.failedWindows++;
+      console.error(`[graph] relation window failed in ${source.label}:`, err);
+    }
+  };
+  // The first window writes the entity list to the cache; the rest then read it in parallel.
+  // Starting them all at once meant every one paid to write it.
+  if (parts.length) await readRelations(parts[0]!);
+  const rest = parts.slice(1);
+  for (let i = 0; i < rest.length; i += RELATION_CONCURRENCY)
     await Promise.all(
-      parts.slice(i, i + RELATION_CONCURRENCY).map(async (part) => {
-        try {
-          const reply = await proposeRelations(
-            client,
-            rendered.text,
-            renderWindow(part, labels),
-          );
-          report.usage = add(report.usage, reply.usage);
-          if (!reply.input || reply.stopReason === "max_tokens") {
-            report.failedWindows++;
-            return;
-          }
-          const verified = verifyRelations(reply.input, labels, rendered.index);
-          relations.push(...verified.relations);
-          tally(report.rejected, verified.rejected);
-        } catch (err) {
-          report.failedWindows++;
-          console.error(
-            `[graph] relation window failed in ${source.label}:`,
-            err,
-          );
-        }
-      }),
+      rest.slice(i, i + RELATION_CONCURRENCY).map(readRelations),
     );
-  }
   report.relations = relations.length;
-  return { entities, relations, report };
+  return { entities, relations, rejectedRelations, report };
 }
 
 // ── Saving ───────────────────────────────────────────────────────────────────────────────────────

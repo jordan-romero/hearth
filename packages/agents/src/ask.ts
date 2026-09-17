@@ -3,6 +3,7 @@
 // is never handed a secret it could leak.
 
 import Anthropic from "@anthropic-ai/sdk";
+import { gatherSubjectContext, type SubjectContext } from "./graph-context.js";
 import type { Viewer } from "@hearth/core";
 import { prisma } from "@hearth/db";
 import { retrieveContext } from "./retrieve.js";
@@ -37,6 +38,23 @@ Rules:
 - Report everything the provided material contains, plainly and completely. The asker IS the DM, so DM-only notes and secrets are theirs to see — never withhold, redact, or hedge them. If a document is marked "DM only", that is exactly who is asking.
 - If the answer is not supported by what's provided, say so plainly. Never speculate or draw on outside knowledge.
 - Be concise. Note which entries or documents you drew on (by title) in parentheses.`;
+
+// DM view when the question names someone or something in the campaign graph: a briefing, not a
+// summary. Scott, after a live session: it needs to "pull everything when he asks and give him the
+// full context" — so completeness beats brevity here.
+const SYSTEM_DM_BRIEFING = `You are the campaign memory, briefing the DUNGEON MASTER on a subject from their campaign. The DM owns all of this material, private notes and secrets included — never withhold, redact or hedge.
+
+You are given everything the campaign's records hold about the subject: its connections, the facts and document passages that mention it, anything said about it at the table, and which players have been told what.
+
+Write a complete briefing from that material — the DM is asking because they need all of it, so do not summarise it away. Use short headed sections, skipping any with nothing in it:
+- Who or what it is
+- Connections — people, places, factions and things it's tied to, and how
+- History — what has happened involving it, in order, naming the session or document section when the material does
+- Secrets and hidden details
+- What the players know — by character, from what they've been told and what was said at the table
+- Open threads — unresolved questions, debts, plans, loose ends
+
+Use ONLY the material provided. Never speculate or draw on outside knowledge. If the material disagrees with itself, say so and give both versions. After each section, note in parentheses the documents it drew on.`;
 
 export interface AskResult {
   answer: string;
@@ -144,6 +162,22 @@ export async function ask(
   question: string,
   opts: { askedByMembershipId?: string } = {},
 ): Promise<AskResult> {
+  // A question naming someone or something in the campaign graph gets everything about it,
+  // gathered by code. Anything else — and any failure, including a campaign whose graph hasn't
+  // been built — falls through to reading the whole library, exactly as before.
+  //
+  // DM only, for now. Gathering everything about an entity joins up all its names, and for a player
+  // that join can be the spoiler: asking about "the Widow" and getting Moira's history reveals they
+  // are the same person. Players need a rule for which names their character knows first.
+  if (viewer.role === "DM") {
+    try {
+      const subject = await gatherSubjectContext(viewer, question);
+      if (subject) return await askFromSubject(viewer, question, subject, opts);
+    } catch (err) {
+      console.error("[graph ask] falling back to the full library:", err);
+    }
+  }
+
   // Read the whole library when it fits.
   //
   // Retrieval hands the model a handful of pieces chosen by similarity, which is exactly the
@@ -213,6 +247,57 @@ export async function ask(
       ...units.map((u) => ({ title: u.title, type: u.type })),
       ...chunks.map((c) => ({ title: c.docName, type: "DOCUMENT" })),
     ],
+  };
+  await logAsk(viewer, question, result, opts.askedByMembershipId);
+  return result;
+}
+
+async function askFromSubject(
+  viewer: Viewer,
+  question: string,
+  subject: SubjectContext,
+  opts: { askedByMembershipId?: string },
+): Promise<AskResult> {
+  const material = [
+    subject.text,
+    subject.corpus.shared,
+    subject.corpus.personal,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const client = new Anthropic();
+  const started = Date.now();
+  const msg = await client.messages
+    .stream({
+      model: CORPUS_MODEL,
+      // A briefing can be long, and max_tokens covers thinking too; a player's answer stays short.
+      max_tokens: viewer.role === "DM" ? 16000 : 4000,
+      system: viewer.role === "DM" ? SYSTEM_DM_BRIEFING : SYSTEM_PLAYER,
+      messages: [
+        {
+          role: "user",
+          content: `Campaign material:\n\n${material}\n\nQuestion: ${question}`,
+        },
+      ],
+    })
+    .finalMessage();
+  console.log(
+    `[graph ask] subjects=${subject.subjects.length} docs=${subject.corpus.manifest.documents.length} ` +
+      `facts=${subject.corpus.manifest.factCount} passages=${subject.corpus.manifest.passageCount} ` +
+      `in=${msg.usage.input_tokens} out=${msg.usage.output_tokens} stop=${msg.stop_reason} ` +
+      `${Date.now() - started}ms`,
+  );
+  const answer = msg.content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("")
+    .trim();
+  const result: AskResult = {
+    answer: answer || noKnowledgeReply(viewer.role),
+    sources: subject.corpus.manifest.documents.map((name) => ({
+      title: name,
+      type: "DOCUMENT",
+    })),
   };
   await logAsk(viewer, question, result, opts.askedByMembershipId);
   return result;
