@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   answerEmbed,
+  answerEmbeds,
   themeColor,
   safeFileName,
   npcCardMarkdown,
@@ -98,5 +99,41 @@ describe("answerEmbed sources", () => {
     ).toJSON();
     expect(embed.footer).toBeUndefined();
     expect(JSON.stringify(embed)).not.toContain(".md");
+  });
+});
+
+describe("answerEmbeds", () => {
+  const dm = {
+    campaignId: "c1",
+    role: "DM" as const,
+    characterId: null,
+    partyId: null,
+  };
+  const long = Array.from(
+    { length: 40 },
+    (_, i) => `Paragraph ${i}: ${"word ".repeat(40)}`,
+  ).join("\n\n");
+
+  it("sends a long briefing whole, across several embeds, instead of cutting it off", () => {
+    const embeds = answerEmbeds(dm, null, "Tell me about the Widow", {
+      answer: long,
+      sources: [{ title: "NPCs.md", type: "DOCUMENT" }],
+    }).map((e) => e.toJSON());
+    expect(embeds.length).toBeGreaterThan(1);
+    expect(embeds.every((e) => (e.description ?? "").length <= 4096)).toBe(
+      true,
+    );
+    const joined = embeds.map((e) => e.description).join("\n\n");
+    expect(joined).toContain("Paragraph 0:");
+    expect(joined).toContain("Paragraph 39:");
+    // Sources once, at the end.
+    expect(embeds.at(-1)!.footer?.text).toContain("NPCs.md");
+    expect(embeds[0]!.footer).toBeUndefined();
+  });
+
+  it("keeps a short answer in one embed", () => {
+    expect(
+      answerEmbeds(dm, null, "Q", { answer: "Short.", sources: [] }),
+    ).toHaveLength(1);
   });
 });

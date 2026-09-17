@@ -162,7 +162,14 @@ export function assembleCorpus(
   units: CorpusUnit[],
   chunks: CorpusChunk[],
   budgetTokens = DEFAULT_BUDGET_TOKENS,
+  opts: {
+    /** Leave out facts whose document is present. Right for a whole library, where the document
+     * holds everything its facts say; wrong for a few passages gathered about one subject, where
+     * the facts from the rest of that document are the point. */
+    dedupeFacts?: boolean;
+  } = {},
 ): Corpus {
+  const dedupeFacts = opts.dedupeFacts ?? true;
   // The spine, first and over everything. Cross-campaign rows are rejected here too, so a
   // mis-scoped query upstream cannot put another campaign's material in front of the model.
   const visibleUnits = units.filter((u) => canView(viewer, u));
@@ -240,7 +247,10 @@ export function assembleCorpus(
 
   // A dropped document's facts are kept: they are the only trace of it left in the corpus.
   const keptFacts = visibleUnits.filter(
-    (u) => !u.sourceDocumentId || !includedDocIds.has(u.sourceDocumentId),
+    (u) =>
+      !dedupeFacts ||
+      !u.sourceDocumentId ||
+      !includedDocIds.has(u.sourceDocumentId),
   );
   const duplicateFactsOmitted = visibleUnits.length - keptFacts.length;
 
@@ -345,6 +355,17 @@ export async function buildCorpus(
   viewer: Viewer,
   budgetTokens = DEFAULT_BUDGET_TOKENS,
 ): Promise<Corpus> {
+  const { units, chunks } = await loadCorpusMaterial(viewer);
+  return assembleCorpus(viewer, units, chunks, budgetTokens);
+}
+
+/** A campaign's facts and passages with the grants needed to filter them — all of it, or only the
+ * rows named. Filtering itself happens in assembleCorpus, so nothing loaded here reaches a viewer
+ * who may not see it. */
+export async function loadCorpusMaterial(
+  viewer: Viewer,
+  only: { unitIds?: string[]; chunkIds?: string[] } = {},
+): Promise<{ units: CorpusUnit[]; chunks: CorpusChunk[] }> {
   const [unitRows, chunkRows, grants] = await Promise.all([
     prisma.knowledgeUnit.findMany({
       where: {
@@ -352,6 +373,7 @@ export async function buildCorpus(
         supersededByCorrectionId: null,
         // Untraceable document facts are never used (see FactProvenance).
         provenance: { not: "UNSOURCED" },
+        ...(only.unitIds ? { id: { in: only.unitIds } } : {}),
       },
       select: {
         id: true,
@@ -370,6 +392,7 @@ export async function buildCorpus(
       where: {
         campaignId: viewer.campaignId,
         supersededByCorrectionId: null,
+        ...(only.chunkIds ? { id: { in: only.chunkIds } } : {}),
       },
       select: {
         id: true,
@@ -428,5 +451,5 @@ export async function buildCorpus(
     ),
   }));
 
-  return assembleCorpus(viewer, units, chunks, budgetTokens);
+  return { units, chunks };
 }
