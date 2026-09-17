@@ -58,6 +58,7 @@ import {
   applyCorrection,
   rejectCorrection,
   summarizeRecent,
+  chooseRecap,
   resolveCampaignId,
   resolveMember,
   getCampaignDiscord,
@@ -361,7 +362,12 @@ const shareCommand = new SlashCommandBuilder()
 
 const recapCommand = new SlashCommandBuilder()
   .setName("recap")
-  .setDescription("What happened last session?");
+  .setDescription("What happened last session?")
+  .addBooleanOption((o) =>
+    o
+      .setName("in_character")
+      .setDescription("Hear it as your character remembers it"),
+  );
 
 const missedCommand = new SlashCommandBuilder()
   .setName("missed")
@@ -862,7 +868,7 @@ async function handleRecap(
     const last = await prisma.gameSession.findFirst({
       where: { campaignId: viewer.campaignId, recap: { not: null } },
       orderBy: { number: "desc" },
-      select: { number: true, title: true, recap: true },
+      select: { id: true, number: true, title: true, recap: true },
     });
     if (!last?.recap) {
       await interaction.editReply(
@@ -870,10 +876,33 @@ async function handleRecap(
       );
       return;
     }
+    // A player reads their character's version: only what they were there for, never what another
+    // character learned privately. The DM reads the whole table's recap.
+    const voice = interaction.options.getBoolean("in_character") ?? false;
+    const own =
+      viewer.role !== "DM" && viewer.characterId
+        ? await prisma.characterRecap.findUnique({
+            where: {
+              gameSessionId_characterId: {
+                gameSessionId: last.id,
+                characterId: viewer.characterId,
+              },
+            },
+            select: { summary: true, inCharacter: true },
+          })
+        : null;
+    const choice = chooseRecap(viewer.role, last.recap, own, voice);
+    const sessionTitle = last.title ?? `Session ${last.number}`;
+    const title =
+      choice.kind === "character" && choice.voice
+        ? `${sessionTitle} — as ${viewer.characterName ?? "your character"} remembers it`
+        : choice.kind === "character"
+          ? `${sessionTitle} — ${viewer.characterName ?? "your character"}`
+          : sessionTitle;
+
     // A long session's recap runs past one embed (4,096 characters); cutting it would end the
     // story mid-sentence. Send it whole, one embed per message.
-    const title = last.title ?? `Session ${last.number}`;
-    const parts = splitForEmbeds(last.recap);
+    const parts = splitForEmbeds(choice.text);
     const embeds = parts.map((part, i) =>
       recapEmbed(
         i === 0 ? title : `${title} (continued ${i + 1}/${parts.length})`,

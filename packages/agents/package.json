@@ -15,6 +15,7 @@
     "backfill:sources": "dotenv -e ../../.env -- tsx src/backfill-sources.ts",
     "graph:build": "dotenv -e ../../.env -- tsx src/graph-backfill.ts",
     "graph:eval": "dotenv -e ../../.env -- tsx src/graph-eval.ts",
+    "recap:characters": "dotenv -e ../../.env -- tsx src/character-recap-backfill.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
