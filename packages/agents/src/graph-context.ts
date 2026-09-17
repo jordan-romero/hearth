@@ -64,6 +64,39 @@ export function withShortNames(aliases: AliasRow[]): AliasRow[] {
   return [...aliases, ...extra];
 }
 
+/** Whether a question asks for the whole picture of something ("tell me everything about the
+ * Widow", "brief me on House Vane") rather than something specific about it. Only the former gets
+ * a briefing; a specific question wants a specific answer. Deliberately narrow — anything that
+ * isn't clearly a request for everything is treated as a specific question. */
+export function wantsBriefing(question: string): boolean {
+  const q = question
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[?.!]+$/, "");
+  if (
+    [
+      /^(please )?(tell|remind) me (everything |all )?(you know |there is to know )?about\b/,
+      /^(please )?(give me |i need )?(a |the )?(full |complete |quick )?(briefing|rundown|overview|summary|dossier|profile) (on|of|about|for)\b/,
+      /^(please )?brief me (on|about)\b/,
+      /^(please )?(catch|fill) me up on\b/,
+      /^what do (we|i|you) (know|have) (about|on)\b/,
+      /^everything (about|on)\b/,
+    ].some((re) => re.test(q))
+  )
+    return true;
+  // "Who is Morwyn?" — but only a bare name: "what is Morwyn's mom's name and how did she die" asks
+  // something specific, and so does anything with a possessive, a second clause, or many words.
+  const bare = /^(who|what) (is|are|was|were) (the )?(.+)$/.exec(q);
+  if (!bare) return false;
+  const subject = bare[4]!;
+  return (
+    !/['\u2019]s\b|\b(and|or|how|why|when|where|which|whose|with|from|to|of)\b/.test(
+      subject,
+    ) && subject.split(" ").length <= 4
+  );
+}
+
 export interface SubjectContext {
   subjects: string[];
   corpus: Corpus;
