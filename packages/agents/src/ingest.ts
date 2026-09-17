@@ -7,6 +7,7 @@ import { prisma } from "@hearth/db";
 import { getDocument } from "./storage.js";
 import { extractText } from "./parse.js";
 import { chunkText } from "./chunk.js";
+import { linkFactsForDocument } from "./link-sources.js";
 import { embedTexts, toVectorLiteral } from "./embeddings.js";
 import { extractUnitsFromText } from "./extract.js";
 
@@ -81,6 +82,18 @@ export async function ingestDocument(sourceDocumentId: string): Promise<void> {
         );
       } catch (err) {
         console.error(`[ingest] unit extraction failed for ${doc.id}:`, err);
+      }
+      // Trace each new fact to the exact words it came from. A fact that can't be traced is marked
+      // UNSOURCED and not used. Separate from extraction and never fatal: if linking fails, the
+      // facts stay UNCHECKED — usable, as every fact was before sources existed.
+      try {
+        const linked = await linkFactsForDocument(doc.id);
+        console.log(
+          `[ingest] sources for ${doc.id}: facts=${linked.facts} sourced=${linked.sourced} ` +
+            `unsourced=${linked.unsourced} unchecked=${linked.unchecked}`,
+        );
+      } catch (err) {
+        console.error(`[ingest] source linking failed for ${doc.id}:`, err);
       }
     }
 

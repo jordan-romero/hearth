@@ -1612,7 +1612,13 @@ async function resolvePicks(
   for (const pick of picks) {
     if (pick.kind === "unit") {
       const unit = await prisma.knowledgeUnit.findFirst({
-        where: { id: pick.id, campaignId, supersededByCorrectionId: null },
+        where: {
+          id: pick.id,
+          campaignId,
+          supersededByCorrectionId: null,
+          // Never offer a fact nobody can trace to its source as something to reveal.
+          provenance: { not: "UNSOURCED" },
+        },
         select: { id: true, title: true, content: true },
       });
       if (unit) {
@@ -1901,7 +1907,7 @@ async function announceReveal(
     // The whole section, joined and de-overlapped — what the DM was shown the size of.
     const passages = await sectionPassages(targetId);
     itemTitle = passages.length
-      ? sectionTitle(passages, passages[0]!.docName)
+      ? sectionTitle(passages, "From the DM's notes")
       : "a passage";
     body = joinPassages(passages);
   } else if (kind === "p") {
@@ -1910,7 +1916,9 @@ async function announceReveal(
       where: { id: targetId, supersededByCorrectionId: null },
       select: { text: true, sourceDocument: { select: { name: true } } },
     });
-    itemTitle = c ? `From ${c.sourceDocument.name}` : "a passage";
+    // Never the document's name: players see this, and a file name can give away what the passage
+    // alone doesn't. Sources are for the DM.
+    itemTitle = c ? "From the DM's notes" : "a passage";
     body = c?.text ?? "";
   } else {
     // Whole-document grants still exist and are still honoured — /reveal just no longer offers

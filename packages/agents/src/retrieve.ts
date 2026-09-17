@@ -162,6 +162,7 @@ async function searchUnitsLexical(
      AND ac."campaignId" = ku."campaignId"
     WHERE ku."campaignId" = ${viewer.campaignId}
       AND ku."supersededByCorrectionId" IS NULL
+      AND ku."provenance" <> 'UNSOURCED'
       AND (
         (${pattern}::text IS NOT NULL
           AND (ku."title" ~* ${pattern}::text OR ku."content" ~* ${pattern}::text))
@@ -200,6 +201,9 @@ async function searchUnits(
       -- A fact the table has corrected is never retrieved again. This is the whole point of a
       -- correction: the wrong answer has to become unreachable, not merely outranked.
       AND ku."supersededByCorrectionId" IS NULL
+      -- A document fact that couldn't be traced to exact words in its document is not used: no
+      -- one can review it (the DM would have to audit their own notes; players mustn't see them).
+      AND ku."provenance" <> 'UNSOURCED'
     ORDER BY ku."embedding" <=> ${vec}::vector
     LIMIT ${limit * 3}`;
   return (await allowedUnits(viewer, rows)).slice(0, limit);
