@@ -41,9 +41,10 @@
   },
   "pnpm": {
     "comments": {
-      "overrides": "Advisories in transitive dependencies we don't control. Everything below @prisma/dev reaches us only because the prisma CLI is an OPTIONAL PEER of @prisma/client, so `pnpm audit --prod` walks it even though the CLI is a devDependency that never runs in production. Pinned to the patched versions rather than left red; drop an entry once Prisma ships it."
+      "overrides": "Advisories in transitive dependencies we don't control. Everything below @prisma/dev reaches us only because the prisma CLI is an OPTIONAL PEER of @prisma/client, so `pnpm audit --prod` walks it even though the CLI is a devDependency that never runs in production. Pinned to the patched versions rather than left red; drop an entry once Prisma ships it. tar reaches us through @discordjs/opus's installer (node-pre-gyp pins tar 6), which only unpacks its prebuilt binary at install time; tar 7 keeps the same extract API."
     },
     "overrides": {
+      "@discordjs/node-pre-gyp>tar": "^7.5.22",
       "undici": "^6.28.0",
       "fast-uri": "^3.1.6",
       "mysql2": "^3.22.0",
