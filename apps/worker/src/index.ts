@@ -88,7 +88,18 @@ async function main(): Promise<void> {
   // If it actually resumed, the handler reschedules itself instead of finalizing.
   await boss.work<FinalizeJob>(FINALIZE_QUEUE, async (jobs) => {
     for (const job of jobs) {
-      await finalizeSession(job.data.gameSessionId);
+      try {
+        await finalizeSession(job.data.gameSessionId);
+      } catch (err) {
+        // Nothing is lost — the transcript stays, and the session stays open — but no recap exists
+        // until it's re-run, so say so plainly rather than leave a failed job to be found.
+        console.error(
+          `[finalize] session ${job.data.gameSessionId} could NOT be summarized; its transcript is ` +
+            `intact and the session is still open. Re-run finalize for it once the cause is fixed.`,
+          err,
+        );
+        throw err;
+      }
     }
   });
 
