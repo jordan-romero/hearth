@@ -5,9 +5,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   gatherSubjectContext,
+  questionEntities,
   wantsBriefing,
   type SubjectContext,
 } from "./graph-context.js";
+import { answerWithGraph } from "./graph-agent.js";
 import type { Viewer } from "@hearth/core";
 import { prisma } from "@hearth/db";
 import { retrieveContext } from "./retrieve.js";
@@ -101,7 +103,7 @@ async function askFromCorpus(
   viewer: Viewer,
   question: string,
   corpus: Corpus,
-  opts: { askedByMembershipId?: string },
+  opts: { askedByMembershipId?: string; log?: boolean },
 ): Promise<AskResult> {
   const blocks: Anthropic.TextBlockParam[] = [];
   if (corpus.shared) {
@@ -157,7 +159,8 @@ async function askFromCorpus(
       type: "DOCUMENT",
     })),
   };
-  await logAsk(viewer, question, result, opts.askedByMembershipId);
+  if (opts.log !== false)
+    await logAsk(viewer, question, result, opts.askedByMembershipId);
   return result;
 }
 
@@ -184,6 +187,34 @@ export async function ask(
       if (subject) return await askFromSubject(viewer, question, subject, opts);
     } catch (err) {
       console.error("[graph ask] falling back to the full library:", err);
+    }
+  }
+
+  // A specific question about someone or something in the graph: follow the links to the answer
+  // (find them, follow their relationships, look up the detail) instead of reading everything. The
+  // agent can still ask for the whole library, and any failure falls through to it.
+  if (viewer.role === "DM") {
+    try {
+      if ((await questionEntities(viewer, question)).length > 0) {
+        const graph = await answerWithGraph(viewer, question);
+        console.log(
+          `[graph agent] steps=${graph.steps} tools=${graph.tools.join(",")} ` +
+            `in=${graph.usage.input} out=${graph.usage.output} answered=${graph.answer !== null}`,
+        );
+        if (graph.answer) {
+          const result: AskResult = {
+            answer: graph.answer,
+            sources: graph.documents.map((title) => ({
+              title,
+              type: "DOCUMENT",
+            })),
+          };
+          await logAsk(viewer, question, result, opts.askedByMembershipId);
+          return result;
+        }
+      }
+    } catch (err) {
+      console.error("[graph agent] falling back to the full library:", err);
     }
   }
 
@@ -310,4 +341,14 @@ async function askFromSubject(
   };
   await logAsk(viewer, question, result, opts.askedByMembershipId);
   return result;
+}
+
+/** The full-library answer on its own, without logging — for comparing answering strategies. */
+export async function answerFromLibrary(
+  viewer: Viewer,
+  question: string,
+): Promise<AskResult | null> {
+  const corpus = await buildCorpus(viewer);
+  if (!corpus.manifest.complete || corpus.manifest.tokens === 0) return null;
+  return askFromCorpus(viewer, question, corpus, { log: false });
 }

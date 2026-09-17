@@ -31,3 +31,4 @@ export * from "./link-sources.js";
 export * from "./graph.js";
 export * from "./graph-build.js";
 export * from "./graph-context.js";
+export * from "./graph-agent.js";

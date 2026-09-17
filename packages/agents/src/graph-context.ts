@@ -97,6 +97,18 @@ export function wantsBriefing(question: string): boolean {
   );
 }
 
+/** The graph entities a question names, if any — by full name, alias, or unambiguous short name. */
+export async function questionEntities(
+  viewer: Viewer,
+  question: string,
+): Promise<string[]> {
+  const aliases = await prisma.entityAlias.findMany({
+    where: { campaignId: viewer.campaignId },
+    select: { entityId: true, alias: true },
+  });
+  return matchEntities(question, withShortNames(aliases));
+}
+
 export interface SubjectContext {
   subjects: string[];
   corpus: Corpus;
