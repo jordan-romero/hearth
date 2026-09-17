@@ -41,8 +41,8 @@ function recallTitle(role: string, characterName: string | null): string {
 }
 
 /** The themed embed for an /ask answer — colored by the campaign theme + who's asking, an
- * in-world "{who} remembers" title, the question as context, answer as body, deduped sources
- * in the footer. The no-knowledge line rides through here too (just no sources). */
+ * in-world "{who} remembers" title, the question as context, answer as body, and — for the DM
+ * only — deduped sources in the footer. The no-knowledge line rides through here too (just no sources). */
 export function answerEmbed(
   viewer: Viewer,
   characterName: string | null,
@@ -56,7 +56,12 @@ export function answerEmbed(
     .setTitle(recallTitle(viewer.role, characterName))
     .setDescription(truncate(result.answer, 4096));
 
-  const sources = [...new Set(result.sources.map((s) => s.title))];
+  // Sources are shown to the DM only. A document's name can give away what a player's answer
+  // doesn't, and a player's corpus lists every document they can see, not just the ones used.
+  const sources =
+    viewer.role === "DM"
+      ? [...new Set(result.sources.map((s) => s.title))]
+      : [];
   if (sources.length > 0) {
     embed.setFooter({
       text: truncate(`Drawn from: ${sources.join(", ")}`, 2048),

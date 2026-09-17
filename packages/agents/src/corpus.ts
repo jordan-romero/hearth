@@ -350,6 +350,8 @@ export async function buildCorpus(
       where: {
         campaignId: viewer.campaignId,
         supersededByCorrectionId: null,
+        // Untraceable document facts are never used (see FactProvenance).
+        provenance: { not: "UNSOURCED" },
       },
       select: {
         id: true,
