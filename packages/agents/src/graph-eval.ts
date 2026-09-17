@@ -11,11 +11,18 @@
 //
 // Usage:
 //   pnpm --filter @hearth/agents graph:eval --campaign <id> [--single 12] [--double 8] [--yes]
+//   pnpm --filter @hearth/agents graph:eval --campaign <id> --mode passages [--n 20] [--yes]
+//
+// The passages mode removes the bias: a model writes one specific question from each of a random
+// sample of passages, with the answer that passage gives, and a model judges each answer against the
+// passage. Nothing about the question depends on the graph having recorded it.
 
+import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@hearth/db";
 import type { Viewer } from "@hearth/core";
 import { answerFromLibrary } from "./ask.js";
 import { answerWithGraph } from "./graph-agent.js";
+import { questionEntities } from "./graph-context.js";
 import { normalizeName, uniqueShortNames, type GraphEntity } from "./graph.js";
 
 function arg(name: string): string | undefined {
@@ -105,9 +112,210 @@ function sample<T>(items: T[], n: number, seed = 7): T[] {
   return out.slice(0, n);
 }
 
+const JUDGE_MODEL = "claude-sonnet-5";
+
+async function forcedTool(
+  client: Anthropic,
+  system: string,
+  tool: Anthropic.Tool,
+  content: string,
+): Promise<Record<string, unknown> | null> {
+  const msg = await client.messages
+    .stream({
+      model: JUDGE_MODEL,
+      max_tokens: 4000,
+      system,
+      tools: [tool],
+      tool_choice: { type: "tool", name: tool.name },
+      messages: [{ role: "user", content }],
+    })
+    .finalMessage();
+  const block = msg.content.find(
+    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+  );
+  return (block?.input as Record<string, unknown> | undefined) ?? null;
+}
+
+/** One specific question the passage answers, naming who or what it's about, with its answer. */
+async function questionFromPassage(
+  client: Anthropic,
+  passage: string,
+): Promise<{ question: string; answer: string } | null> {
+  const input = await forcedTool(
+    client,
+    `You write test questions for a tabletop RPG campaign's memory. Given one passage of the DM's notes, write ONE specific question a DM might ask that this passage answers — the kind of detail someone would look up ("How did Elspeth Vane die?", "Who does Tobin owe money to?"). Name the person, place or thing it's about, so the question makes sense without the passage. The answer must be short and stated in the passage. If the passage has no such specific, answerable detail, set skip to true.`,
+    {
+      name: "record_question",
+      description: "Record the question and its answer.",
+      input_schema: {
+        type: "object",
+        properties: {
+          skip: { type: "boolean" },
+          question: { type: "string" },
+          answer: { type: "string" },
+        },
+        required: ["skip"],
+      },
+    },
+    `Passage:\n\n${passage}`,
+  );
+  if (!input || input.skip === true) return null;
+  const question =
+    typeof input.question === "string" ? input.question.trim() : "";
+  const answer = typeof input.answer === "string" ? input.answer.trim() : "";
+  return question && answer ? { question, answer } : null;
+}
+
+type Verdict = "correct" | "partial" | "wrong";
+
+async function judge(
+  client: Anthropic,
+  question: string,
+  reference: string,
+  passage: string,
+  answer: string,
+): Promise<Verdict> {
+  const input = await forcedTool(
+    client,
+    `You grade an answer to a question about a tabletop RPG campaign. You get the question, the reference answer, the passage it comes from, and the answer to grade. correct: it gives the reference answer (wording may differ; extra accurate detail is fine). partial: it gets part of it, or hedges between the right answer and a wrong one. wrong: it misses it, contradicts it, or says the records don't say.`,
+    {
+      name: "record_verdict",
+      description: "Record the grade.",
+      input_schema: {
+        type: "object",
+        properties: {
+          verdict: { type: "string", enum: ["correct", "partial", "wrong"] },
+        },
+        required: ["verdict"],
+      },
+    },
+    `Question: ${question}\n\nReference answer: ${reference}\n\nPassage:\n${passage}\n\nAnswer to grade:\n${answer}`,
+  );
+  const v = input?.verdict;
+  return v === "correct" || v === "partial" ? v : "wrong";
+}
+
+/** What /ask does for a DM's specific question: the agent when the question names a graph entity
+ * (falling back to the library when it comes up empty), otherwise the library. */
+async function askedTheWayAskDoes(
+  dm: Viewer,
+  question: string,
+  track: {
+    viaAgent: number;
+    agentFellBack: number;
+    agentUsage: { input: number; output: number };
+  },
+): Promise<{ answer: string | null; via: "agent" | "library" }> {
+  if ((await questionEntities(dm, question)).length > 0) {
+    track.viaAgent++;
+    const a = await answerWithGraph(dm, question);
+    track.agentUsage.input += a.usage.input;
+    track.agentUsage.output += a.usage.output;
+    if (a.answer) return { answer: a.answer, via: "agent" };
+    track.agentFellBack++;
+  }
+  return {
+    answer: (await answerFromLibrary(dm, question))?.answer ?? null,
+    via: "library",
+  };
+}
+
+async function passagesMode(campaignId: string) {
+  const n = Number(arg("n") ?? 20);
+  const chunks = await prisma.documentChunk.findMany({
+    where: { campaignId, supersededByCorrectionId: null },
+    select: { id: true, text: true },
+  });
+  const picked = sample(
+    chunks.filter((c) => c.text.length > 400),
+    Math.round(n * 1.5), // some passages have nothing specific to ask; they're skipped
+  );
+  console.log(
+    `graph:eval passages: ${chunks.length} passages; trying ${picked.length} to get ${n} questions, ` +
+      `each answered the way /ask does it and by the full library, then judged`,
+  );
+  if (!process.argv.includes("--yes")) {
+    console.log(
+      `Estimated ~$${(1.1 + n * 0.1).toFixed(2)} (question writing, both answers, two judgements each). Re-run with --yes.`,
+    );
+    return;
+  }
+
+  const client = new Anthropic();
+  const dm: Viewer = {
+    campaignId,
+    role: "DM",
+    characterId: null,
+    partyId: null,
+  };
+  const tally = {
+    ask: { correct: 0, partial: 0, wrong: 0 },
+    library: { correct: 0, partial: 0, wrong: 0 },
+    askBetter: 0,
+    libraryBetter: 0,
+    errors: 0,
+  };
+  const track = {
+    viaAgent: 0,
+    agentFellBack: 0,
+    agentUsage: { input: 0, output: 0 },
+  };
+  const rank = { correct: 2, partial: 1, wrong: 0 } as const;
+  let asked = 0;
+  for (const chunk of picked) {
+    if (asked >= n) break;
+    try {
+      const q = await questionFromPassage(client, chunk.text);
+      if (!q) continue;
+      asked++;
+      const viaAsk = await askedTheWayAskDoes(dm, q.question, track);
+      // When /ask itself read the library, that is the library's answer too — no need to pay twice.
+      const viaLibrary =
+        viaAsk.via === "library"
+          ? viaAsk.answer
+          : ((await answerFromLibrary(dm, q.question))?.answer ?? null);
+      const a = viaAsk.answer
+        ? await judge(client, q.question, q.answer, chunk.text, viaAsk.answer)
+        : "wrong";
+      const l =
+        viaAsk.via === "library"
+          ? a
+          : viaLibrary
+            ? await judge(client, q.question, q.answer, chunk.text, viaLibrary)
+            : "wrong";
+      tally.ask[a]++;
+      tally.library[l]++;
+      if (rank[a] > rank[l]) tally.askBetter++;
+      if (rank[l] > rank[a]) tally.libraryBetter++;
+    } catch {
+      tally.errors++;
+    }
+  }
+  console.log(
+    JSON.stringify(
+      {
+        questions: asked,
+        askAsItWorks: {
+          ...tally.ask,
+          wentToAgent: track.viaAgent,
+          agentFellBackToLibrary: track.agentFellBack,
+          agentCost: `$${((track.agentUsage.input * 2 + track.agentUsage.output * 10) / 1e6).toFixed(2)}`,
+        },
+        libraryOnly: tally.library,
+        askBetter: tally.askBetter,
+        libraryBetter: tally.libraryBetter,
+        errors: tally.errors,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
 async function main() {
   const campaignId = arg("campaign");
   if (!campaignId) throw new Error("--campaign <id> is required");
+  if (arg("mode") === "passages") return passagesMode(campaignId);
   const singles = Number(arg("single") ?? 12);
   const doubles = Number(arg("double") ?? 8);
 

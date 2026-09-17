@@ -199,7 +199,7 @@ export async function ask(
         const graph = await answerWithGraph(viewer, question);
         console.log(
           `[graph agent] steps=${graph.steps} tools=${graph.tools.join(",")} ` +
-            `in=${graph.usage.input} out=${graph.usage.output} answered=${graph.answer !== null}`,
+            `in=${graph.usage.input} out=${graph.usage.output} answered=${graph.answer !== null} notFound=${graph.notFound ?? false}`,
         );
         if (graph.answer) {
           const result: AskResult = {

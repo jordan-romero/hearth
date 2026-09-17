@@ -33,7 +33,7 @@ Stop as soon as you can answer. Then write:
 - First, the direct answer to exactly what was asked, in a sentence or two.
 - Then only the supporting detail that matters.
 - Then a line starting "Sources:" naming the documents and quoting the few words each answer rests on.
-If the records don't say, say so plainly and name what you checked. Use only what the tools return; never speculate or draw on outside knowledge.`;
+If the tools don't turn up the answer, reply with exactly NOT_FOUND on the first line and nothing else — the question will then be answered by reading the whole library, which may hold what the graph doesn't. Use only what the tools return; never speculate or draw on outside knowledge.`;
 
 const TOOLS: Anthropic.Tool[] = [
   {
@@ -340,9 +340,17 @@ async function search(state: AgentState, query: string): Promise<string> {
 
 // ── The loop ─────────────────────────────────────────────────────────────────────────────────────
 
+/** Whether the agent reported that the graph didn't have the answer. */
+export function isNotFound(answer: string): boolean {
+  return /^\s*NOT[_ ]FOUND\b/i.test(answer);
+}
+
 export interface AgentAnswer {
-  /** Null when the agent asked to read the whole library instead. */
+  /** Null when the agent asked to read the whole library, or found nothing — either way, the
+   * question should be answered from the whole library instead. */
   answer: string | null;
+  /** The agent looked and the graph didn't have it (as opposed to choosing read_everything). */
+  notFound?: boolean;
   steps: number;
   tools: string[];
   documents: string[];
@@ -393,8 +401,11 @@ export async function answerWithGraph(
         .map((b) => b.text)
         .join("")
         .trim();
+      // "Not in the graph" isn't "not in the campaign": the whole library may still hold it.
+      const notFound = !answer || isNotFound(answer);
       return {
-        answer: answer || null,
+        answer: notFound ? null : answer,
+        notFound,
         steps: step,
         tools: used,
         documents: [...state.documents],

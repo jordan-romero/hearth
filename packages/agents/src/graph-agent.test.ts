@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import type Anthropic from "@anthropic-ai/sdk";
-import { answerWithGraph, containsAnyWord, MAX_STEPS } from "./graph-agent.js";
+import {
+  answerWithGraph,
+  containsAnyWord,
+  isNotFound,
+  MAX_STEPS,
+} from "./graph-agent.js";
 
 const dm = {
   campaignId: "c1",
@@ -61,6 +66,13 @@ describe("answerWithGraph", () => {
     expect(out.tools).toEqual(["read_everything"]);
   });
 
+  it("hands the question to the whole library when the graph doesn't have the answer", async () => {
+    const { client } = scripted(() => [text("NOT_FOUND")]);
+    const out = await answerWithGraph(dm, "How did Wren's mother die?", client);
+    expect(out.answer).toBeNull();
+    expect(out.notFound).toBe(true);
+  });
+
   it("stops after its step budget and makes the model answer with what it has", async () => {
     const { client, requests } = scripted((req) =>
       req.tool_choice?.type === "none"
@@ -109,5 +121,13 @@ describe("containsAnyWord", () => {
 
   it("keeps everything when no usable words are given", () => {
     expect(containsAnyWord("Anything.", [])).toBe(true);
+  });
+});
+
+describe("isNotFound", () => {
+  it("recognises the marker, and only the marker", () => {
+    expect(isNotFound("NOT_FOUND")).toBe(true);
+    expect(isNotFound("  not found\nI checked connections.")).toBe(true);
+    expect(isNotFound("Her mother was not found guilty.")).toBe(false);
   });
 });
