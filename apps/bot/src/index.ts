@@ -1443,7 +1443,7 @@ async function handleShareButton(
   }
 }
 
-/** /record — resolve this server's campaign, then start capture. */
+/** /record — resolve this server's campaign, then start capture. Any campaign member may. */
 async function handleRecord(
   interaction: ChatInputCommandInteraction,
 ): Promise<void> {
@@ -1456,13 +1456,8 @@ async function handleRecord(
     });
     return;
   }
-  if (viewer.role !== "DM") {
-    await interaction.reply({
-      content: "Only the DM can start a recording.",
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
+  // Anyone in the campaign can start or resume a recording, as anyone can /stop one. The DM is busy
+  // running the game; whoever notices capture has stopped should be able to fix it from their seat.
   await startRecording(interaction, viewer.campaignId);
 }
 
