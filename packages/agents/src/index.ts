@@ -26,3 +26,7 @@ export * from "./corrections.js";
 export * from "./upload.js";
 export * from "./share.js";
 export * from "./stream-transcribe.js";
+export * from "./provenance.js";
+export * from "./link-sources.js";
+export * from "./graph.js";
+export * from "./graph-build.js";

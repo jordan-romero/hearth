@@ -8,6 +8,7 @@ import { getDocument } from "./storage.js";
 import { extractText } from "./parse.js";
 import { chunkText } from "./chunk.js";
 import { linkFactsForDocument } from "./link-sources.js";
+import { buildGraph, documentSource } from "./graph-build.js";
 import { embedTexts, toVectorLiteral } from "./embeddings.js";
 import { extractUnitsFromText } from "./extract.js";
 
@@ -95,6 +96,20 @@ export async function ingestDocument(sourceDocumentId: string): Promise<void> {
       } catch (err) {
         console.error(`[ingest] source linking failed for ${doc.id}:`, err);
       }
+    }
+
+    // Add this document's people, places and connections to the campaign graph. Never fatal: the
+    // document is fully usable without it, and a later rebuild picks it up.
+    try {
+      const graph = await buildGraph(doc.campaignId, [
+        await documentSource(doc.id),
+      ]);
+      console.log(
+        `[ingest] graph from ${doc.id}: entities=${graph.entitiesTotal} relations=${graph.relations} ` +
+          `failedWindows=${graph.failedWindows}`,
+      );
+    } catch (err) {
+      console.error(`[ingest] graph build failed for ${doc.id}:`, err);
     }
 
     await prisma.sourceDocument.update({

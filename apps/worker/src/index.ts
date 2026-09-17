@@ -6,6 +6,8 @@ import {
   getClip,
   transcribeClip,
   extractSession,
+  buildGraph,
+  sessionSource,
   embedTexts,
   toVectorLiteral,
   scheduleFinalize,
@@ -221,6 +223,20 @@ async function finalizeSession(gameSessionId: string): Promise<void> {
       if (!vec) continue;
       await prisma.$executeRaw`UPDATE "KnowledgeUnit" SET embedding = ${toVectorLiteral(vec)}::vector WHERE id = ${created[i]!.id}`;
     }
+  }
+
+  // Add who and what came up at the table to the campaign graph — the same path uploads take, so a
+  // campaign played in Hearth builds its graph as it goes. Never blocks finalizing the session.
+  try {
+    const graph = await buildGraph(gameSession.campaignId, [
+      await sessionSource(gameSession.id),
+    ]);
+    console.log(
+      `[finalize] session ${gameSessionId}: graph entities=${graph.entitiesTotal} ` +
+        `relations=${graph.relations} failedWindows=${graph.failedWindows}`,
+    );
+  } catch (err) {
+    console.error(`[finalize] graph build failed for ${gameSessionId}:`, err);
   }
 
   await finalize(gameSession.id);
