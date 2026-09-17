@@ -20,7 +20,11 @@ import {
   joinVoiceChannel,
   VoiceConnectionStatus,
 } from "@discordjs/voice";
-import { BurstDecoder } from "./opus-decoder.js";
+import {
+  createBurstDecoder,
+  opusDecoderKind,
+  type OpusBurstDecoder,
+} from "./opus-decoder.js";
 import { prisma } from "@hearth/db";
 import {
   getQueue,
@@ -243,6 +247,7 @@ async function startRecordingInner(
     });
 
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+    console.log(`🎧 opus decoder: ${opusDecoderKind()}`);
 
     // Diagnostics: if clips come back empty, these say WHERE it broke — whether Discord is
     // sending speaking events at all, and whether a subscribed stream yields any audio.
@@ -334,9 +339,9 @@ async function captureBurstInner(
   const opusStream = receiver.subscribe(userId, {
     end: { behavior: EndBehaviorType.AfterSilence, duration: 1500 },
   });
-  let decoder: BurstDecoder;
+  let decoder: OpusBurstDecoder;
   try {
-    decoder = new BurstDecoder(DECODE_CHANNELS, SAMPLE_RATE);
+    decoder = createBurstDecoder(DECODE_CHANNELS, SAMPLE_RATE);
   } catch (err) {
     // The heap it was on is retired; the next burst decodes on a fresh one.
     console.error(

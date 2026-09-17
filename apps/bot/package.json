@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "^0.19.2",
     "@hearth/agents": "workspace:*",
     "@hearth/core": "workspace:*",

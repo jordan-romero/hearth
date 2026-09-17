@@ -1,14 +1,16 @@
-// Opus → PCM for voice capture, on a WebAssembly heap that can be thrown away.
+// Opus → PCM for voice capture.
 //
-// opusscript runs libopus as WebAssembly with a fixed-size heap that can't grow, and shares one
-// heap across the whole process. Mid-session on 2026-09-16 that heap failed ("memory access out of
-// bounds") and from then on every new decoder failed too — so every speaker went silent for the
-// rest of the night, not just one sentence. prism-media's Decoder hides the heap and has no way to
-// start over.
+// Native libopus (@discordjs/opus) is the decoder. It's what discord.js voice receivers normally use,
+// and it runs as compiled code with ordinary memory.
 //
-// This drives the same WebAssembly build directly. A decoder that hits a WebAssembly fault retires
-// the heap it was on, and the next decoder loads a fresh one: a failure costs the burst it happened
-// in, never the recording. Nothing from a retired heap is touched again.
+// It replaced opusscript, which runs libopus as WebAssembly with a fixed-size heap shared by the whole
+// process. Mid-session on 2026-09-16 that heap faulted ("memory access out of bounds"), and from then
+// on every new decoder failed too, so every speaker went silent for the rest of the night.
+//
+// opusscript stays as the fallback, in case the native binary isn't available on some platform, but
+// no longer the way prism-media used it: a decoder that hits a WebAssembly fault retires the heap it
+// was on, and the next decoder loads a fresh one. A failure costs the burst it happened in, never the
+// recording.
 
 import { createRequire } from "node:module";
 
@@ -63,7 +65,7 @@ export function opusHeapGeneration(): number {
 }
 
 /** One speaking burst's decoder. Create it for the burst, decode packets, close it. */
-export class BurstDecoder {
+export class BurstDecoder implements OpusBurstDecoder {
   private readonly native: OpusNative;
   private readonly generation: number;
   private readonly handler: OpusHandler;
@@ -132,4 +134,68 @@ export class BurstDecoder {
       retire(this.generation);
     }
   }
+}
+
+/** What capture needs from a decoder, whichever implementation is behind it. */
+export interface OpusBurstDecoder {
+  decode(packet: Buffer): Buffer | null;
+  close(): void;
+}
+
+interface NativeOpusEncoder {
+  decode(packet: Buffer): Buffer;
+}
+
+type NativeOpus = new (rate: number, channels: number) => NativeOpusEncoder;
+
+let native: NativeOpus | null | undefined;
+let nativeError: string | null = null;
+
+function loadNative(): NativeOpus | null {
+  if (native !== undefined) return native;
+  try {
+    native = (require("@discordjs/opus") as { OpusEncoder: NativeOpus })
+      .OpusEncoder;
+  } catch (err) {
+    native = null;
+    nativeError = err instanceof Error ? err.message : String(err);
+  }
+  return native;
+}
+
+/** Which decoder capture is using, and why — logged once at startup so a deploy that lost the
+ * native binary is visible rather than silent. */
+export function opusDecoderKind(): string {
+  return loadNative()
+    ? "native (@discordjs/opus)"
+    : `WebAssembly fallback (native unavailable: ${nativeError})`;
+}
+
+class NativeBurstDecoder implements OpusBurstDecoder {
+  private readonly encoder: NativeOpusEncoder;
+  constructor(Opus: NativeOpus, channels: number, rate: number) {
+    this.encoder = new Opus(rate, channels);
+  }
+  decode(packet: Buffer): Buffer | null {
+    if (packet.length === 0) return null;
+    try {
+      return this.encoder.decode(packet);
+    } catch {
+      return null; // a packet libopus rejects; native errors don't damage anything else
+    }
+  }
+  close(): void {
+    // Freed by the garbage collector.
+  }
+}
+
+/** A decoder for one speaking burst: native when available, the recoverable WebAssembly one if not. */
+export function createBurstDecoder(
+  channels: number,
+  rate = 48000,
+): OpusBurstDecoder {
+  const Opus = loadNative();
+  return Opus
+    ? new NativeBurstDecoder(Opus, channels, rate)
+    : new BurstDecoder(channels, rate);
 }

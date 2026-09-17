@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
 import OpusScript from "opusscript";
-import { BurstDecoder, opusHeapGeneration } from "./opus-decoder.js";
+import {
+  BurstDecoder,
+  createBurstDecoder,
+  opusDecoderKind,
+  opusHeapGeneration,
+} from "./opus-decoder.js";
 
 // A real Opus packet: 20 ms of a 440 Hz tone, stereo, encoded by the same WebAssembly build.
 function tonePacket(): Buffer {
@@ -65,5 +70,18 @@ describe("BurstDecoder", () => {
     const fresh = new BurstDecoder(2);
     expect(fresh.decode(tonePacket())?.length).toBe(3840);
     fresh.close();
+  });
+});
+
+describe("createBurstDecoder", () => {
+  it("uses native Opus when it's installed", () => {
+    expect(opusDecoderKind()).toBe("native (@discordjs/opus)");
+  });
+
+  it("decodes a real packet and skips an empty one", () => {
+    const decoder = createBurstDecoder(2);
+    expect(decoder.decode(tonePacket())?.length).toBe(960 * 2 * 2);
+    expect(decoder.decode(Buffer.alloc(0))).toBeNull();
+    decoder.close();
   });
 });
