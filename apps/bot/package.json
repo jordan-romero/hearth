@@ -11,7 +11,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "^0.19.2",
     "@hearth/agents": "workspace:*",
     "@hearth/core": "workspace:*",
@@ -25,5 +24,8 @@
   "devDependencies": {
     "dotenv-cli": "^11.0.0",
     "vitest": "^4.1.10"
+  },
+  "optionalDependencies": {
+    "@discordjs/opus": "^0.10.0"
   }
 }

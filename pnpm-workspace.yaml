@@ -3,6 +3,8 @@ packages:
   - "packages/*"
 
 # Native Opus for voice capture. pnpm 10 skips dependency install scripts unless listed; this one
-# fetches a prebuilt binary for the platform. If it can't, the bot falls back to WebAssembly Opus.
+# fetches a prebuilt binary for the platform. It's an optional dependency: if there's no binary for
+# the build machine (they're published for exact glibc versions), the install carries on without it
+# and the bot falls back to WebAssembly Opus, logging that it did.
 onlyBuiltDependencies:
   - "@discordjs/opus"
