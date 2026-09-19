@@ -15,7 +15,7 @@
     "@hearth/agents": "workspace:*",
     "@hearth/core": "workspace:*",
     "@hearth/db": "workspace:*",
-    "next": "^15.5.0",
+    "next": "^16.3.5",
     "next-auth": "^5.0.0-beta.25",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
