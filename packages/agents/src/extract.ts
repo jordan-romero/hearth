@@ -5,6 +5,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { addUsage, logUsage, noUsage, usageOf, type Usage } from "./usage.js";
+import type { ProposedAudience } from "./audience.js";
 
 const MODEL = "claude-sonnet-5";
 
@@ -26,11 +27,25 @@ export interface ExtractedUnit {
   type: ExtractedType;
   title: string;
   content: string;
+  /** Who learned this at the table, as the model saw it: "party" when it was said openly, or the
+   * characters who were there for it. Decided in code against who actually took part — see
+   * audience.ts. Only session extraction proposes this; a document has no audience. */
+  audience?: ProposedAudience;
+}
+
+/** A fact as it is stored: merged across the parts of the session that mentioned its subject,
+ * carrying every proposal about who learned it. The proposals are resolved against who actually
+ * took part — in the worker, which is where characters exist — never here. */
+export interface SessionUnit {
+  type: ExtractedType;
+  title: string;
+  content: string;
+  audiences: ProposedAudience[];
 }
 
 export interface Extraction {
   recap: string;
-  units: ExtractedUnit[];
+  units: SessionUnit[];
 }
 
 const RECAP_SYSTEM = `You are the archivist of a tabletop RPG campaign. You are given the raw, speaker-attributed transcript of one whole game session.
@@ -50,10 +65,16 @@ The transcript is messy: it mixes in-fiction play with out-of-character table ta
 
 Record, with the record_units tool, discrete facts a player might later ask the memory about — one unit per distinct NPC, location, event, revealed fact, notable item, or open thread/quest in THIS part. Give each a short title (the subject's name, so facts about the same subject from different parts line up) and a self-contained content sentence or two.
 
+Also say WHO LEARNED each fact, in the story — not who was in the room. This decides which players can read it afterwards, so it matters:
+- "party" when it happened in front of the group, or was said openly to them.
+- a list of character names when only they were there for it: a vision only one character saw, a whisper, a letter one character read, a scene played out with one player while the others waited. The other players heard it out loud at the table, but their characters did not learn it.
+- If you cannot tell, leave the audience out. It then reaches nobody until the DM decides, which is the safe direction: a fact given to too few people can be handed out later, and one given to too many cannot be taken back.
+
 Rules:
 - Never invent details not supported by the transcript. If something is ambiguous, omit it.
 - Ignore pure table logistics and OOC banter — they are not campaign memory.
 - Prefer fewer, higher-signal units over many trivial ones.
+- Name characters exactly as the transcript labels them.
 - If nothing of substance happened in this part, return an empty units list.`;
 
 const RECAP_TOOL: Anthropic.Tool = {
@@ -95,6 +116,14 @@ const SESSION_UNITS_TOOL: Anthropic.Tool = {
             content: {
               type: "string",
               description: "Self-contained fact, one or two sentences.",
+            },
+            audience: {
+              description:
+                'Who learned this in the story: the string "party" when it happened openly in front of the group, or the names of the characters who were there for it when it was private. Leave it out when you cannot tell — the fact then waits for the DM.',
+              oneOf: [
+                { type: "string", enum: ["party"] },
+                { type: "array", items: { type: "string" } },
+              ],
             },
           },
           required: ["type", "title", "content"],
@@ -183,6 +212,9 @@ async function sessionUnitsFor(
       type: u.type,
       title: u.title.trim(),
       content: u.content.trim(),
+      ...(u.audience === "party" || Array.isArray(u.audience)
+        ? { audience: u.audience }
+        : {}),
     }));
 }
 
@@ -237,12 +269,22 @@ export async function extractSession(
     spent.reduce(addUsage, noUsage()),
     `recap + ${parts.length} part(s) of ${transcript.length} chars`,
   );
-  // Facts about the same subject from different parts become one, in the order they came up.
-  const units = mergeDocUnits(unitLists.flat()).map(
+  // Facts about the same subject from different parts become one, in the order they came up. The
+  // merged text can hold what a private scene revealed, so it keeps EVERY part's view of who
+  // learned it: the worker grants only what they agree on (narrowestAudience).
+  const found = unitLists.flat();
+  const proposals = new Map<string, ProposedAudience[]>();
+  for (const unit of found) {
+    const key = subjectKey(unit.title);
+    if (!key) continue;
+    proposals.set(key, [...(proposals.get(key) ?? []), unit.audience]);
+  }
+  const units: SessionUnit[] = mergeDocUnits(found).map(
     ({ type, title, content }) => ({
       type,
       title,
       content,
+      audiences: proposals.get(subjectKey(title)) ?? [],
     }),
   );
   return { recap, units };
