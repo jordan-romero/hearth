@@ -3,8 +3,9 @@
 // On 2026-09-16 capture died half an hour into a session and nothing said so: Discord kept
 // reporting who was speaking, the bot stayed online, its icon sat in the voice channel — and no
 // audio was saved for 27 minutes. It was found only by reading logs. This watches for exactly that
-// and says so in the channel, once, so anyone at the table can fix it (/stop, /record) — and says
-// so again when it recovers.
+// and says so in the channel — once, and only when something is broken. The bot stays in the
+// channel (leaving mid-scene is its own interruption), and a recovery is silent: the table is
+// playing a game, and "everything is fine" is not worth a message.
 
 /** People have been talking this recently… */
 export const SPEAKING_RECENT_MS = 60_000;
@@ -29,10 +30,17 @@ export interface RecordingHealth {
 }
 
 export type HealthAlert =
-  | { kind: "voice-lost" }
-  | { kind: "no-audio" }
-  | { kind: "not-saving" }
-  | { kind: "recovered" };
+  { kind: "voice-lost" } | { kind: "no-audio" } | { kind: "not-saving" };
+
+export interface HealthCheck {
+  /** Post this in the channel. Only ever a failure, and only the first one until it recovers. */
+  alert: HealthAlert | null;
+  /** Recording again after a warning: clear the warning so a later failure warns afresh. Nothing
+   * is posted — the table doesn't need to hear that it's working. */
+  recovered: boolean;
+}
+
+const QUIET: HealthCheck = { alert: null, recovered: false };
 
 export function newHealth(now: number): RecordingHealth {
   return {
@@ -45,11 +53,8 @@ export function newHealth(now: number): RecordingHealth {
   };
 }
 
-/** What, if anything, to tell the table now. Warns at most once until recording recovers. */
-export function checkHealth(
-  h: RecordingHealth,
-  now: number,
-): HealthAlert | null {
+/** What, if anything, to tell the table now — and whether a warned-about failure has passed. */
+export function checkHealth(h: RecordingHealth, now: number): HealthCheck {
   const lastAudio = h.lastAudioAtMs ?? h.startedAtMs;
   const talking =
     h.lastSpeakingAtMs !== null &&
@@ -64,16 +69,16 @@ export function checkHealth(
     h.voiceDownSinceMs !== null && now - h.voiceDownSinceMs >= VOICE_DOWN_MS;
 
   if (h.warnedAtMs === null) {
-    if (voiceLost) return { kind: "voice-lost" };
-    if (noAudio) return { kind: "no-audio" };
-    if (notSaving) return { kind: "not-saving" };
-    return null;
+    if (voiceLost) return { alert: { kind: "voice-lost" }, recovered: false };
+    if (noAudio) return { alert: { kind: "no-audio" }, recovered: false };
+    if (notSaving) return { alert: { kind: "not-saving" }, recovered: false };
+    return QUIET;
   }
   const audioSinceWarning =
     h.lastAudioAtMs !== null && h.lastAudioAtMs > h.warnedAtMs;
   return audioSinceWarning && !notSaving && h.voiceDownSinceMs === null
-    ? { kind: "recovered" }
-    : null;
+    ? { alert: null, recovered: true }
+    : QUIET;
 }
 
 export function alertText(alert: HealthAlert): string {
@@ -93,7 +98,5 @@ export function alertText(alert: HealthAlert): string {
         "⚠️ **Hearth is hearing the table but can't save what it records.** " +
         "Try `/stop`, then `/record`. If this keeps happening, tell whoever runs Hearth."
       );
-    case "recovered":
-      return "✅ Recording is working again.";
   }
 }

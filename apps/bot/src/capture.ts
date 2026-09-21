@@ -363,9 +363,15 @@ function alertChannel(
 
 async function watchHealth(state: ActiveRecording): Promise<void> {
   const now = Date.now();
-  const alert = checkHealth(state.health, now);
+  const { alert, recovered } = checkHealth(state.health, now);
+  // Recovery is silent — nothing is posted, but the warning is cleared so a later failure is
+  // reported afresh.
+  if (recovered) {
+    state.health.warnedAtMs = null;
+    console.log(`🩺 recording ${state.recordingId}: recording again`);
+  }
   if (!alert) return;
-  state.health.warnedAtMs = alert.kind === "recovered" ? null : now;
+  state.health.warnedAtMs = now;
   console.warn(`🩺 recording ${state.recordingId}: ${alert.kind}`);
   try {
     await state.alert?.(alertText(alert));
