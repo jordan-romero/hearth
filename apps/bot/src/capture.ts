@@ -26,6 +26,12 @@ import {
   type OpusBurstDecoder,
 } from "./opus-decoder.js";
 import { isBotUser } from "./voice-bots.js";
+import {
+  alertText,
+  checkHealth,
+  newHealth,
+  type RecordingHealth,
+} from "./recording-health.js";
 import { prisma } from "@hearth/db";
 import {
   getQueue,
@@ -52,6 +58,10 @@ interface ActiveRecording {
   // silent failure at someone else's table is invisible to us.
   liveSegments: number;
   liveFailures: number;
+  // Whether capture is actually working, and where to say so when it isn't.
+  health: RecordingHealth;
+  healthTimer: ReturnType<typeof setInterval> | null;
+  alert: ((text: string) => Promise<unknown>) | null;
 }
 
 const active = new Map<string, ActiveRecording>(); // guildId → recording
@@ -235,6 +245,9 @@ async function startRecordingInner(
     bots: new Set(),
     liveSegments: 0,
     liveFailures: 0,
+    health: newHealth(Date.now()),
+    healthTimer: null,
+    alert: alertChannel(interaction),
   };
   active.set(guildId, state);
 
@@ -250,6 +263,11 @@ async function startRecordingInner(
     // capture ever goes quiet (does it reach Ready and stay, or drop/reconnect?).
     connection.on("stateChange", (oldState, newState) => {
       console.log(`🔊 voice: ${oldState.status} → ${newState.status}`);
+      // A reconnect blip passes through "connecting" and back within a second; staying out of
+      // "ready" is what the health check warns about.
+      if (newState.status === VoiceConnectionStatus.Ready)
+        state.health.voiceDownSinceMs = null;
+      else state.health.voiceDownSinceMs ??= Date.now();
     });
 
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
@@ -269,6 +287,7 @@ async function startRecordingInner(
           }
         }
         if (state.bots.has(userId)) return;
+        state.health.lastSpeakingAtMs = Date.now();
         console.log(`🎙  speaking start: ${userId}`);
         await captureBurst(connection.receiver, userId, state);
       })();
@@ -279,6 +298,10 @@ async function startRecordingInner(
 
     console.log(
       `🔴 ${resumed ? "resumed" : "started"} — session ${gameSession.number} in "${channel.name}"`,
+    );
+    state.healthTimer = setInterval(
+      () => void watchHealth(state),
+      HEALTH_CHECK_MS,
     );
     await interaction.editReply(
       `🔴 ${resumed ? "Resumed" : "Recording"} session ${gameSession.number} in **${channel.name}** — play on, then \`/stop\`.`,
@@ -323,6 +346,38 @@ async function writeLiveSegment(
       isLive: true,
     },
   });
+}
+
+/** How often a recording checks that it's still recording. */
+const HEALTH_CHECK_MS = 30_000;
+
+/** Where to tell the table capture has stopped: the channel /record was run in. */
+function alertChannel(
+  interaction: ChatInputCommandInteraction,
+): ((text: string) => Promise<unknown>) | null {
+  const channel = interaction.channel;
+  return channel && "send" in channel && typeof channel.send === "function"
+    ? (text: string) => channel.send(text)
+    : null;
+}
+
+async function watchHealth(state: ActiveRecording): Promise<void> {
+  const now = Date.now();
+  const { alert, recovered } = checkHealth(state.health, now);
+  // Recovery is silent — nothing is posted, but the warning is cleared so a later failure is
+  // reported afresh.
+  if (recovered) {
+    state.health.warnedAtMs = null;
+    console.log(`🩺 recording ${state.recordingId}: recording again`);
+  }
+  if (!alert) return;
+  state.health.warnedAtMs = now;
+  console.warn(`🩺 recording ${state.recordingId}: ${alert.kind}`);
+  try {
+    await state.alert?.(alertText(alert));
+  } catch (err) {
+    console.error("could not post the recording alert:", err);
+  }
 }
 
 /** Capture one speaking burst → mono WAV clip → store → AudioClip → enqueue.
@@ -394,6 +449,7 @@ async function captureBurstInner(
 
   const onPcm = (c: Buffer) => {
     chunks.push(c);
+    state.health.lastAudioAtMs = Date.now();
     const mono = stereoToMono(c);
     if (live) {
       live.send(mono);
@@ -506,8 +562,10 @@ async function captureBurstInner(
       durationMs,
     };
     await boss.send(TRANSCRIBE_QUEUE, job);
+    state.health.consecutiveSaveFailures = 0;
     console.log(`💾 clip ${clip.id} (${durationMs}ms) from ${userId} → queued`);
   } catch (err) {
+    state.health.consecutiveSaveFailures++;
     console.error("captureBurst failed:", err);
   }
 }
@@ -526,6 +584,7 @@ export async function stopRecording(
   }
   getVoiceConnection(guildId)?.destroy();
   active.delete(guildId);
+  if (state.healthTimer) clearInterval(state.healthTimer);
   await prisma.recording.update({
     where: { id: state.recordingId },
     data: { status: "TRANSCRIBING", endedAt: new Date() },
