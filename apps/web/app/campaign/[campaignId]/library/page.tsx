@@ -31,7 +31,13 @@ const STATUS_LABEL: Record<string, string> = {
   FAILED: "failed",
 };
 
-type Outcome = { error?: string; added?: string; already?: string };
+type Outcome = {
+  error?: string;
+  added?: string;
+  already?: string;
+  /** Name of a document this upload replaces once it has been read. */
+  replaced?: string;
+};
 
 export default async function LibraryPage({
   params,
@@ -41,13 +47,16 @@ export default async function LibraryPage({
   searchParams: Promise<Outcome>;
 }) {
   const { campaignId } = await params;
-  const { error, added, already } = await searchParams;
+  const { error, added, already, replaced } = await searchParams;
   await requireDm(campaignId);
 
   const docs = await listDocuments(campaignId);
-  const parsed = docs.filter((d) => d.status === "PARSED");
-  const totalUnits = docs.reduce((n, d) => n + d._count.knowledgeUnits, 0);
-  const totalChunks = docs.reduce((n, d) => n + d._count.chunks, 0);
+  // A replaced version still has its passages and facts, but nothing reads them any more, so
+  // counting them here would overstate what the memory actually answers from.
+  const current = docs.filter((d) => !d.supersededById);
+  const parsed = current.filter((d) => d.status === "PARSED");
+  const totalUnits = current.reduce((n, d) => n + d._count.knowledgeUnits, 0);
+  const totalChunks = current.reduce((n, d) => n + d._count.chunks, 0);
 
   // Every action below re-checks the DM: a server action is its own entry point, and the page's
   // guard says nothing about who is calling it.
@@ -83,7 +92,12 @@ export default async function LibraryPage({
     revalidatePath(`/campaign/${campaignId}/library`);
     redirectTo(
       campaignId,
-      result?.alreadyAdded ? { already: result.name } : { added: f.name },
+      result?.alreadyAdded
+        ? { already: result.name }
+        : {
+            added: f.name,
+            ...(result?.replaces ? { replaced: f.name } : {}),
+          },
     );
   }
 
@@ -113,7 +127,12 @@ export default async function LibraryPage({
           campaignId,
           result.alreadyAdded
             ? { already: result.name }
-            : { added: String(input.fileName) },
+            : {
+                added: String(input.fileName),
+                ...(result.replaces
+                  ? { replaced: String(input.fileName) }
+                  : {}),
+              },
         ),
       };
     } catch (err) {
@@ -150,6 +169,13 @@ export default async function LibraryPage({
         />
 
         {error && <p className="notice error">{error}</p>}
+        {replaced && (
+          <p className="note">
+            This replaces the earlier <strong>{replaced}</strong>. The old
+            version is kept for anything already revealed from it, but new
+            answers will be written from this one.
+          </p>
+        )}
         {added && (
           <p className="notice ok">
             Added <strong>{added}</strong> — reading it into the memory now.
@@ -208,9 +234,18 @@ export default async function LibraryPage({
                     {d.baseVisibility === "EVERYONE" &&
                       " · players can see this"}
                   </span>
+                  {d.supersededById && (
+                    // Kept, not deleted: whatever was revealed from it still reaches the players
+                    // who were shown it.
+                    <span className="muted small">
+                      Replaced by a newer upload — no longer used in answers.
+                    </span>
+                  )}
                 </div>
                 <span className={`status ${d.status.toLowerCase()}`}>
-                  {STATUS_LABEL[d.status] ?? d.status.toLowerCase()}
+                  {d.supersededById
+                    ? "replaced"
+                    : (STATUS_LABEL[d.status] ?? d.status.toLowerCase())}
                 </span>
               </article>
             ))}
@@ -227,6 +262,7 @@ function libraryHref(campaignId: string, outcome: Outcome): string {
   if (outcome.error) q.set("error", outcome.error);
   if (outcome.added) q.set("added", outcome.added);
   if (outcome.already) q.set("already", outcome.already);
+  if (outcome.replaced) q.set("replaced", outcome.replaced);
   return `/campaign/${campaignId}/library?${q.toString()}`;
 }
 

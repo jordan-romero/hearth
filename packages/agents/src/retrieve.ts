@@ -10,6 +10,7 @@
 // question naming something exactly has to be able to win on the exact words.
 
 import { prisma } from "@hearth/db";
+import { sqlFactIsCurrent, sqlPassageIsCurrent } from "./current.js";
 import {
   filterKnowledge,
   type Viewer,
@@ -161,7 +162,7 @@ async function searchUnitsLexical(
       ON ac."membershipId" = ku."authorMembershipId"
      AND ac."campaignId" = ku."campaignId"
     WHERE ku."campaignId" = ${viewer.campaignId}
-      AND ku."supersededByCorrectionId" IS NULL
+      AND ${sqlFactIsCurrent}
       AND ku."provenance" <> 'UNSOURCED'
       AND (
         (${pattern}::text IS NOT NULL
@@ -198,9 +199,10 @@ async function searchUnits(
       ON ac."membershipId" = ku."authorMembershipId"
      AND ac."campaignId" = ku."campaignId"
     WHERE ku."campaignId" = ${viewer.campaignId} AND ku."embedding" IS NOT NULL
-      -- A fact the table has corrected is never retrieved again. This is the whole point of a
-      -- correction: the wrong answer has to become unreachable, not merely outranked.
-      AND ku."supersededByCorrectionId" IS NULL
+      -- A fact the table has corrected, or one from a document the DM has replaced, is never
+      -- retrieved again. That's the whole point: the stale answer has to become unreachable,
+      -- not merely outranked.
+      AND ${sqlFactIsCurrent}
       -- A document fact that couldn't be traced to exact words in its document is not used: no
       -- one can review it (the DM would have to audit their own notes; players mustn't see them).
       AND ku."provenance" <> 'UNSOURCED'
@@ -273,7 +275,7 @@ async function searchChunksLexical(
     FROM "DocumentChunk" c
     JOIN "SourceDocument" d ON d."id" = c."sourceDocumentId"
     WHERE c."campaignId" = ${viewer.campaignId}
-      AND c."supersededByCorrectionId" IS NULL
+      AND ${sqlPassageIsCurrent}
       AND (
         (${pattern}::text IS NOT NULL AND c."text" ~* ${pattern}::text)
         OR to_tsvector('english', c."text") @@ websearch_to_tsquery('english', ${question})
@@ -298,8 +300,8 @@ async function searchChunks(
     FROM "DocumentChunk" c
     JOIN "SourceDocument" d ON d."id" = c."sourceDocumentId"
     WHERE c."campaignId" = ${viewer.campaignId} AND c."embedding" IS NOT NULL
-      -- Same rule as units: a passage the table has corrected is never retrieved again.
-      AND c."supersededByCorrectionId" IS NULL
+      -- Same rule as units: a corrected passage, or one from a replaced document, is gone.
+      AND ${sqlPassageIsCurrent}
     ORDER BY c."embedding" <=> ${vec}::vector
     LIMIT ${limit * 3}`;
   return (await allowedChunks(viewer, rows)).slice(0, limit);

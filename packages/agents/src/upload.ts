@@ -9,7 +9,7 @@
 // campaign, not a viewer, because the worker also uses it.
 
 import { createHash, randomUUID } from "node:crypto";
-import { prisma } from "@hearth/db";
+import { prisma, type Prisma } from "@hearth/db";
 import {
   createDocumentUploadUrl,
   getDocument,
@@ -55,6 +55,9 @@ export interface UploadResult {
   name: string;
   /** True when this exact file was already in the campaign's library, so nothing was added. */
   alreadyAdded: boolean;
+  /** Set when a document of this name is already in the library: this upload replaces it once it
+   * has been read. The old version is kept for anything already revealed from it. */
+  replaces?: { id: string; uploadedAt: Date };
 }
 
 const safeName = (fileName: string) =>
@@ -81,12 +84,77 @@ export function isDirectUploadKey(campaignId: string, key: string): boolean {
 }
 
 // The same file twice (a double-click, or sending it again) would import every fact twice.
-// A copy that failed doesn't count, so uploading it again retries.
+// A copy that failed doesn't count, so uploading it again retries. Neither does a version the DM
+// has since replaced: uploading that file again is how they put the old version back.
 function findDuplicate(campaignId: string, contentHash: string) {
   return prisma.sourceDocument.findFirst({
-    where: { campaignId, contentHash, status: { not: "FAILED" } },
+    where: {
+      campaignId,
+      contentHash,
+      status: { not: "FAILED" },
+      supersededById: null,
+    },
     select: { id: true, name: true },
   });
+}
+
+/** The version this upload will replace: the current document of the same name in the same
+ * campaign, if there is one. Same name means same document — a DM who edits NPCS.md and uploads
+ * it again means "this is the new NPCS.md", not "keep both". */
+export async function previousVersion(
+  campaignId: string,
+  fileName: string,
+): Promise<{ id: string; name: string; createdAt: Date } | null> {
+  return prisma.sourceDocument.findFirst({
+    where: {
+      campaignId,
+      name: fileName,
+      supersededById: null,
+      status: { not: "FAILED" },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, name: true, createdAt: true },
+  });
+}
+
+/** Mark earlier uploads of this file as replaced by it. Called once the new version has been read
+ * successfully, so a file that fails to parse never retires the version that works.
+ *
+ * Nothing is deleted. Deleting a document cascades its KnowledgeGrants, so it would silently
+ * revoke every reveal granted from the old version; instead the old passages and facts stop being
+ * used in answers, reveal offers, search and the graph, and anything already revealed still
+ * resolves. Only documents created BEFORE this one are touched, so two uploads racing can never
+ * supersede each other and leave the campaign with no current version. */
+export async function supersedePreviousVersions(doc: {
+  id: string;
+  campaignId: string;
+  name: string;
+  createdAt: Date;
+}): Promise<number> {
+  const { count } = await prisma.sourceDocument.updateMany({
+    where: previousVersionsWhere(doc),
+    data: { supersededById: doc.id, supersededAt: new Date() },
+  });
+  return count;
+}
+
+/** Which documents a newly-read upload replaces: same campaign, same file name, not itself, not
+ * already replaced, and — the race guard — only ones uploaded BEFORE it. Without that last
+ * condition two uploads landing together could each mark the other replaced, leaving the campaign
+ * with no current version of the document at all. */
+export function previousVersionsWhere(doc: {
+  id: string;
+  campaignId: string;
+  name: string;
+  createdAt: Date;
+}): Prisma.SourceDocumentWhereInput {
+  return {
+    campaignId: doc.campaignId,
+    name: doc.name,
+    id: { not: doc.id },
+    supersededById: null,
+    createdAt: { lt: doc.createdAt },
+  };
 }
 
 function createDocument(
@@ -158,6 +226,7 @@ export async function ingestUpload(
     return { documentId: existing.id, name: existing.name, alreadyAdded: true };
   }
 
+  const previous = await previousVersion(campaignId, fileName);
   const doc = await createDocument(
     campaignId,
     fileName,
@@ -175,7 +244,14 @@ export async function ingestUpload(
       mimeType,
     ),
   );
-  return { documentId: doc.id, name: fileName, alreadyAdded: false };
+  return {
+    documentId: doc.id,
+    name: fileName,
+    alreadyAdded: false,
+    ...(previous
+      ? { replaces: { id: previous.id, uploadedAt: previous.createdAt } }
+      : {}),
+  };
 }
 
 /** Step one of a direct upload: where the browser should send the file, and its key. */
@@ -218,6 +294,7 @@ export async function ingestDirectUpload(
     return { documentId: existing.id, name: existing.name, alreadyAdded: true };
   }
 
+  const previous = await previousVersion(campaignId, fileName);
   const doc = await createDocument(
     campaignId,
     fileName,
@@ -227,7 +304,14 @@ export async function ingestDirectUpload(
     contentHash,
   );
   await storeAndQueue(doc.id, async () => key);
-  return { documentId: doc.id, name: fileName, alreadyAdded: false };
+  return {
+    documentId: doc.id,
+    name: fileName,
+    alreadyAdded: false,
+    ...(previous
+      ? { replaces: { id: previous.id, uploadedAt: previous.createdAt } }
+      : {}),
+  };
 }
 
 /** The campaign's documents with how much of the memory each one produced. */
@@ -243,6 +327,8 @@ export async function listDocuments(campaignId: string) {
       sourceType: true,
       baseVisibility: true,
       createdAt: true,
+      supersededById: true,
+      supersededAt: true,
       _count: { select: { chunks: true, knowledgeUnits: true } },
     },
   });

@@ -26,6 +26,7 @@ import {
   type Viewer,
 } from "@hearth/core";
 import { prisma } from "@hearth/db";
+import { currentFacts, currentPassages } from "./current.js";
 
 /**
  * The model that reads a corpus.
@@ -368,13 +369,13 @@ export async function loadCorpusMaterial(
 ): Promise<{ units: CorpusUnit[]; chunks: CorpusChunk[] }> {
   const [unitRows, chunkRows, grants] = await Promise.all([
     prisma.knowledgeUnit.findMany({
-      where: {
+      // Corrected facts and facts from a replaced document are left out (see current.ts).
+      where: currentFacts({
         campaignId: viewer.campaignId,
-        supersededByCorrectionId: null,
         // Untraceable document facts are never used (see FactProvenance).
         provenance: { not: "UNSOURCED" },
         ...(only.unitIds ? { id: { in: only.unitIds } } : {}),
-      },
+      }),
       select: {
         id: true,
         campaignId: true,
@@ -389,11 +390,10 @@ export async function loadCorpusMaterial(
       },
     }),
     prisma.documentChunk.findMany({
-      where: {
+      where: currentPassages({
         campaignId: viewer.campaignId,
-        supersededByCorrectionId: null,
         ...(only.chunkIds ? { id: { in: only.chunkIds } } : {}),
-      },
+      }),
       select: {
         id: true,
         campaignId: true,

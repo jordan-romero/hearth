@@ -8,6 +8,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@hearth/db";
 import { logUsage } from "./usage.js";
+import { currentFacts, currentPassages } from "./current.js";
 import {
   findMentions,
   factsAbout,
@@ -60,7 +61,7 @@ export async function documentSource(
   sourceDocumentId: string,
 ): Promise<GraphSource> {
   const passages = await prisma.documentChunk.findMany({
-    where: { sourceDocumentId, supersededByCorrectionId: null },
+    where: currentPassages({ sourceDocumentId }),
     select: { id: true, chunkIndex: true, text: true },
     orderBy: { chunkIndex: "asc" },
   });
@@ -365,7 +366,7 @@ export async function relinkGraph(
       },
     }),
     prisma.documentChunk.findMany({
-      where: { campaignId, supersededByCorrectionId: null },
+      where: currentPassages({ campaignId }),
       select: { id: true, chunkIndex: true, text: true },
     }),
     prisma.transcriptSegment.findMany({
@@ -373,7 +374,7 @@ export async function relinkGraph(
       select: { id: true, text: true },
     }),
     prisma.knowledgeUnit.findMany({
-      where: { campaignId, supersededByCorrectionId: null },
+      where: currentFacts({ campaignId }),
       select: { id: true, title: true, content: true },
     }),
   ]);

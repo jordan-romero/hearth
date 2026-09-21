@@ -5,6 +5,7 @@
 // dossier" case). Idempotent — re-revealing the same thing is a no-op.
 
 import { prisma } from "@hearth/db";
+import { currentPassages } from "./current.js";
 import { sectionFor } from "./sections.js";
 
 /** A passage of a section, with the document it belongs to. */
@@ -34,10 +35,7 @@ export async function sectionPassages(
   });
   if (!anchor) return [];
   const rows = await prisma.documentChunk.findMany({
-    where: {
-      sourceDocumentId: anchor.sourceDocumentId,
-      supersededByCorrectionId: null,
-    },
+    where: currentPassages({ sourceDocumentId: anchor.sourceDocumentId }),
     select: {
       id: true,
       chunkIndex: true,

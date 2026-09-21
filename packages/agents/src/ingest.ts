@@ -1,5 +1,10 @@
 // The ingestion pipeline: a stored SourceDocument → parsed text → chunks → embedded
 // DocumentChunks (the RAG layer). Idempotent — re-ingesting a doc replaces its chunks.
+//
+// A new upload of a file the campaign already has is a NEW document, and once it has been read
+// successfully the older one is marked superseded: kept, but no longer used in answers, reveal
+// offers, search or the graph. It is never deleted — that would cascade its KnowledgeGrants and
+// silently revoke reveals players already have.
 // Chunks and extracted facts take the document's visibility: DM_ONLY by default, EVERYONE when
 // the DM marked it as something the players already have.
 
@@ -11,6 +16,7 @@ import { linkFactsForDocument } from "./link-sources.js";
 import { buildGraph, documentSource } from "./graph-build.js";
 import { embedTexts, toVectorLiteral } from "./embeddings.js";
 import { extractUnitsFromText } from "./extract.js";
+import { supersedePreviousVersions } from "./upload.js";
 
 const EMBED_BATCH = 100; // stay well under Voyage's per-request input cap
 
@@ -116,6 +122,15 @@ export async function ingestDocument(sourceDocumentId: string): Promise<void> {
       where: { id: doc.id },
       data: { status: "PARSED" },
     });
+
+    // Only now, with the new version read and usable, does the old one stop being used. Nothing
+    // is deleted: reveals already granted from it still resolve (see supersedePreviousVersions).
+    const replaced = await supersedePreviousVersions(doc);
+    if (replaced > 0) {
+      console.log(
+        `[ingest] "${doc.name}" replaces ${replaced} earlier version(s) — kept, no longer used`,
+      );
+    }
   } catch (err) {
     console.error(`[ingest] document ${sourceDocumentId} failed:`, err);
     await prisma.sourceDocument
