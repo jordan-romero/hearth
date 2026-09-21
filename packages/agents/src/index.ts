@@ -34,4 +34,5 @@ export * from "./graph-context.js";
 export * from "./graph-agent.js";
 export * from "./character-recap.js";
 export * from "./current.js";
+export * from "./audience.js";
 export * from "./usage.js";

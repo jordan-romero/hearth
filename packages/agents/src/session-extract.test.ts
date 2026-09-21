@@ -37,6 +37,75 @@ const line = (i: number) =>
 const transcript = (lines: number) =>
   Array.from({ length: lines }, (_, i) => line(i)).join("\n");
 
+describe("extractSession — who learned each fact", () => {
+  it("keeps every part's view of who learned a subject, for the worker to narrow", async () => {
+    // The same subject comes up twice: once in front of the group, once in a private scene. The
+    // merged fact holds both halves, so both proposals have to survive — granting it to the party
+    // because one part said so would hand out what only one character heard.
+    const long = transcript(1200);
+    let part = 0;
+    const { client } = fakeClient((tool) =>
+      tool === "record_recap"
+        ? { input: { recap: "The ferry crossed." } }
+        : {
+            input: {
+              units: [
+                {
+                  type: "NPC",
+                  title: "The ferryman",
+                  content: `Part ${++part}.`,
+                  audience: part === 1 ? "party" : ["Morwyn"],
+                },
+              ],
+            },
+          },
+    );
+    const { units } = await extractSession(long, client);
+
+    expect(units).toHaveLength(1);
+    expect(units[0]!.audiences).toContain("party");
+    expect(units[0]!.audiences).toContainEqual(["Morwyn"]);
+  });
+
+  it("records no audience when the model didn't give one", async () => {
+    // Which means the fact reaches nobody until the DM decides — never everyone by default.
+    const { client } = fakeClient((tool) =>
+      tool === "record_recap"
+        ? { input: { recap: "Quiet session." } }
+        : {
+            input: {
+              units: [
+                { type: "EVENT", title: "The bell", content: "It rang." },
+              ],
+            },
+          },
+    );
+    const { units } = await extractSession(transcript(5), client);
+    expect(units[0]!.audiences).toEqual([undefined]);
+  });
+
+  it("ignores an audience that is neither the party nor a list of names", async () => {
+    const { client } = fakeClient((tool) =>
+      tool === "record_recap"
+        ? { input: { recap: "Quiet session." } }
+        : {
+            input: {
+              units: [
+                {
+                  type: "EVENT",
+                  title: "The bell",
+                  content: "It rang.",
+                  audience: "everyone in the world",
+                },
+              ],
+            },
+          },
+    );
+    const { units } = await extractSession(transcript(5), client);
+    expect(units[0]!.audiences).toEqual([undefined]);
+  });
+});
+
 describe("extractSession", () => {
   it("reads a long session in parts and never cuts a line in two", async () => {
     const long = transcript(1200); // well past one part

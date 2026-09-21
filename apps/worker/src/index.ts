@@ -6,6 +6,8 @@ import {
   getClip,
   transcribeClip,
   extractSession,
+  decideAudience,
+  narrowestAudience,
   buildGraph,
   writeRecapsForSession,
   sessionSource,
@@ -186,7 +188,25 @@ async function finalizeSession(gameSessionId: string): Promise<void> {
     .map((s) => `${speakerLabel(s, labels)}: ${s.text}`)
     .join("\n");
 
+  let granted = 0;
   const { recap, units } = await extractSession(transcript);
+
+  // Who was actually at the table, and who can hand out knowledge on the campaign's behalf. A
+  // session fact reaches the characters who learned it in the fiction — not everyone in the
+  // campaign, as it used to — so both of these are needed before anything is stored.
+  const [attendance, dm] = await Promise.all([
+    prisma.sessionAttendance.findMany({
+      where: { gameSessionId: gameSession.id, characterId: { not: null } },
+      select: { character: { select: { id: true, name: true } } },
+    }),
+    prisma.membership.findFirst({
+      where: { campaignId: gameSession.campaignId, role: "DM" },
+      select: { id: true },
+    }),
+  ]);
+  const present = attendance
+    .map((a) => a.character)
+    .filter((c): c is { id: string; name: string } => c !== null);
 
   // Replace this session's SESSION units atomically, so a retried job can't duplicate
   // them. createManyAndReturn gives back the ids we need to attach embeddings.
@@ -201,11 +221,42 @@ async function finalizeSession(gameSessionId: string): Promise<void> {
         type: u.type,
         source: "SESSION" as const,
         origin: "PLAYED" as const,
-        baseVisibility: "EVERYONE" as const,
+        // DM_ONLY plus a grant per character who learned it, rather than visible to the whole
+        // campaign: a character who wasn't there hasn't learned what happened, and a secret told
+        // to one character stays hers until she shares it.
+        baseVisibility: "DM_ONLY" as const,
         title: u.title,
         content: u.content,
       })),
     });
+    // Grants can only be attributed to a membership, and the campaign's DM is who the memory
+    // acts for. Without one, the facts simply stay DM-only — never wider than intended.
+    if (dm) {
+      // Matched by title, not by position: lining up two lists by index would, if they ever drifted
+      // apart, hand one character's private knowledge to another. Titles are the subject a fact was
+      // merged under, so they are already distinct.
+      const audiencesByTitle = new Map(
+        units.map((u) => [u.title, u.audiences]),
+      );
+      const grants = rows.flatMap((row) =>
+        narrowestAudience(
+          (audiencesByTitle.get(row.title) ?? []).map((a) =>
+            decideAudience(a, present),
+          ),
+        ).map((characterId) => ({
+          knowledgeUnitId: row.id,
+          characterId,
+          revealedByMembershipId: dm.id,
+        })),
+      );
+      if (grants.length > 0) {
+        await tx.knowledgeGrant.createMany({
+          data: grants,
+          skipDuplicates: true,
+        });
+      }
+      granted = grants.length;
+    }
     await tx.gameSession.update({
       where: { id: gameSession.id },
       data: { recap },
@@ -257,7 +308,8 @@ async function finalizeSession(gameSessionId: string): Promise<void> {
 
   await finalize(gameSession.id);
   console.log(
-    `[finalize] session ${gameSessionId}: recap + ${created.length} knowledge units stored`,
+    `[finalize] session ${gameSessionId}: recap + ${created.length} knowledge units stored, ` +
+      `${granted} grant(s) to the ${present.length} character(s) who were there`,
   );
 }
 
