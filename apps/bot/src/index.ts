@@ -21,6 +21,8 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuInteraction,
   TextInputBuilder,
   TextInputStyle,
 } from "discord.js";
@@ -76,6 +78,7 @@ import {
   currentPassages,
 } from "@hearth/agents";
 import { startRecording, stopRecording } from "./capture.js";
+import { RevealDrafts } from "./reveal-drafts.js";
 import {
   answerEmbeds,
   splitForEmbeds,
@@ -492,10 +495,18 @@ async function handleAsk(
       result,
       viewer.theme,
     );
-    await interaction.editReply({ embeds: [first!] });
-    for (const embed of rest)
+    // The DM gets a "Reveal to…" button under the answer: they have just read it, and releasing
+    // any of it shouldn't mean describing the same thing again in /reveal. It goes on the LAST
+    // message, so a briefing that spans several isn't interrupted by it mid-way.
+    const buttons = revealFromAnswerRow(viewer, question);
+    await interaction.editReply({
+      embeds: [first!],
+      ...(rest.length === 0 ? { components: buttons } : {}),
+    });
+    for (const [i, embed] of rest.entries())
       await interaction.followUp({
         embeds: [embed],
+        ...(i === rest.length - 1 ? { components: buttons } : {}),
         flags: MessageFlags.Ephemeral,
       });
   } catch (err) {
@@ -654,7 +665,7 @@ async function handleSetup(
  * told them.
  */
 async function revealChannelBlockers(
-  interaction: ChatInputCommandInteraction | ButtonInteraction,
+  interaction: RevealInteraction | ButtonInteraction,
   channelId: string,
 ): Promise<string[] | null> {
   const channel = await interaction.guild?.channels
@@ -1653,6 +1664,15 @@ async function resolveRevealChannelId(
 ): Promise<string> {
   const chosen = interaction.options.getChannel("in");
   if (chosen) return chosen.id;
+  return defaultRevealChannelId(interaction, campaignId);
+}
+
+/** Where a party reveal goes when nobody named a channel: the campaign's reveals channel, else
+ * wherever this is happening. The "Reveal to…" button has no `in:` to offer. */
+async function defaultRevealChannelId(
+  interaction: RevealInteraction | ButtonInteraction,
+  campaignId: string,
+): Promise<string> {
   const settings = await getCampaignDiscord(campaignId);
   return settings?.revealChannelId ?? interaction.channelId ?? "";
 }
@@ -1739,15 +1759,40 @@ async function handleReveal(
     );
     return;
   }
+  await presentReveal(interaction, viewer, about, target, {
+    channelId: target.characterId
+      ? ""
+      : await resolveRevealChannelId(interaction, viewer.campaignId),
+  });
+}
+
+/** Either way into the same screen: the /reveal command, or the "Reveal to…" button under an
+ * answer. Both have already deferred an ephemeral reply. */
+type RevealInteraction =
+  ChatInputCommandInteraction | StringSelectMenuInteraction;
+
+/**
+ * Show the DM what can be released and let them confirm it.
+ *
+ * Everything from here down is the same whether the DM typed `/reveal about:… to:…` or clicked
+ * "Reveal to…" under an answer and picked who: the same preflight on the announce channel, the
+ * same choice of candidates from the whole library, the same buttons. Only how `about` and the
+ * target were arrived at differs.
+ */
+async function presentReveal(
+  interaction: RevealInteraction,
+  viewer: ResolvedViewer,
+  about: string,
+  target: { characterId?: string; partyId?: string; label: string },
+  opts: { channelId: string },
+): Promise<void> {
   const isParty = !target.characterId;
   const scope = target.characterId
     ? `c:${target.characterId}`
     : `p:${target.partyId}`;
-  // Resolve the announce channel now (for party reveals) and bake it into the button, so the
+  // The announce channel is resolved now (for party reveals) and baked into the button, so the
   // confirm handler posts exactly where the preview promised. Character reveals DM the player.
-  const channelId = isParty
-    ? await resolveRevealChannelId(interaction, viewer.campaignId)
-    : "";
+  const channelId = isParty ? opts.channelId : "";
   // Check that the announcement can actually be delivered BEFORE anything is granted. A reveal
   // is one-way: granting first and discovering at announce time that the channel is unreachable
   // leaves a player holding knowledge nobody ever told them, and no way to take it back.
@@ -1875,6 +1920,171 @@ async function handleReveal(
   await interaction.editReply({
     content: lines.join("\n"),
     components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buttons)],
+  });
+}
+
+// ─── "Reveal to…" under an answer ────────────────────────────────────────────
+//
+// Scott's complaint about /reveal was the typing: he has just read the answer, and to release any
+// of it he has to describe the same thing again in `about:` and name the recipient in `to:`. So a
+// DM's answer now carries a button. The question he already asked is what gets looked up, and the
+// only thing left to choose is who learns it.
+//
+// The question lives in memory (reveal-drafts.ts), keyed by a random id in the button — never in
+// the custom id itself, which Discord caps at 100 characters and which anyone can read off the
+// message. Lost on restart, which is fine: the DM can ask again.
+const revealDrafts = new RevealDrafts();
+setInterval(() => revealDrafts.sweep(Date.now()), 5 * 60_000).unref();
+
+/** The button that goes under a DM's answer, or nothing at all for a player. */
+function revealFromAnswerRow(
+  viewer: ResolvedViewer,
+  question: string,
+): ActionRowBuilder<ButtonBuilder>[] {
+  if (viewer.role !== "DM") return [];
+  const draftId = revealDrafts.put(
+    randomUUID().slice(0, 8),
+    question,
+    viewer.campaignId,
+    Date.now(),
+  );
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`rvq:${draftId}`)
+        .setLabel("Reveal to…")
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
+/** Clicked "Reveal to…": ask who, from the campaign's own characters. */
+async function handleRevealFromAnswer(
+  interaction: ButtonInteraction,
+): Promise<void> {
+  const draftId = interaction.customId.split(":")[1] ?? "";
+  const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
+  if (!viewer || viewer.role !== "DM") {
+    await interaction.reply({
+      content: "Only the DM can reveal things from the memory.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  const draft = revealDrafts.get(draftId, viewer.campaignId, Date.now());
+  if (!draft) {
+    await interaction.reply({
+      content:
+        "That answer is too old to reveal from — ask again and the button will work.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const [characters, party] = await Promise.all([
+    prisma.character.findMany({
+      where: { campaignId: viewer.campaignId },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+      // A select menu holds 25 options and one is the party.
+      take: 24,
+    }),
+    prisma.party.findFirst({
+      where: { campaignId: viewer.campaignId },
+      select: { id: true },
+    }),
+  ]);
+  const options = [
+    ...(party
+      ? [
+          {
+            label: "The whole party",
+            value: `p:${party.id}`,
+            description: "Announced in the reveals channel",
+          },
+        ]
+      : []),
+    ...characters.map((c) => ({
+      label: trimLabel(c.name),
+      value: `c:${c.id}`,
+      description: "Sent privately to their player",
+    })),
+  ];
+  if (options.length === 0) {
+    await interaction.reply({
+      content:
+        "There's nobody to reveal to yet — no characters in this campaign.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  await interaction.reply({
+    content: `**Reveal what you just asked about** — _"${preview(draft.question)}"_\nWho should learn it?`,
+    components: [
+      new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`rvto:${draftId}`)
+          .setPlaceholder("Choose who learns this")
+          .addOptions(options),
+      ),
+    ],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/** Picked who: from here it is exactly the /reveal screen — same candidates, same confirm. */
+async function handleRevealTarget(
+  interaction: StringSelectMenuInteraction,
+): Promise<void> {
+  const draftId = interaction.customId.split(":")[1] ?? "";
+  const viewer = await resolveViewer(interaction.guildId, interaction.user.id);
+  if (!viewer || viewer.role !== "DM") {
+    await interaction.update({
+      content: "Only the DM can reveal things from the memory.",
+      components: [],
+    });
+    return;
+  }
+  const draft = revealDrafts.get(draftId, viewer.campaignId, Date.now());
+  if (!draft) {
+    await interaction.update({
+      content:
+        "That answer is too old to reveal from — ask again and the button will work.",
+      components: [],
+    });
+    return;
+  }
+
+  // Choosing candidates reads the whole library, which takes a moment: take over the message now
+  // so Discord doesn't time the interaction out, then fill it with the preview.
+  await interaction.deferUpdate();
+  await interaction.editReply({
+    content: "Looking through the memory…",
+    components: [],
+  });
+
+  const [kind, id] = (interaction.values[0] ?? "").split(":");
+  const target =
+    kind === "p"
+      ? { partyId: id, label: "the party" }
+      : await prisma.character
+          .findFirst({
+            where: { id, campaignId: viewer.campaignId },
+            select: { id: true, name: true },
+          })
+          .then((c) => (c ? { characterId: c.id, label: c.name } : null));
+  if (!target) {
+    await interaction.editReply({
+      content: "That character isn't in this campaign any more.",
+      components: [],
+    });
+    return;
+  }
+  await presentReveal(interaction, viewer, draft.question, target, {
+    channelId:
+      kind === "p"
+        ? await defaultRevealChannelId(interaction, viewer.campaignId)
+        : "",
   });
 }
 
@@ -2549,10 +2759,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await handleCorrectionButton(interaction);
         return;
       }
-      if (interaction.customId.startsWith("rv:")) {
+      if (interaction.customId.startsWith("rvq:")) {
+        await handleRevealFromAnswer(interaction);
+      } else if (interaction.customId.startsWith("rv:")) {
         await handleRevealButton(interaction);
       } else if (interaction.customId.startsWith("npc:")) {
         await handleNpcButton(interaction);
+      }
+      return;
+    }
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId.startsWith("rvto:")) {
+        await handleRevealTarget(interaction);
       }
       return;
     }
