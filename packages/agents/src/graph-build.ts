@@ -7,6 +7,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { prisma } from "@hearth/db";
+import { logUsage } from "./usage.js";
 import {
   findMentions,
   factsAbout,
@@ -466,5 +467,10 @@ export async function buildGraph(
     total.usage = add(total.usage, r.usage);
   }
   if (opts.save && total.sources > 0) await relinkGraph(campaignId);
+  logUsage(
+    "graph build",
+    total.usage,
+    `${total.sources} source(s), ${total.relations} relation(s)`,
+  );
   return total;
 }

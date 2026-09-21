@@ -10,6 +10,7 @@
 // told more (reveals, /share); nothing can take a spoiler back.
 
 import Anthropic from "@anthropic-ai/sdk";
+import { addUsage, logUsage, noUsage, usageOf, type Usage } from "./usage.js";
 import { prisma } from "@hearth/db";
 import { speakerLabel } from "./live.js";
 import { getSpeakerLabels } from "./tenancy.js";
@@ -75,6 +76,7 @@ async function recapFor(
   client: Anthropic,
   transcript: string,
   character: RecapCharacter,
+  spent: Usage[],
 ): Promise<CharacterRecapText | null> {
   const msg = await client.messages
     .stream({
@@ -102,6 +104,7 @@ async function recapFor(
       ],
     })
     .finalMessage();
+  spent.push(usageOf(msg));
   const block = msg.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
   );
@@ -125,10 +128,11 @@ export async function writeCharacterRecaps(
   client: Anthropic = new Anthropic(),
 ): Promise<{ recaps: CharacterRecapText[]; failed: number }> {
   const recaps: CharacterRecapText[] = [];
+  const spent: Usage[] = [];
   let failed = 0;
   const one = async (c: RecapCharacter) => {
     try {
-      const r = await recapFor(client, transcript, c);
+      const r = await recapFor(client, transcript, c, spent);
       if (r) recaps.push(r);
       else failed++;
     } catch (err) {
@@ -141,6 +145,11 @@ export async function writeCharacterRecaps(
   const rest = characters.slice(1);
   for (let i = 0; i < rest.length; i += CONCURRENCY)
     await Promise.all(rest.slice(i, i + CONCURRENCY).map(one));
+  logUsage(
+    "character recaps",
+    spent.reduce(addUsage, noUsage()),
+    `${characters.length} character(s)`,
+  );
   return { recaps, failed };
 }
 

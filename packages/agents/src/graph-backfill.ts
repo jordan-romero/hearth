@@ -19,9 +19,9 @@ import {
   type GraphBuildReport,
   type GraphSource,
 } from "./graph-build.js";
+import { PRICE } from "./usage.js";
 
 // Sonnet 5 per million tokens; cache writes at the 5-minute rate.
-const PRICE = { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 };
 const CHARS_PER_TOKEN = 2.5;
 
 function arg(name: string): string | undefined {

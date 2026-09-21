@@ -15,6 +15,7 @@ import { prisma } from "@hearth/db";
 import { retrieveContext } from "./retrieve.js";
 import { buildCorpus, CORPUS_MODEL, type Corpus } from "./corpus.js";
 import { noKnowledgeReply } from "./no-knowledge.js";
+import { logUsage, usageOf } from "./usage.js";
 
 // Live Q&A runs on Haiku — it's grounded answer-from-context, not deep reasoning,
 // and Haiku is ~3x cheaper (see the pricing model). Extraction stays on Sonnet.
@@ -135,14 +136,10 @@ async function askFromCorpus(
   });
   // What this actually cost, so the decision to send a whole library can be judged on numbers
   // rather than assumed. A cache read is a fraction of the price of the same tokens uncached.
-  const usage = msg.usage as Anthropic.Usage & {
-    cache_creation_input_tokens?: number;
-    cache_read_input_tokens?: number;
-  };
-  console.log(
-    `[corpus ask] ${corpus.manifest.documents.length} docs, ${corpus.manifest.factCount} facts, ` +
-      `in=${usage.input_tokens} cacheWrite=${usage.cache_creation_input_tokens ?? 0} ` +
-      `cacheRead=${usage.cache_read_input_tokens ?? 0} out=${usage.output_tokens} ` +
+  logUsage(
+    "corpus ask",
+    usageOf(msg),
+    `${corpus.manifest.documents.length} docs, ${corpus.manifest.factCount} facts, ` +
       `${Date.now() - started}ms`,
   );
 

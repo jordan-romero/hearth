@@ -4,6 +4,7 @@
 // it's a once-per-session cost, not per-question — see the pricing model).
 
 import Anthropic from "@anthropic-ai/sdk";
+import { addUsage, logUsage, noUsage, usageOf, type Usage } from "./usage.js";
 
 const MODEL = "claude-sonnet-5";
 
@@ -116,7 +117,11 @@ async function forcedTool(
   tool: Anthropic.Tool,
   content: string,
   maxTokens: number,
-): Promise<{ input: Record<string, unknown> | null; truncated: boolean }> {
+): Promise<{
+  input: Record<string, unknown> | null;
+  truncated: boolean;
+  usage: Usage;
+}> {
   const msg = await client.messages
     .stream({
       model: MODEL,
@@ -133,6 +138,7 @@ async function forcedTool(
   return {
     input: (block?.input as Record<string, unknown> | undefined) ?? null,
     truncated: msg.stop_reason === "max_tokens",
+    usage: usageOf(msg),
   };
 }
 
@@ -140,14 +146,16 @@ async function sessionUnitsFor(
   client: Anthropic,
   text: string,
   label: string,
+  spent: Usage[],
 ): Promise<ExtractedUnit[]> {
-  const { input, truncated } = await forcedTool(
+  const { input, truncated, usage } = await forcedTool(
     client,
     SESSION_UNITS_SYSTEM,
     SESSION_UNITS_TOOL,
     `Session transcript, ${label}:\n\n${text}`,
     32_000,
   );
+  spent.push(usage);
   // A reply cut off mid-list would silently lose every fact after the cut. Read the part in two
   // halves instead; only give up when a part is already small and still won't fit.
   if (truncated || !input) {
@@ -158,7 +166,7 @@ async function sessionUnitsFor(
     const halves = extractionWindows(text, Math.ceil(text.length / 2));
     const parts = await Promise.all(
       halves.map((h, i) =>
-        sessionUnitsFor(client, h, `${label}, half ${i + 1}`),
+        sessionUnitsFor(client, h, `${label}, half ${i + 1}`, spent),
       ),
     );
     return parts.flat();
@@ -190,13 +198,15 @@ export async function extractSession(
 ): Promise<Extraction> {
   const parts = extractionWindows(transcript, SESSION_WINDOW);
 
+  const spent: Usage[] = [];
   const recapCall = forcedTool(
     client,
     RECAP_SYSTEM,
     RECAP_TOOL,
     `Session transcript:\n\n${transcript}`,
     16_000,
-  ).then(({ input, truncated }) => {
+  ).then(({ input, truncated, usage }) => {
+    spent.push(usage);
     const recap = typeof input?.recap === "string" ? input.recap.trim() : "";
     if (!recap || truncated)
       throw new Error(
@@ -214,6 +224,7 @@ export async function extractSession(
             client,
             part,
             `part ${i + j + 1} of ${parts.length}`,
+            spent,
           );
         }),
       );
@@ -221,6 +232,11 @@ export async function extractSession(
   })();
 
   const [recap] = await Promise.all([recapCall, unitsCall]);
+  logUsage(
+    "extract session",
+    spent.reduce(addUsage, noUsage()),
+    `recap + ${parts.length} part(s) of ${transcript.length} chars`,
+  );
   // Facts about the same subject from different parts become one, in the order they came up.
   const units = mergeDocUnits(unitLists.flat()).map(
     ({ type, title, content }) => ({

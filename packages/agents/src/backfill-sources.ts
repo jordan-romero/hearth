@@ -33,9 +33,9 @@ import {
   type RejectReason,
   type RejectedSource,
 } from "./provenance.js";
-
 // Sonnet 5, per million tokens. Cache writes here use the 5-minute TTL (1.25x); reads are 0.1x.
-const PRICE = { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 };
+import { PRICE } from "./usage.js";
+
 const CHARS_PER_TOKEN = 2.5; // measured against this campaign's corpus; errs high
 const CONCURRENCY = 4;
 const CONFIRM_ABOVE_DOLLARS = 1;
