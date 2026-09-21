@@ -13,6 +13,7 @@
 // knowledge arrives through one code path with one audit trail rather than a parallel one.
 
 import { prisma } from "@hearth/db";
+import { currentFacts } from "./current.js";
 import type { Viewer } from "@hearth/core";
 import { filterKnowledge } from "@hearth/core";
 import { retrieveForViewer } from "./retrieve.js";
@@ -80,13 +81,10 @@ export async function requestShare(
   note?: string,
 ): Promise<{ id: string; alreadyPending: boolean }> {
   const unit = await prisma.knowledgeUnit.findFirst({
-    where: {
-      id: unitId,
-      campaignId: viewer.campaignId,
-      // A correction may have retired it since the player looked it up; sharing a fact the
-      // table has disowned would put it back in front of everyone.
-      supersededByCorrectionId: null,
-    },
+    // A correction may have retired it since the player looked it up, or the DM may have
+    // replaced the document it came from; sharing a fact the table has moved past would put it
+    // back in front of everyone.
+    where: currentFacts({ id: unitId, campaignId: viewer.campaignId }),
     select: {
       id: true,
       campaignId: true,

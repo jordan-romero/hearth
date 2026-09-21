@@ -544,6 +544,12 @@ model SourceDocument {
   baseVisibility BaseVisibility @default(DM_ONLY)
   // SHA-256 of the uploaded bytes, so the same file sent twice isn't imported twice.
   contentHash    String?
+  /// A newer upload of the same document (same campaign, same file name). The old version is
+  /// KEPT, never deleted: deleting it would cascade its KnowledgeGrants and silently revoke
+  /// every reveal granted from it. Its passages and facts simply stop being used in answers,
+  /// reveal offers, search and the graph — what a player was already shown still resolves.
+  supersededById String?
+  supersededAt   DateTime?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -552,9 +558,14 @@ model SourceDocument {
   knowledgeUnits KnowledgeUnit[]
   grants         KnowledgeGrant[] // document-level reveals (opens all its chunks)
   reveals        RevealEvent[]
+  // SetNull, not Cascade: if the newer version is ever deleted, the older one comes back as
+  // current rather than disappearing with it.
+  supersededBy   SourceDocument?  @relation("DocumentVersions", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes     SourceDocument[] @relation("DocumentVersions")
 
   @@index([campaignId])
   @@index([campaignId, contentHash])
+  @@index([campaignId, supersededById])
 }
 
 /// One chunk of a SourceDocument's text, embedded for semantic search (the RAG layer).

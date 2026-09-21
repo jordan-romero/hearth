@@ -72,6 +72,8 @@ import {
   type ResolvedMember,
   type NpcDraft,
   type PortraitMatch,
+  currentFacts,
+  currentPassages,
 } from "@hearth/agents";
 import { startRecording, stopRecording } from "./capture.js";
 import {
@@ -1569,10 +1571,19 @@ async function handleUpload(
     console.log(
       `📄 upload: "${attachment.name}" (${data.length} bytes, ${forPlayers ? "for players" : "DM only"}) → ${doc.documentId} queued`,
     );
+    // Same name as something already in the library means a new version of it, so say what will
+    // happen to the old one — it stops being used, but nothing revealed from it is taken back.
+    const replaces = doc.replaces
+      ? ` This replaces the version from ${doc.replaces.uploadedAt.toLocaleDateString(
+          "en-GB",
+          { day: "numeric", month: "short" },
+        )} once it's read — the old one is kept for anything already revealed from it.`
+      : "";
     await interaction.editReply(
-      forPlayers
+      (forPlayers
         ? `📄 Uploaded **${attachment.name}** — parsing it into the memory. Everyone at the table can see it.`
-        : `📄 Uploaded **${attachment.name}** — parsing it into the memory. Only you can see it until you reveal it.`,
+        : `📄 Uploaded **${attachment.name}** — parsing it into the memory. Only you can see it until you reveal it.`) +
+        replaces,
     );
   } catch (err) {
     console.error("/upload failed:", err);
@@ -1662,13 +1673,12 @@ async function resolvePicks(
   for (const pick of picks) {
     if (pick.kind === "unit") {
       const unit = await prisma.knowledgeUnit.findFirst({
-        where: {
+        where: currentFacts({
           id: pick.id,
           campaignId,
-          supersededByCorrectionId: null,
           // Never offer a fact nobody can trace to its source as something to reveal.
           provenance: { not: "UNSOURCED" },
-        },
+        }),
         select: { id: true, title: true, content: true },
       });
       if (unit) {
@@ -1683,7 +1693,7 @@ async function resolvePicks(
       continue;
     }
     const chunk = await prisma.documentChunk.findFirst({
-      where: { id: pick.id, campaignId, supersededByCorrectionId: null },
+      where: currentPassages({ id: pick.id, campaignId }),
       select: {
         id: true,
         text: true,
@@ -1917,9 +1927,10 @@ async function announceReveal(
   let body: string;
   if (kind === "u") {
     // A reveal button can be clicked long after it was posted, by which time a correction may
-    // have retired this fact — announcing it would publish a version the table has disowned.
+    // have retired this fact, or the DM may have uploaded a newer version of the document it came
+    // from — announcing it would publish a version the table has moved past.
     const u = await prisma.knowledgeUnit.findFirst({
-      where: { id: targetId, supersededByCorrectionId: null },
+      where: currentFacts({ id: targetId }),
       select: { title: true, content: true },
     });
     itemTitle = u?.title ?? "a memory";
@@ -1932,9 +1943,10 @@ async function announceReveal(
       : "a passage";
     body = joinPassages(passages);
   } else if (kind === "p") {
-    // Same reason as above: a correction can retire a passage between the preview and the click.
+    // Same reason as above: a correction or a replaced document can retire a passage between the
+    // preview and the click.
     const c = await prisma.documentChunk.findFirst({
-      where: { id: targetId, supersededByCorrectionId: null },
+      where: currentPassages({ id: targetId }),
       select: { text: true, sourceDocument: { select: { name: true } } },
     });
     // Never the document's name: players see this, and a file name can give away what the passage
