@@ -12,7 +12,7 @@
   "dependencies": {
     "@hearth/agents": "workspace:*",
     "@hearth/db": "workspace:*",
-    "pg-boss": "^12.30.0",
+    "pg-boss": "^12.33.2",
     "tsx": "^4.23.13"
   },
   "devDependencies": {

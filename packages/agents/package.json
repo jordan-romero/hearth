@@ -20,13 +20,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.124.0",
-    "@deepgram/sdk": "^5.10.0",
+    "@anthropic-ai/sdk": "^0.127.0",
+    "@deepgram/sdk": "^5.11.0",
     "@hearth/core": "workspace:*",
     "@hearth/db": "workspace:*",
     "@supabase/supabase-js": "^2.115.0",
     "mammoth": "^1.12.2",
-    "pg-boss": "^12.30.0",
+    "pg-boss": "^12.33.2",
     "unpdf": "^1.8.1",
     "ws": "^8.21.3"
   },
