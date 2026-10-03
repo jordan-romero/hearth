@@ -19,7 +19,7 @@
     "libsodium-wrappers": "^0.8.4",
     "opusscript": "^0.1.1",
     "prism-media": "^1.3.5",
-    "tsx": "^4.23.13"
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
     "dotenv-cli": "^11.0.0",
