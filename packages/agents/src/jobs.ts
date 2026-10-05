@@ -30,6 +30,13 @@ export interface IngestJob {
   sourceDocumentId: string;
 }
 
+export const PAGE_INDEX_QUEUE = "page-index";
+
+/** A workspace page whose copy in the memory should be brought up to date. */
+export interface PageIndexJob {
+  pageId: string;
+}
+
 /** A stop→restart gap longer than this ends the session. It's BOTH the `/record` merge window
  * (a restart within it resumes the same session) and the `/stop`→finalize delay. Override with
  * HEARTH_SESSION_GAP_MIN (fractional minutes ok — set it tiny to test the lifecycle fast). */

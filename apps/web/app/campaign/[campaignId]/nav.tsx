@@ -15,6 +15,7 @@ interface Tab {
 
 const TABS: Tab[] = [
   { slug: "", label: "Overview" },
+  { slug: "workspace", label: "Workspace", dmOnly: true },
   { slug: "ask", label: "Ask" },
   { slug: "memory", label: "Memory" },
   { slug: "journal", label: "Journal", playerOnly: true },
@@ -36,7 +37,10 @@ export function CampaignNav({
       {TABS.filter((t) => !(t.playerOnly && isDm) && !(t.dmOnly && !isDm)).map(
         (t) => {
           const href = t.slug ? `${base}/${t.slug}` : base;
-          const active = pathname === href;
+          // A section with pages under it (the workspace) stays highlighted inside them.
+          const active =
+            pathname === href ||
+            (t.slug !== "" && pathname.startsWith(`${href}/`));
           return (
             <Link
               key={t.slug}
