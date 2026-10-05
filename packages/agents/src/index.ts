@@ -22,6 +22,7 @@ export * from "./onboarding.js";
 export * from "./tokens.js";
 export * from "./recovery.js";
 export * from "./session-number.js";
+export * from "./channels.js";
 export * from "./corrections.js";
 export * from "./upload.js";
 export * from "./share.js";

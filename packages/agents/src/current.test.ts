@@ -22,6 +22,12 @@ describe("previousVersionsWhere — what a new upload replaces", () => {
     expect(previousVersionsWhere(doc).supersededById).toBeNull();
   });
 
+  it("never replaces a post synced from a channel", () => {
+    // Two recaps posted by the same player on the same day share a name; matching on it would
+    // hide the first one behind the second.
+    expect(previousVersionsWhere(doc).externalId).toBeNull();
+  });
+
   it("only touches documents uploaded before it", () => {
     // The race guard: two uploads landing together must not mark each other replaced, which
     // would leave the campaign with no current version of the document at all.
