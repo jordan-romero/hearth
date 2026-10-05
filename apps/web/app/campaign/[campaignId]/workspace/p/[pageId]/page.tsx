@@ -40,6 +40,15 @@ export default async function WorkspacePage({
           {crumbs.length ? crumbs.join(" / ") : "Top level"}
         </span>
         <div className="ws-page-actions">
+          {page.originalFileName && (
+            <a
+              className="ws-link"
+              href={`/campaign/${campaignId}/workspace/p/${pageId}/original`}
+              title="Download the file this page was imported from"
+            >
+              Original: {page.originalFileName}
+            </a>
+          )}
           <Link
             className="ws-link"
             href={`/campaign/${campaignId}/workspace/p/${pageId}/history`}

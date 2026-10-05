@@ -214,6 +214,12 @@ export function WorkspaceTree({
         </ul>
       )}
       <Link
+        href={`${base}/import`}
+        className={`ws-trash${pathname === `${base}/import` ? " active" : ""}`}
+      >
+        Import notes
+      </Link>
+      <Link
         href={`${base}/colors`}
         className={`ws-trash${pathname === `${base}/colors` ? " active" : ""}`}
       >

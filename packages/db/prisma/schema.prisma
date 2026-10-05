@@ -142,6 +142,7 @@ model Campaign {
   shareRequests   ShareRequest[]
   folders         Folder[]
   pages           Page[]
+  importBatches   ImportBatch[]
   discord         CampaignDiscord?
 }
 
@@ -957,54 +958,67 @@ model CharacterRecap {
 /// A folder in the workspace tree. Folders nest without limit (OneNote's notebook → section →
 /// page maps onto folder → folder → page).
 model Folder {
-  id         String   @id @default(cuid())
-  campaignId String
-  parentId   String?
-  name       String
+  id            String   @id @default(cuid())
+  campaignId    String
+  parentId      String?
+  name          String
+  /// The import that created this folder, so undoing the import can remove it once empty.
+  importBatchId String?
   /// Order among its siblings (folders sort before pages, each by position then name).
-  position   Int      @default(0)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  position      Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign    Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   /// Restrict, not Cascade: deleting a folder must never silently delete what's inside it.
-  parent   Folder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Restrict)
-  children Folder[] @relation("FolderTree")
-  pages    Page[]
+  parent      Folder?      @relation("FolderTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children    Folder[]     @relation("FolderTree")
+  importBatch ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  pages       Page[]
 
   @@index([campaignId, parentId])
 }
 
 /// A page the DM writes in the workspace.
 model Page {
-  id         String    @id @default(cuid())
-  campaignId String
+  id               String    @id @default(cuid())
+  campaignId       String
   /// Null = at the top level of the workspace.
-  folderId   String?
-  title      String    @default("")
+  folderId         String?
+  title            String    @default("")
   /// The editor's document (ProseMirror JSON) — lossless, the source of truth.
-  content    Json
+  content          Json
   /// The same text as markdown, derived on save: what search, Claude and the memory read.
-  markdown   String    @default("")
+  markdown         String    @default("")
   /// Bumped on every save. A save that names an older revision is refused, so two open tabs
   /// can't silently overwrite each other.
-  revision   Int       @default(0)
-  position   Int       @default(0)
+  revision         Int       @default(0)
+  position         Int       @default(0)
   /// In the trash: hidden from the tree and taken out of the memory, restorable.
-  archivedAt DateTime?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  archivedAt       DateTime?
+  /// The import that created this page, if one did (so an import can be undone as a whole).
+  importBatchId    String?
+  /// SHA-256 of the imported file, so importing the same file again doesn't make a copy.
+  importHash       String?
+  /// The original file kept beside an imported Word/PDF page (its layout doesn't survive as text).
+  originalFilePath String?
+  originalFileName String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  campaign Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign    Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  importBatch ImportBatch?    @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
   /// SetNull is never reached (folders refuse deletion while they hold pages); it's the safe
   /// fallback — a page lands at the top level rather than vanishing.
-  folder   Folder?         @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  versions PageVersion[]
+  folder      Folder?         @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  versions    PageVersion[]
   /// The canon highlights on this page, as knowledge.
-  units    KnowledgeUnit[]
+  units       KnowledgeUnit[]
 
   @@index([campaignId, folderId])
   @@index([campaignId, archivedAt])
+  @@index([campaignId, importHash])
+  @@index([importBatchId])
 }
 
 /// A snapshot in a page's history. Autosave folds edits made within a few minutes of each other
@@ -1031,4 +1045,39 @@ enum PageChangeCause {
   SESSION
   IMPORT
   RESTORE
+}
+
+/// One import into the workspace: a folder of files from the DM's computer, or (next) OneNote.
+/// Imports are one-time backfills — afterwards Hearth is the source of truth.
+model ImportBatch {
+  id                  String       @id @default(cuid())
+  campaignId          String
+  source              ImportSource
+  /// Where its folders and pages were put (null = the top level).
+  destinationFolderId String?
+  /// What the DM imported, for the history ("Session notes", "Ondera notebook").
+  label               String
+  status              ImportStatus @default(RUNNING)
+  pagesCreated        Int          @default(0)
+  filesSkipped        Int          @default(0)
+  createdAt           DateTime     @default(now())
+  finishedAt          DateTime?
+  /// Set when the DM undid it: its pages went to the trash.
+  undoneAt            DateTime?
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  pages    Page[]
+  folders  Folder[]
+
+  @@index([campaignId, createdAt])
+}
+
+enum ImportSource {
+  FILES
+  ONENOTE
+}
+
+enum ImportStatus {
+  RUNNING
+  DONE
 }
