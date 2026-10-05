@@ -476,33 +476,105 @@ code {
 }
 
 /* ── library (DM) ───────────────────────────────────────────────────────── */
-.upload-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 14px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 18px 20px;
-}
-.upload-form input[type="file"] {
-  font: inherit;
-  font-size: 14px;
-  color: var(--ink-2);
-  min-width: 0;
-  flex: 1 1 240px;
-}
-.upload-form input[type="file"]::file-selector-button {
-  font: inherit;
-  font-size: 13px;
+.btn.ghost {
   color: var(--ink);
   background: var(--panel-2);
   border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 7px 13px;
-  margin-right: 12px;
-  cursor: pointer;
+  padding: 8px 14px;
+  font-size: 14px;
+}
+.uploader {
+  display: grid;
+  gap: 14px;
+}
+.dropzone {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  text-align: center;
+  background: var(--panel);
+  border: 2px dashed var(--line);
+  border-radius: 12px;
+  padding: 28px 20px;
+  transition:
+    border-color 120ms,
+    background 120ms;
+}
+.dropzone.over {
+  border-color: var(--ember);
+  background: var(--ember-soft);
+}
+.dropzone-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--ink);
+}
+.dropzone .muted {
+  margin: 0;
+}
+.dropzone-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+.upload-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+.upload-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.upload-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  font-size: 14px;
+}
+.upload-row + .upload-row {
+  border-top: 1px solid var(--line);
+}
+.upload-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.upload-status {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.upload-status.ok {
+  color: var(--ember);
+}
+.upload-status.failed {
+  color: var(--ink);
+  font-weight: 600;
+}
+.upload-status.uploading {
+  color: var(--ink-2);
+}
+.upload-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.upload-footer .dropzone-actions {
+  margin-top: 0;
 }
 .check {
   display: flex;
@@ -510,7 +582,6 @@ code {
   gap: 7px;
   font-size: 14px;
   color: var(--ink-2);
-  white-space: nowrap;
 }
 .check input {
   accent-color: var(--ember);

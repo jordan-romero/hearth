@@ -6,7 +6,6 @@
 // Players never see this page.
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import { requireDm } from "@/lib/campaign";
 import {
   ingestDirectUpload,
@@ -19,7 +18,8 @@ import {
   SUPPORTED_UPLOAD_EXTENSIONS,
   MAX_UPLOAD_BYTES,
 } from "@hearth/agents";
-import { UploadForm, type FinishInput } from "./upload-form";
+import { UploadForm, type FileOutcome, type FinishInput } from "./upload-form";
+import { RefreshWhileReading } from "./refresh";
 
 // Parsing happens in the worker, but a server-side upload still travels through this request.
 export const maxDuration = 60;
@@ -31,23 +31,12 @@ const STATUS_LABEL: Record<string, string> = {
   FAILED: "failed",
 };
 
-type Outcome = {
-  error?: string;
-  added?: string;
-  already?: string;
-  /** Name of a document this upload replaces once it has been read. */
-  replaced?: string;
-};
-
 export default async function LibraryPage({
   params,
-  searchParams,
 }: {
   params: Promise<{ campaignId: string }>;
-  searchParams: Promise<Outcome>;
 }) {
   const { campaignId } = await params;
-  const { error, added, already, replaced } = await searchParams;
   await requireDm(campaignId);
 
   const docs = await listDocuments(campaignId);
@@ -61,44 +50,37 @@ export default async function LibraryPage({
   // Every action below re-checks the DM: a server action is its own entry point, and the page's
   // guard says nothing about who is calling it.
 
-  async function upload(formData: FormData) {
+  async function uploadOne(formData: FormData): Promise<FileOutcome> {
     "use server";
     await requireDm(campaignId);
 
     const file = formData.get("file");
     const f = file instanceof File ? file : null;
-    const problem = uploadProblem(f?.name ?? "", f?.size ?? 0);
-    if (problem || !f) redirectTo(campaignId, { error: problem ?? undefined });
+    // A file from a folder is named by its path inside it, so two notes.md files in different
+    // folders stay two documents instead of one replacing the other.
+    const name = String(formData.get("name") || f?.name || "");
+    const problem = uploadProblem(name, f?.size ?? 0);
+    if (problem || !f)
+      return { kind: "error", message: problem ?? "Choose a file first." };
 
-    const extractUnits = formData.get("extract") !== null;
-    const forPlayers = formData.get("forPlayers") !== null;
-    const data = Buffer.from(await f.arrayBuffer());
-    let result: Awaited<ReturnType<typeof ingestUpload>> | undefined;
     try {
-      result = await ingestUpload(
+      const result = await ingestUpload(
         campaignId,
-        f.name,
-        data,
+        name,
+        Buffer.from(await f.arrayBuffer()),
         f.type || undefined,
-        extractUnits,
-        forPlayers,
+        formData.get("extract") !== null,
+        formData.get("forPlayers") !== null,
       );
+      revalidatePath(`/campaign/${campaignId}/library`);
+      return outcomeOf(result);
     } catch (err) {
       console.error("library upload failed:", err);
-      redirectTo(campaignId, {
-        error: "Couldn't store that file — try again.",
-      });
+      return {
+        kind: "error",
+        message: "Couldn't store that file — try again.",
+      };
     }
-    revalidatePath(`/campaign/${campaignId}/library`);
-    redirectTo(
-      campaignId,
-      result?.alreadyAdded
-        ? { already: result.name }
-        : {
-            added: f.name,
-            ...(result?.replaces ? { replaced: f.name } : {}),
-          },
-    );
   }
 
   async function prepareUpload(fileName: string, size: number) {
@@ -109,7 +91,7 @@ export default async function LibraryPage({
     return prepareDirectUpload(campaignId, String(fileName));
   }
 
-  async function finishUpload(input: FinishInput) {
+  async function finishUpload(input: FinishInput): Promise<FileOutcome> {
     "use server";
     await requireDm(campaignId);
     try {
@@ -122,71 +104,40 @@ export default async function LibraryPage({
         input.forPlayers === true,
       );
       revalidatePath(`/campaign/${campaignId}/library`);
-      return {
-        href: libraryHref(
-          campaignId,
-          result.alreadyAdded
-            ? { already: result.name }
-            : {
-                added: String(input.fileName),
-                ...(result.replaces
-                  ? { replaced: String(input.fileName) }
-                  : {}),
-              },
-        ),
-      };
+      return outcomeOf(result);
     } catch (err) {
       if (err instanceof UploadRejectedError) {
-        return { href: libraryHref(campaignId, { error: err.message }) };
+        return { kind: "error", message: err.message };
       }
       console.error("library direct upload failed:", err);
-      return {
-        href: libraryHref(campaignId, {
-          error: "Couldn't add that file — try again.",
-        }),
-      };
+      return { kind: "error", message: "Couldn't add that file — try again." };
     }
   }
+
+  // While anything is still being read, keep the list live so the DM sees it land.
+  const reading = current.some(
+    (d) => d.status === "PENDING" || d.status === "PARSING",
+  );
 
   return (
     <>
       <section className="section">
         <h2 className="section-h">Add material</h2>
         <p className="muted" style={{ marginTop: 0, marginBottom: 16 }}>
-          Notes, lore, handouts, a session log — up to{" "}
-          {MAX_UPLOAD_BYTES / 1024 / 1024}MB. What you add stays yours alone
-          until you reveal it — players can&rsquo;t reach it with{" "}
-          <code>/ask</code> — unless you mark it as something the players
-          already have.
+          Notes, lore, handouts, session logs — one file or a whole folder of
+          them. What you add stays yours alone until you reveal it — players
+          can&rsquo;t reach it with <code>/ask</code> — unless you mark it as
+          something the players already have.
         </p>
 
         <UploadForm
-          accept={SUPPORTED_UPLOAD_EXTENSIONS.join(",")}
+          accept={SUPPORTED_UPLOAD_EXTENSIONS}
+          maxBytes={MAX_UPLOAD_BYTES}
           direct={supportsDirectUpload()}
-          upload={upload}
+          uploadOne={uploadOne}
           prepareUpload={prepareUpload}
           finishUpload={finishUpload}
         />
-
-        {error && <p className="notice error">{error}</p>}
-        {replaced && (
-          <p className="note">
-            This replaces the earlier <strong>{replaced}</strong>. The old
-            version is kept for anything already revealed from it, but new
-            answers will be written from this one.
-          </p>
-        )}
-        {added && (
-          <p className="notice ok">
-            Added <strong>{added}</strong> — reading it into the memory now.
-          </p>
-        )}
-        {already && (
-          <p className="notice ok">
-            <strong>{already}</strong> is already in the library, so nothing new
-            was added.
-          </p>
-        )}
       </section>
 
       {docs.length > 0 && (
@@ -209,6 +160,8 @@ export default async function LibraryPage({
           </div>
         </section>
       )}
+
+      {reading && <RefreshWhileReading />}
 
       <section className="section">
         <h2 className="section-h">In the library</h2>
@@ -256,16 +209,12 @@ export default async function LibraryPage({
   );
 }
 
-/** Server actions can't return values to a form post, so outcomes ride back in the URL. */
-function libraryHref(campaignId: string, outcome: Outcome): string {
-  const q = new URLSearchParams();
-  if (outcome.error) q.set("error", outcome.error);
-  if (outcome.added) q.set("added", outcome.added);
-  if (outcome.already) q.set("already", outcome.already);
-  if (outcome.replaced) q.set("replaced", outcome.replaced);
-  return `/campaign/${campaignId}/library?${q.toString()}`;
-}
-
-function redirectTo(campaignId: string, outcome: Outcome): never {
-  redirect(libraryHref(campaignId, outcome));
+function outcomeOf(result: {
+  alreadyAdded: boolean;
+  name: string;
+  replaces?: unknown;
+}): FileOutcome {
+  return result.alreadyAdded
+    ? { kind: "already", existingName: result.name }
+    : { kind: "added", replaced: !!result.replaces };
 }
