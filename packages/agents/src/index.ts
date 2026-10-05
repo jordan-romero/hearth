@@ -25,6 +25,8 @@ export * from "./session-number.js";
 export * from "./channels.js";
 export * from "./corrections.js";
 export * from "./upload.js";
+export * from "./external.js";
+export * from "./onenote.js";
 export * from "./share.js";
 export * from "./stream-transcribe.js";
 export * from "./provenance.js";

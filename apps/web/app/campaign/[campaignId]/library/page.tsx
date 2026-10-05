@@ -20,6 +20,7 @@ import {
 } from "@hearth/agents";
 import { UploadForm, type FileOutcome, type FinishInput } from "./upload-form";
 import { RefreshWhileReading } from "./refresh";
+import { OneNoteSection } from "./onenote-section";
 
 // Parsing happens in the worker, but a server-side upload still travels through this request.
 export const maxDuration = 60;
@@ -33,10 +34,13 @@ const STATUS_LABEL: Record<string, string> = {
 
 export default async function LibraryPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ campaignId: string }>;
+  searchParams: Promise<{ onenote?: string }>;
 }) {
   const { campaignId } = await params;
+  const { onenote } = await searchParams;
   await requireDm(campaignId);
 
   const docs = await listDocuments(campaignId);
@@ -160,6 +164,8 @@ export default async function LibraryPage({
           </div>
         </section>
       )}
+
+      <OneNoteSection campaignId={campaignId} outcome={onenote} />
 
       {reading && <RefreshWhileReading />}
 

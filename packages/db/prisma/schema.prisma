@@ -130,6 +130,7 @@ model Campaign {
   askLogs         AskLog[]
   corrections     Correction[]
   shareRequests   ShareRequest[]
+  oneNote         OneNoteConnection?
   discord         CampaignDiscord?
 }
 
@@ -531,34 +532,38 @@ enum DocumentStatus {
 /// provenance. Doubles as the DM's "library" (a list of everything they've fed in).
 /// Its text is split into DocumentChunks for retrieval.
 model SourceDocument {
-  id             String         @id @default(cuid())
-  campaignId     String
-  name           String
-  sourceType     SourceType     @default(UPLOAD)
+  id              String         @id @default(cuid())
+  campaignId      String
+  name            String
+  sourceType      SourceType     @default(UPLOAD)
   // Uploaded raw file lives in the `documents` bucket (storagePath); a synced source
   // instead keeps a link back to the original (sourceUrl) — never both.
-  storagePath    String?
-  sourceUrl      String?
-  mimeType       String?
-  status         DocumentStatus @default(PENDING)
+  storagePath     String?
+  sourceUrl       String?
+  mimeType        String?
+  status          DocumentStatus @default(PENDING)
   // Whether to also extract structured DM_ADDED KnowledgeUnits from this doc (a Claude
   // call). On for a single manual upload; bulk connectors set it off (cost-gated).
-  extractUnits   Boolean        @default(true)
+  extractUnits    Boolean        @default(true)
   // DM_ONLY until revealed, or EVERYONE for material the players already have (shared party
   // notes, handouts). Its passages and extracted facts are stored with the same visibility.
-  baseVisibility BaseVisibility @default(DM_ONLY)
+  baseVisibility  BaseVisibility @default(DM_ONLY)
   // SHA-256 of the uploaded bytes, so the same file sent twice isn't imported twice.
-  contentHash    String?
+  contentHash     String?
   /// A newer upload of the same document (same campaign, same file name). The old version is
   /// KEPT, never deleted: deleting it would cascade its KnowledgeGrants and silently revoke
   /// every reveal granted from it. Its passages and facts simply stop being used in answers,
   /// reveal offers, search and the graph — what a player was already shown still resolves.
-  supersededById String?
-  supersededAt   DateTime?
-  // For a post synced from a Discord channel: its message id, so an edit or delete finds it.
-  externalId     String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  supersededById  String?
+  supersededAt    DateTime?
+  // For a document mirroring something outside Hearth — a Discord post's message id, a OneNote
+  // page ("onenote:<pageId>") — so a change or deletion out there finds it.
+  externalId      String?
+  // The source's own version marker (a OneNote page's last-modified time), so a sync can skip
+  // fetching what hasn't changed.
+  externalVersion String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 
   campaign       Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   chunks         DocumentChunk[]
@@ -923,4 +928,28 @@ model CharacterRecap {
 
   @@unique([gameSessionId, characterId])
   @@index([characterId])
+}
+
+/// A DM's Microsoft account, connected so their OneNote sections import into the library. One per
+/// campaign. The refresh token is stored encrypted (see secrets.ts) — it can read every notebook
+/// that account has, so it never sits in the database as plain text.
+model OneNoteConnection {
+  id                      String    @id @default(cuid())
+  campaignId              String    @unique
+  connectedByMembershipId String
+  /// Who it's signed in as, shown to the DM so they know which account is connected.
+  accountName             String?
+  refreshTokenEnc         String
+  /// The sections the DM chose to import. Pages in them become library documents.
+  sectionIds              String[]  @default([])
+  /// Pull NPCs, places and facts out of imported pages (one Claude call per changed page).
+  extractUnits            Boolean   @default(true)
+  syncing                 Boolean   @default(false)
+  lastSyncAt              DateTime?
+  /// What the last sync did, in words the DM can read ("12 added, 3 updated").
+  lastSyncResult          String?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 }

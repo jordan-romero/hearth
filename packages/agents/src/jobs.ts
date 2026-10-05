@@ -30,6 +30,13 @@ export interface IngestJob {
   sourceDocumentId: string;
 }
 
+export const ONENOTE_SYNC_QUEUE = "onenote-sync";
+
+/** A campaign whose OneNote sections should be imported (again). */
+export interface OneNoteSyncJob {
+  campaignId: string;
+}
+
 /** A stop→restart gap longer than this ends the session. It's BOTH the `/record` merge window
  * (a restart within it resumes the same session) and the `/stop`→finalize delay. Override with
  * HEARTH_SESSION_GAP_MIN (fractional minutes ok — set it tiny to test the lifecycle fast). */

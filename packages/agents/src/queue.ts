@@ -7,6 +7,7 @@ import {
   TRANSCRIBE_QUEUE,
   FINALIZE_QUEUE,
   INGEST_QUEUE,
+  ONENOTE_SYNC_QUEUE,
   SESSION_GAP_SEC,
   type FinalizeJob,
 } from "./jobs.js";
@@ -26,6 +27,8 @@ export async function getQueue(): Promise<PgBoss> {
   // burst of /stops (across a merged session) can't pile up duplicate finalizations.
   await instance.createQueue(FINALIZE_QUEUE, { policy: "stately" });
   await instance.createQueue(INGEST_QUEUE);
+  // One import per campaign at a time: a second "sync now" while one runs just waits.
+  await instance.createQueue(ONENOTE_SYNC_QUEUE, { policy: "stately" });
   boss = instance;
   return boss;
 }

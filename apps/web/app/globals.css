@@ -636,3 +636,37 @@ code {
   color: var(--ground);
   background: var(--ember);
 }
+
+/* ── OneNote (DM) ───────────────────────────────────────────────────────── */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 20px;
+}
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.onenote-form {
+  display: grid;
+  gap: 14px;
+}
+.onenote-notebook {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.onenote-notebook legend {
+  padding: 0 6px;
+  font-weight: 600;
+  color: var(--ink);
+}

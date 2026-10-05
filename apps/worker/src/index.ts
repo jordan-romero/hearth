@@ -17,13 +17,16 @@ import {
   getSpeakerLabels,
   speakerLabel,
   ingestDocument,
+  syncOneNote,
   TRANSCRIBE_QUEUE,
   FINALIZE_QUEUE,
   INGEST_QUEUE,
+  ONENOTE_SYNC_QUEUE,
   SESSION_GAP_MS,
   type TranscribeJob,
   type FinalizeJob,
   type IngestJob,
+  type OneNoteSyncJob,
 } from "@hearth/agents";
 import { prisma } from "@hearth/db";
 
@@ -112,6 +115,13 @@ async function main(): Promise<void> {
   await boss.work<IngestJob>(INGEST_QUEUE, async (jobs) => {
     for (const job of jobs) {
       await ingestDocument(job.data.sourceDocumentId);
+    }
+  });
+
+  // A campaign's chosen OneNote sections → one library document per page (see onenote.ts).
+  await boss.work<OneNoteSyncJob>(ONENOTE_SYNC_QUEUE, async (jobs) => {
+    for (const job of jobs) {
+      await syncOneNote(job.data.campaignId);
     }
   });
 
