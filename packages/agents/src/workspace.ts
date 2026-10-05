@@ -11,6 +11,7 @@
 import { prisma, type Prisma } from "@hearth/db";
 import { pageToMarkdown, EMPTY_PAGE, type PmNode } from "./page-markdown.js";
 import { removeExternalDocument, syncExternalDocument } from "./external.js";
+import { syncPageHighlights } from "./highlights.js";
 import { getQueue } from "./queue.js";
 import { PAGE_INDEX_QUEUE, type PageIndexJob } from "./jobs.js";
 
@@ -409,6 +410,8 @@ export async function indexPage(pageId: string): Promise<void> {
   });
   const externalId = `page:${pageId}`;
   if (!page) return;
+  // Highlights first: what players may know shouldn't wait on re-embedding the whole page.
+  await syncPageHighlights(pageId);
   if (page.archivedAt) {
     await removeExternalDocument(page.campaignId, externalId);
     return;
@@ -424,8 +427,8 @@ export async function indexPage(pageId: string): Promise<void> {
     name,
     text: page.markdown,
     fileStem: `page-${pageId}`,
-    // The DM's own writing. What players learn from it comes through highlights (Phase 1b),
-    // never from the page as a whole.
+    // The DM's own writing. What players learn from it comes through highlights
+    // (highlights.ts), never from the page as a whole.
     baseVisibility: "DM_ONLY",
     // Search and Claude read the page itself; facts come from what the DM marks as canon,
     // not from a model guessing at a draft on every save.

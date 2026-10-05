@@ -214,6 +214,12 @@ export function WorkspaceTree({
         </ul>
       )}
       <Link
+        href={`${base}/colors`}
+        className={`ws-trash${pathname === `${base}/colors` ? " active" : ""}`}
+      >
+        Table colors
+      </Link>
+      <Link
         href={`${base}/trash`}
         className={`ws-trash${pathname === `${base}/trash` ? " active" : ""}`}
       >

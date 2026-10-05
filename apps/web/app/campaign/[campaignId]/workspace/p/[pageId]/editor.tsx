@@ -10,7 +10,12 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { EditorContent, useEditor, type Editor } from "@tiptap/react";
+import {
+  EditorContent,
+  useEditor,
+  useEditorState,
+  type Editor,
+} from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
 import StarterKit from "@tiptap/starter-kit";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
@@ -19,6 +24,19 @@ import { Placeholder } from "@tiptap/extensions";
 import type { PmNode } from "@hearth/agents";
 import { savePageAction } from "../../actions";
 import { SlashCommand } from "./slash";
+import {
+  canonMark,
+  clearCanon,
+  currentCanon,
+  setCanon,
+  type HighlightColors,
+} from "./canon-mark";
+
+export interface TableCharacter {
+  id: string;
+  name: string;
+  color: string;
+}
 
 type SaveState = "saved" | "dirty" | "saving" | "conflict" | "error";
 
@@ -31,6 +49,8 @@ export function PageEditor({
   initialContent,
   initialRevision,
   readOnly,
+  tableColor,
+  characters,
 }: {
   campaignId: string;
   pageId: string;
@@ -38,6 +58,8 @@ export function PageEditor({
   initialContent: PmNode;
   initialRevision: number;
   readOnly: boolean;
+  tableColor: string;
+  characters: TableCharacter[];
 }) {
   const router = useRouter();
   const [title, setTitle] = useState(initialTitle);
@@ -71,6 +93,10 @@ export function PageEditor({
             : "Write, or press / for blocks…",
       }),
       SlashCommand,
+      canonMark({
+        table: tableColor,
+        characters: Object.fromEntries(characters.map((c) => [c.id, c.color])),
+      } satisfies HighlightColors),
     ],
     content: initialContent,
     onUpdate: () => scheduleRef.current(),
@@ -195,13 +221,74 @@ export function PageEditor({
           }
         }}
       />
-      {editor && !readOnly && <FormatBar editor={editor} />}
+      <Legend tableColor={tableColor} characters={characters} />
+      {editor && !readOnly && (
+        <FormatBar
+          editor={editor}
+          tableColor={tableColor}
+          characters={characters}
+        />
+      )}
       <EditorContent editor={editor} />
     </div>
   );
 }
 
-function FormatBar({ editor }: { editor: Editor }) {
+/** Which color means who, always visible above the page. */
+function Legend({
+  tableColor,
+  characters,
+}: {
+  tableColor: string;
+  characters: TableCharacter[];
+}) {
+  return (
+    <div className="ws-legend" aria-label="Highlight colors">
+      <span className="ws-legend-item">
+        <span className="ws-swatch dotted" /> Working
+      </span>
+      <span className="ws-legend-item">
+        <span className="ws-swatch unknown" /> Canon, nobody knows
+      </span>
+      <span className="ws-legend-item">
+        <span className="ws-swatch" style={{ background: tableColor }} /> Whole
+        table
+      </span>
+      {characters.map((c) => (
+        <span key={c.id} className="ws-legend-item">
+          <span className="ws-swatch" style={{ background: c.color }} />{" "}
+          {c.name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function FormatBar({
+  editor,
+  tableColor,
+  characters,
+}: {
+  editor: Editor;
+  tableColor: string;
+  characters: TableCharacter[];
+}) {
+  // The editor doesn't re-render React on every keystroke; subscribe to what the bar shows.
+  const state = useEditorState({
+    editor,
+    selector: ({ editor: e }) => ({
+      bold: e.isActive("bold"),
+      italic: e.isActive("italic"),
+      strike: e.isActive("strike"),
+      h2: e.isActive("heading", { level: 2 }),
+      h3: e.isActive("heading", { level: 3 }),
+      link: e.isActive("link"),
+      canon: currentCanon(e),
+    }),
+  });
+  const canon = state.canon;
+  const keep = (e: React.MouseEvent) => e.preventDefault(); // don't steal the selection
+
   const btn = (
     label: string,
     active: boolean,
@@ -213,57 +300,136 @@ function FormatBar({ editor }: { editor: Editor }) {
       className={active ? "on" : undefined}
       title={title}
       aria-pressed={active}
-      onMouseDown={(e) => e.preventDefault()}
+      onMouseDown={keep}
       onClick={run}
     >
       {label}
     </button>
   );
+
+  const toggleCharacter = (id: string) => {
+    const known = new Set(canon?.known ?? []);
+    if (known.has(id)) known.delete(id);
+    else known.add(id);
+    setCanon(editor, { known: [...known], everyone: false });
+  };
+
   return (
-    <BubbleMenu editor={editor} className="ws-bubble">
-      {btn(
-        "B",
-        editor.isActive("bold"),
-        () => editor.chain().focus().toggleBold().run(),
-        "Bold",
-      )}
-      {btn(
-        "I",
-        editor.isActive("italic"),
-        () => editor.chain().focus().toggleItalic().run(),
-        "Italic",
-      )}
-      {btn(
-        "S",
-        editor.isActive("strike"),
-        () => editor.chain().focus().toggleStrike().run(),
-        "Strikethrough",
-      )}
-      {btn(
-        "H2",
-        editor.isActive("heading", { level: 2 }),
-        () => editor.chain().focus().toggleHeading({ level: 2 }).run(),
-        "Heading",
-      )}
-      {btn(
-        "H3",
-        editor.isActive("heading", { level: 3 }),
-        () => editor.chain().focus().toggleHeading({ level: 3 }).run(),
-        "Subheading",
-      )}
-      {btn(
-        "Link",
-        editor.isActive("link"),
-        () => {
-          if (editor.isActive("link")) {
-            editor.chain().focus().unsetLink().run();
-            return;
+    <BubbleMenu
+      editor={editor}
+      className="ws-bubble"
+      // Also open when the cursor sits in a highlight, so its knowers can be changed.
+      shouldShow={({ editor: e, from, to }) =>
+        from !== to || e.isActive("canon")
+      }
+    >
+      <div className="ws-bubble-row">
+        {btn(
+          "B",
+          state.bold,
+          () => editor.chain().focus().toggleBold().run(),
+          "Bold",
+        )}
+        {btn(
+          "I",
+          state.italic,
+          () => editor.chain().focus().toggleItalic().run(),
+          "Italic",
+        )}
+        {btn(
+          "S",
+          state.strike,
+          () => editor.chain().focus().toggleStrike().run(),
+          "Strikethrough",
+        )}
+        {btn(
+          "H2",
+          state.h2,
+          () => editor.chain().focus().toggleHeading({ level: 2 }).run(),
+          "Heading",
+        )}
+        {btn(
+          "H3",
+          state.h3,
+          () => editor.chain().focus().toggleHeading({ level: 3 }).run(),
+          "Subheading",
+        )}
+        {btn(
+          "Link",
+          state.link,
+          () => {
+            if (editor.isActive("link")) {
+              editor.chain().focus().unsetLink().run();
+              return;
+            }
+            const href = window.prompt("Link to");
+            if (href) editor.chain().focus().setLink({ href }).run();
+          },
+          "Link",
+        )}
+      </div>
+      <div
+        className="ws-bubble-row ws-canon-row"
+        role="group"
+        aria-label="Who knows this"
+      >
+        <span className="ws-canon-label">
+          {canon ? "Canon · known by" : "Mark as canon"}
+        </span>
+        <button
+          type="button"
+          className={`ws-chip${canon && !canon.everyone && canon.known.length === 0 ? " on" : ""}`}
+          onMouseDown={keep}
+          onClick={() => setCanon(editor, { known: [], everyone: false })}
+          title="True in the world; nobody at the table knows it yet"
+        >
+          <span className="ws-swatch unknown" /> Nobody yet
+        </button>
+        <button
+          type="button"
+          className={`ws-chip${canon?.everyone ? " on" : ""}`}
+          onMouseDown={keep}
+          onClick={() =>
+            setCanon(editor, { known: [], everyone: !canon?.everyone })
           }
-          const href = window.prompt("Link to");
-          if (href) editor.chain().focus().setLink({ href }).run();
-        },
-        "Link",
-      )}
+          title="The whole table knows this"
+        >
+          <span className="ws-swatch" style={{ background: tableColor }} />{" "}
+          Whole table
+        </button>
+        {characters.map((c) => {
+          const on = !!canon && !canon.everyone && canon.known.includes(c.id);
+          return (
+            <button
+              key={c.id}
+              type="button"
+              className={`ws-chip${on ? " on" : ""}`}
+              aria-pressed={on}
+              onMouseDown={keep}
+              onClick={() => toggleCharacter(c.id)}
+              title={
+                on
+                  ? `${c.name} knows this — click to take it back`
+                  : `${c.name} knows this`
+              }
+            >
+              <span className="ws-swatch" style={{ background: c.color }} />{" "}
+              {c.name}
+            </button>
+          );
+        })}
+        {canon && (
+          <button
+            type="button"
+            className="ws-chip ws-chip-quiet"
+            onMouseDown={keep}
+            onClick={() => clearCanon(editor)}
+            title="Not canon: back to your working notes"
+          >
+            Back to working
+          </button>
+        )}
+      </div>
     </BubbleMenu>
   );
 }

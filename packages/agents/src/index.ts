@@ -28,6 +28,7 @@ export * from "./upload.js";
 export * from "./external.js";
 export * from "./page-markdown.js";
 export * from "./workspace.js";
+export * from "./highlights.js";
 export * from "./share.js";
 export * from "./stream-transcribe.js";
 export * from "./provenance.js";

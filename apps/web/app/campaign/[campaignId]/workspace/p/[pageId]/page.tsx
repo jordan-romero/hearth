@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getPage, getWorkspaceTree } from "@hearth/agents";
+import { getPage, getTableColors, getWorkspaceTree } from "@hearth/agents";
 import { requireDm } from "@/lib/campaign";
 import { PageEditor } from "./editor";
 import { archivePageAction, restorePageAction } from "../../actions";
@@ -18,7 +18,10 @@ export default async function WorkspacePage({
   if (!page) notFound();
 
   // Breadcrumb: the folders above this page.
-  const { folders } = await getWorkspaceTree(campaignId);
+  const [{ folders }, colors] = await Promise.all([
+    getWorkspaceTree(campaignId),
+    getTableColors(campaignId),
+  ]);
   const byId = new Map(folders.map((f) => [f.id, f]));
   const crumbs: string[] = [];
   for (let id = page.folderId; id; id = byId.get(id)?.parentId ?? null) {
@@ -76,6 +79,12 @@ export default async function WorkspacePage({
         initialContent={page.content}
         initialRevision={page.revision}
         readOnly={!!page.archivedAt}
+        tableColor={colors.table}
+        characters={colors.characters.map(({ id, name, color }) => ({
+          id,
+          name,
+          color,
+        }))}
       />
     </article>
   );
