@@ -27,4 +27,12 @@ describe("sealSecret / openSecret", () => {
     parts[3] = body.toString("base64url");
     expect(() => openSecret(parts.join("."), "p")).toThrow();
   });
+
+  it("refuses a truncated tag", () => {
+    const parts = sealSecret("secret", "p").split(".");
+    parts[2] = Buffer.from(parts[2]!, "base64url")
+      .subarray(0, 4)
+      .toString("base64url");
+    expect(() => openSecret(parts.join("."), "p")).toThrow();
+  });
 });

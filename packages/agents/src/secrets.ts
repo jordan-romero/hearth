@@ -14,6 +14,9 @@ import {
 } from "node:crypto";
 
 const VERSION = "v1";
+// Pinned so a truncated tag is refused: GCM otherwise accepts tags as short as 4 bytes, which
+// makes forging a value far easier.
+const TAG_BYTES = 16;
 
 function key(purpose: string): Buffer {
   const secret = process.env.AUTH_SECRET;
@@ -27,7 +30,9 @@ function key(purpose: string): Buffer {
 /** Encrypt `plain` for storage. `purpose` must be the same when decrypting. */
 export function sealSecret(plain: string, purpose: string): string {
   const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key(purpose), iv);
+  const cipher = createCipheriv("aes-256-gcm", key(purpose), iv, {
+    authTagLength: TAG_BYTES,
+  });
   const body = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   return [VERSION, iv, tag, body]
@@ -45,6 +50,7 @@ export function openSecret(sealed: string, purpose: string): string {
     "aes-256-gcm",
     key(purpose),
     Buffer.from(iv, "base64url"),
+    { authTagLength: TAG_BYTES },
   );
   decipher.setAuthTag(Buffer.from(tag, "base64url"));
   return Buffer.concat([
