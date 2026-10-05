@@ -18,15 +18,18 @@ import {
   speakerLabel,
   ingestDocument,
   indexPage,
+  runOneNoteImport,
   TRANSCRIBE_QUEUE,
   FINALIZE_QUEUE,
   INGEST_QUEUE,
   PAGE_INDEX_QUEUE,
+  ONENOTE_IMPORT_QUEUE,
   SESSION_GAP_MS,
   type TranscribeJob,
   type FinalizeJob,
   type IngestJob,
   type PageIndexJob,
+  type OneNoteImportJob,
 } from "@hearth/agents";
 import { prisma } from "@hearth/db";
 
@@ -122,6 +125,13 @@ async function main(): Promise<void> {
   await boss.work<PageIndexJob>(PAGE_INDEX_QUEUE, async (jobs) => {
     for (const job of jobs) {
       await indexPage(job.data.pageId);
+    }
+  });
+
+  // A OneNote import the DM started from the Import screen (onenote.ts).
+  await boss.work<OneNoteImportJob>(ONENOTE_IMPORT_QUEUE, async (jobs) => {
+    for (const job of jobs) {
+      await runOneNoteImport(job.data);
     }
   });
 

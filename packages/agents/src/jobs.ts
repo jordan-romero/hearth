@@ -37,6 +37,14 @@ export interface PageIndexJob {
   pageId: string;
 }
 
+export const ONENOTE_IMPORT_QUEUE = "onenote-import";
+
+/** A OneNote import the DM started: which import record, and which sections to bring in. */
+export interface OneNoteImportJob {
+  batchId: string;
+  sectionIds: string[];
+}
+
 /** A stop→restart gap longer than this ends the session. It's BOTH the `/record` merge window
  * (a restart within it resumes the same session) and the `/stop`→finalize delay. Override with
  * HEARTH_SESSION_GAP_MIN (fractional minutes ok — set it tiny to test the lifecycle fast). */

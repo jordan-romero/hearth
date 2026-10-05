@@ -32,6 +32,8 @@ export * from "./highlights.js";
 export * from "./html-to-markdown.js";
 export * from "./markdown-to-page.js";
 export * from "./workspace-import.js";
+export * from "./secrets.js";
+export * from "./onenote.js";
 export * from "./share.js";
 export * from "./stream-transcribe.js";
 export * from "./provenance.js";

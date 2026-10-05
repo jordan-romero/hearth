@@ -10,14 +10,19 @@ import {
 } from "@hearth/agents";
 import { requireDm } from "@/lib/campaign";
 import { ImportWizard } from "./import-wizard";
+import { OneNotePanel } from "./onenote-panel";
+import { RefreshWhileRunning } from "../refresh";
 import { undoImportAction } from "./actions";
 
 export default async function ImportPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ campaignId: string }>;
+  searchParams: Promise<{ onenote?: string; onenoteError?: string }>;
 }) {
   const { campaignId } = await params;
+  const { onenote, onenoteError } = await searchParams;
   await requireDm(campaignId);
   const [{ folders }, imports] = await Promise.all([
     getWorkspaceTree(campaignId),
@@ -57,14 +62,16 @@ export default async function ImportPage({
         direct={supportsDirectUpload()}
       />
 
-      <section className="imp-soon">
-        <h3 className="section-h">OneNote</h3>
-        <p className="muted small" style={{ margin: 0 }}>
-          Importing straight from OneNote is coming next. Until then, you can
-          export a OneNote section to Word (File → Export → Word Document) and
-          import that here.
-        </p>
-      </section>
+      <OneNotePanel
+        campaignId={campaignId}
+        destinations={destinations}
+        notice={onenote}
+        error={onenoteError}
+      />
+
+      {imports.some((b) => b.status === "RUNNING") && (
+        <RefreshWhileRunning everyMs={3000} />
+      )}
 
       {imports.length > 0 && (
         <section>
@@ -83,8 +90,12 @@ export default async function ImportPage({
                     })}{" "}
                     · {b.pagesCreated} {b.pagesCreated === 1 ? "page" : "pages"}
                     {b.filesSkipped > 0 && `, ${b.filesSkipped} skipped`}
-                    {b.status === "RUNNING" && " · in progress"}
+                    {b.status === "RUNNING" && " · importing…"}
+                    {b.source === "ONENOTE" && " · OneNote"}
                   </span>
+                  {b.message && (
+                    <span className="imp-message">{b.message}</span>
+                  )}
                 </span>
                 {b.undoneAt ? (
                   <span className="muted small">

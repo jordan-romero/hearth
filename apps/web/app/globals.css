@@ -1335,3 +1335,39 @@ code {
 .upload-name a {
   color: var(--ink);
 }
+
+/* ── OneNote import ─────────────────────────────────────────────────────── */
+.imp-onenote {
+  display: grid;
+  gap: 10px;
+}
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.onenote-form {
+  display: grid;
+  gap: 14px;
+}
+.onenote-notebook {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.onenote-notebook legend {
+  padding: 0 6px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.imp-message {
+  display: block;
+  font-size: 13px;
+  color: var(--ember);
+}

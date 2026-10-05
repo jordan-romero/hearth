@@ -143,6 +143,7 @@ model Campaign {
   folders         Folder[]
   pages           Page[]
   importBatches   ImportBatch[]
+  oneNote         OneNoteConnection?
   discord         CampaignDiscord?
 }
 
@@ -1064,6 +1065,8 @@ model ImportBatch {
   finishedAt          DateTime?
   /// Set when the DM undid it: its pages went to the trash.
   undoneAt            DateTime?
+  /// Something the DM should know about how it went ("Microsoft sign-in expired").
+  message             String?
 
   campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   pages    Page[]
@@ -1080,4 +1083,20 @@ enum ImportSource {
 enum ImportStatus {
   RUNNING
   DONE
+}
+
+/// A DM's Microsoft account, connected so their OneNote notebooks can be imported (one per
+/// campaign). Only the refresh token is kept, sealed with HEARTH_ENCRYPTION_KEY (secrets.ts): it
+/// can read every notebook on that account, so it never sits in the database as plain text.
+model OneNoteConnection {
+  id                      String   @id @default(cuid())
+  campaignId              String   @unique
+  connectedByMembershipId String
+  /// Who it's signed in as, so the DM knows which account is connected.
+  accountName             String?
+  refreshTokenEnc         String
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
 }
