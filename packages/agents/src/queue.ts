@@ -1,6 +1,14 @@
-// Shared pg-boss access — the bot enqueues, the worker consumes, both through
-// this one helper so they agree on connection + queue setup.
-// pg-boss uses LISTEN/NOTIFY, so it connects on the DIRECT URL (not the pooler).
+// Shared pg-boss access — the bot and web enqueue, the worker consumes, all through this one
+// helper so they agree on connection + queue setup.
+// pg-boss uses LISTEN/NOTIFY, so it connects on the DIRECT URL (the session pooler), whose
+// connections are few (Supabase: 15) and shared by every service.
+//
+// Two shapes:
+//   full     (worker, bot — long-running): supervision, cron, queue setup.
+//   producer (web on Vercel — many short-lived instances): ONE connection, no supervision, no
+//            cron, no migrations, no queue setup. It only sends. Each serverless instance running
+//            a full pg-boss opened several session connections and ran its own maintenance, which
+//            exhausted the pool and made page saves fail.
 
 import { PgBoss } from "pg-boss";
 import {
@@ -12,12 +20,47 @@ import {
   type FinalizeJob,
 } from "./jobs.js";
 
-let boss: PgBoss | undefined;
+type QueueRole = "full" | "producer";
 
-export async function getQueue(): Promise<PgBoss> {
-  if (boss) return boss;
+/** Producer on Vercel unless told otherwise (HEARTH_QUEUE_ROLE=full|producer). */
+export function queueRole(): QueueRole {
+  const explicit = process.env.HEARTH_QUEUE_ROLE;
+  if (explicit === "full" || explicit === "producer") return explicit;
+  return process.env.VERCEL ? "producer" : "full";
+}
+
+// The start in progress, not just its result: two callers arriving together share one instance
+// instead of each starting their own.
+let starting: Promise<PgBoss> | undefined;
+
+export function getQueue(): Promise<PgBoss> {
+  starting ??= start().catch((err) => {
+    starting = undefined; // let the next caller try again
+    throw err;
+  });
+  return starting;
+}
+
+async function start(): Promise<PgBoss> {
   const url = process.env.DIRECT_URL;
   if (!url) throw new Error("DIRECT_URL is not set");
+
+  if (queueRole() === "producer") {
+    const producer = new PgBoss({
+      connectionString: url,
+      max: 1,
+      application_name: "hearth-web",
+      supervise: false,
+      schedule: false,
+      migrate: false,
+      createSchema: false,
+    });
+    producer.on("error", (err) =>
+      console.error("pg-boss (producer) error:", err),
+    );
+    await producer.start();
+    return producer; // queues are created by the worker
+  }
 
   const instance = new PgBoss(url);
   instance.on("error", (err) => console.error("pg-boss error:", err));
@@ -29,8 +72,7 @@ export async function getQueue(): Promise<PgBoss> {
   await instance.createQueue(INGEST_QUEUE);
   // `stately`: one waiting index job per page (singletonKey), so a burst of autosaves is one job.
   await instance.createQueue(PAGE_INDEX_QUEUE, { policy: "stately" });
-  boss = instance;
-  return boss;
+  return instance;
 }
 
 /**
