@@ -26,6 +26,7 @@
     "@hearth/db": "workspace:*",
     "@supabase/supabase-js": "^2.117.2",
     "mammoth": "^1.13.0",
+    "marked": "^18.1.0",
     "pg-boss": "^12.35.0",
     "unpdf": "^1.8.1",
     "ws": "^8.22.0"

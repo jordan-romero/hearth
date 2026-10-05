@@ -169,6 +169,8 @@ export interface PageView {
   revision: number;
   archivedAt: Date | null;
   updatedAt: Date;
+  /** The original file, for a page imported from Word or PDF. */
+  originalFileName: string | null;
 }
 
 export async function getPage(
@@ -185,6 +187,7 @@ export async function getPage(
       revision: true,
       archivedAt: true,
       updatedAt: true,
+      originalFileName: true,
     },
   });
   return page ? { ...page, content: page.content as unknown as PmNode } : null;
