@@ -20,20 +20,20 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.124.0",
-    "@deepgram/sdk": "^5.10.0",
+    "@anthropic-ai/sdk": "^0.129.0",
+    "@deepgram/sdk": "^5.13.0",
     "@hearth/core": "workspace:*",
     "@hearth/db": "workspace:*",
-    "@supabase/supabase-js": "^2.115.0",
-    "mammoth": "^1.12.2",
-    "pg-boss": "^12.30.0",
+    "@supabase/supabase-js": "^2.117.2",
+    "mammoth": "^1.13.0",
+    "pg-boss": "^12.35.0",
     "unpdf": "^1.8.1",
-    "ws": "^8.21.3"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
     "dotenv-cli": "^11.0.0",
-    "tsx": "^4.23.13",
+    "tsx": "^4.23.15",
     "vitest": "^5.0.2"
   }
 }
