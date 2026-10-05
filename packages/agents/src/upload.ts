@@ -130,7 +130,9 @@ export async function supersedePreviousVersions(doc: {
   campaignId: string;
   name: string;
   createdAt: Date;
+  externalId: string | null;
 }): Promise<number> {
+  if (doc.externalId) return 0; // a channel post is never a new version of anything
   const { count } = await prisma.sourceDocument.updateMany({
     where: previousVersionsWhere(doc),
     data: { supersededById: doc.id, supersededAt: new Date() },
@@ -141,7 +143,11 @@ export async function supersedePreviousVersions(doc: {
 /** Which documents a newly-read upload replaces: same campaign, same file name, not itself, not
  * already replaced, and — the race guard — only ones uploaded BEFORE it. Without that last
  * condition two uploads landing together could each mark the other replaced, leaving the campaign
- * with no current version of the document at all. */
+ * with no current version of the document at all.
+ *
+ * Posts synced from a table-knowledge channel are left out on both sides: they're keyed by message
+ * id and an edit re-reads the same document, while their names ("Recap — Ana, 2026-10-05") repeat
+ * whenever someone posts twice in a day — matching on name would hide one post behind the other. */
 export function previousVersionsWhere(doc: {
   id: string;
   campaignId: string;
@@ -152,6 +158,7 @@ export function previousVersionsWhere(doc: {
     campaignId: doc.campaignId,
     name: doc.name,
     id: { not: doc.id },
+    externalId: null,
     supersededById: null,
     createdAt: { lt: doc.createdAt },
   };
