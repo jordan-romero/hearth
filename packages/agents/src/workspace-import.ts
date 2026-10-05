@@ -364,6 +364,7 @@ export function listImports(campaignId: string) {
       filesSkipped: true,
       createdAt: true,
       undoneAt: true,
+      message: true,
     },
   });
 }

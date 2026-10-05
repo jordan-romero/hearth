@@ -16,6 +16,7 @@ import {
   FINALIZE_QUEUE,
   INGEST_QUEUE,
   PAGE_INDEX_QUEUE,
+  ONENOTE_IMPORT_QUEUE,
   SESSION_GAP_SEC,
   type FinalizeJob,
 } from "./jobs.js";
@@ -72,6 +73,7 @@ async function start(): Promise<PgBoss> {
   await instance.createQueue(INGEST_QUEUE);
   // `stately`: one waiting index job per page (singletonKey), so a burst of autosaves is one job.
   await instance.createQueue(PAGE_INDEX_QUEUE, { policy: "stately" });
+  await instance.createQueue(ONENOTE_IMPORT_QUEUE);
   return instance;
 }
 
