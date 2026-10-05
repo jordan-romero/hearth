@@ -157,3 +157,53 @@ describe("filterKnowledge — the permission spine", () => {
     expect(canView(spectator, revealedToAlice)).toBe(false);
   });
 });
+
+describe("working material — the DM's prep, not yet canon", () => {
+  // Write time keeps working units DM_ONLY with no grants; these prove the filter holds even if
+  // that ever slips — a working unit marked EVERYONE or granted to a character stays the DM's.
+  const workingEveryone = unit({
+    id: "k-w-all",
+    baseVisibility: "EVERYONE",
+    canon: "WORKING",
+  });
+  const workingToAlice = unit({
+    id: "k-w-alice",
+    baseVisibility: "DM_ONLY",
+    canon: "WORKING",
+    grantedCharacterIds: ["char-alice"],
+  });
+  const workingToParty = unit({
+    id: "k-w-party",
+    baseVisibility: "PUBLIC",
+    canon: "WORKING",
+    grantedPartyIds: ["party-1"],
+  });
+  const canonToAlice = unit({
+    id: "k-c-alice",
+    baseVisibility: "DM_ONLY",
+    canon: "CANON",
+    grantedCharacterIds: ["char-alice"],
+  });
+
+  it("the DM sees working material", () => {
+    expect(canView(dm, workingEveryone)).toBe(true);
+    expect(canView(dm, workingToAlice)).toBe(true);
+  });
+
+  it("a player never sees working material, whatever its visibility or grants", () => {
+    for (const viewer of [alice, bob]) {
+      expect(canView(viewer, workingEveryone)).toBe(false);
+      expect(canView(viewer, workingToAlice)).toBe(false);
+      expect(canView(viewer, workingToParty)).toBe(false);
+    }
+  });
+
+  it("canon knowledge follows the usual rules", () => {
+    expect(canView(alice, canonToAlice)).toBe(true);
+    expect(canView(bob, canonToAlice)).toBe(false);
+  });
+
+  it("the campaign boundary still comes first for working material", () => {
+    expect(canView(dmOfC2, workingEveryone)).toBe(false);
+  });
+});

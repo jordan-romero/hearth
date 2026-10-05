@@ -52,6 +52,14 @@ enum FactProvenance {
   UNSOURCED // looked for, none verified — extraction paraphrased or invented it; not used
 }
 
+/// Whether something is true in the world yet (docs/workspace.md §1). WORKING is the DM's prep —
+/// never shown to a player, whatever its grants; CANON is established, and who knows it is the
+/// usual visibility + grants.
+enum CanonState {
+  WORKING
+  CANON
+}
+
 /// How a DM_ADDED unit originated (provenance/trust). SESSION units are PLAYED.
 enum KnowledgeOrigin {
   PLAYED
@@ -114,6 +122,8 @@ model Campaign {
   // The number the first recorded session gets. Above 1 for a campaign that was already
   // running before it came to Hearth, so /record doesn't restart the count.
   firstSessionNumber Int      @default(1)
+  /// The color for "the whole table knows this" (#rrggbb), alongside each character's own.
+  tableColor         String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -130,6 +140,8 @@ model Campaign {
   askLogs         AskLog[]
   corrections     Correction[]
   shareRequests   ShareRequest[]
+  folders         Folder[]
+  pages           Page[]
   discord         CampaignDiscord?
 }
 
@@ -229,6 +241,8 @@ model Character {
   status           CharacterStatus  @default(ACTIVE)
   avatarUrl        String?
   tokenStoragePath String? // the player's uploaded token image, in the portraits bucket
+  /// The color the DM gave this character (#rrggbb): used wherever Hearth shows who knows what.
+  color            String?
   recaps           CharacterRecap[]
   entity           Entity?
   bio              String?
@@ -312,7 +326,13 @@ model KnowledgeUnit {
   // be is UNSOURCED and is not used — not answered from, offered as a reveal, or built on —
   // because nobody can review it: the DM would have to read their own notes against it, and the
   // players mustn't. It is kept, not deleted, so a reveal already granted on it survives.
-  provenance FactProvenance @default(UNCHECKED)
+  provenance   FactProvenance @default(UNCHECKED)
+  /// Canon or the DM's working prep. Working units are always stored DM_ONLY with no grants.
+  canon        CanonState     @default(CANON)
+  /// For a unit that IS a highlight on a workspace page: the highlight's id (the editor mark's),
+  /// so re-saving the page updates this unit instead of adding another.
+  highlightId  String?        @unique
+  sourcePageId String?
 
   // relationships-as-knowledge (self references)
   subjectId String?
@@ -324,6 +344,8 @@ model KnowledgeUnit {
   campaign         Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   gameSession      GameSession?    @relation(fields: [gameSessionId], references: [id], onDelete: SetNull)
   sourceDocument   SourceDocument? @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+  /// SetNull: a page going away must not take back what a player was already told from it.
+  sourcePage       Page?           @relation(fields: [sourcePageId], references: [id], onDelete: SetNull)
   authorMembership Membership?     @relation("NoteAuthor", fields: [authorMembershipId], references: [id], onDelete: Cascade)
 
   subject   KnowledgeUnit?  @relation("SubjectRel", fields: [subjectId], references: [id], onDelete: SetNull)
@@ -347,6 +369,7 @@ model KnowledgeUnit {
   @@index([subjectId])
   @@index([objectId])
   @@index([supersededByCorrectionId])
+  @@index([sourcePageId])
 }
 
 /// A targeted reveal — the CURRENT state the filter reads. A DM_ONLY unit with a
@@ -518,6 +541,7 @@ enum SourceType {
   DRIVE
   NOTION
   ONENOTE
+  PAGE // a page written in the DM's workspace, indexed as page:<id>
 }
 
 enum DocumentStatus {
@@ -923,4 +947,88 @@ model CharacterRecap {
 
   @@unique([gameSessionId, characterId])
   @@index([characterId])
+}
+
+// ─── The DM's workspace ──────────────────────────────────────────────────────
+// Where the campaign is written: folders inside folders, pages inside them (docs/workspace.md).
+// A page is the source of truth for its text; the memory indexes it (DM-only) through a
+// SourceDocument keyed page:<id>, refreshed a little after the DM stops typing.
+
+/// A folder in the workspace tree. Folders nest without limit (OneNote's notebook → section →
+/// page maps onto folder → folder → page).
+model Folder {
+  id         String   @id @default(cuid())
+  campaignId String
+  parentId   String?
+  name       String
+  /// Order among its siblings (folders sort before pages, each by position then name).
+  position   Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  /// Restrict, not Cascade: deleting a folder must never silently delete what's inside it.
+  parent   Folder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children Folder[] @relation("FolderTree")
+  pages    Page[]
+
+  @@index([campaignId, parentId])
+}
+
+/// A page the DM writes in the workspace.
+model Page {
+  id         String    @id @default(cuid())
+  campaignId String
+  /// Null = at the top level of the workspace.
+  folderId   String?
+  title      String    @default("")
+  /// The editor's document (ProseMirror JSON) — lossless, the source of truth.
+  content    Json
+  /// The same text as markdown, derived on save: what search, Claude and the memory read.
+  markdown   String    @default("")
+  /// Bumped on every save. A save that names an older revision is refused, so two open tabs
+  /// can't silently overwrite each other.
+  revision   Int       @default(0)
+  position   Int       @default(0)
+  /// In the trash: hidden from the tree and taken out of the memory, restorable.
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  campaign Campaign        @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  /// SetNull is never reached (folders refuse deletion while they hold pages); it's the safe
+  /// fallback — a page lands at the top level rather than vanishing.
+  folder   Folder?         @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  versions PageVersion[]
+  /// The canon highlights on this page, as knowledge.
+  units    KnowledgeUnit[]
+
+  @@index([campaignId, folderId])
+  @@index([campaignId, archivedAt])
+}
+
+/// A snapshot in a page's history. Autosave folds edits made within a few minutes of each other
+/// into one version, so history reads as editing sessions rather than keystrokes.
+model PageVersion {
+  id        String          @id @default(cuid())
+  pageId    String
+  title     String
+  content   Json
+  markdown  String
+  cause     PageChangeCause @default(DM)
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  page Page @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId, createdAt])
+}
+
+/// Who or what made a version.
+enum PageChangeCause {
+  DM
+  CLAUDE
+  SESSION
+  IMPORT
+  RESTORE
 }

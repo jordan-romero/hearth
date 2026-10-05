@@ -7,6 +7,7 @@ import {
   TRANSCRIBE_QUEUE,
   FINALIZE_QUEUE,
   INGEST_QUEUE,
+  PAGE_INDEX_QUEUE,
   SESSION_GAP_SEC,
   type FinalizeJob,
 } from "./jobs.js";
@@ -26,6 +27,8 @@ export async function getQueue(): Promise<PgBoss> {
   // burst of /stops (across a merged session) can't pile up duplicate finalizations.
   await instance.createQueue(FINALIZE_QUEUE, { policy: "stately" });
   await instance.createQueue(INGEST_QUEUE);
+  // `stately`: one waiting index job per page (singletonKey), so a burst of autosaves is one job.
+  await instance.createQueue(PAGE_INDEX_QUEUE, { policy: "stately" });
   boss = instance;
   return boss;
 }

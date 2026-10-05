@@ -11,6 +11,9 @@
 //      and units granted to their party. Never DM_ONLY without a matching grant.
 //   4. SESSION knowledge is fair game because it is *stored* as EVERYONE — the
 //      two-tier rule is applied at write time, so the filter only reads state.
+//   5. WORKING material (the DM's prep, not yet canon) is never a player's, whatever
+//      its visibility or grants. Also enforced at write time; checked here too, so a
+//      mistake there can't become a leak.
 
 export type ViewerRole = "DM" | "PLAYER";
 
@@ -36,6 +39,9 @@ export interface FilterableKnowledgeUnit {
   grantedCharacterIds: string[];
   /** party ids this unit has been revealed to (PARTY grants). */
   grantedPartyIds: string[];
+  /** Canon or working. Loaders that don't select it get canon behaviour, which is safe
+   * because working units are always written DM_ONLY with no grants. */
+  canon?: "WORKING" | "CANON";
 }
 
 /** Can this one viewer know this one unit? The whole rule, in one place. */
@@ -48,6 +54,9 @@ export function canView(
 
   // 2. The DM sees the whole world within their campaign.
   if (viewer.role === "DM") return true;
+
+  // 2b. The DM's working prep is theirs alone, however it is marked.
+  if (unit.canon === "WORKING") return false;
 
   // 3. Broadly-visible knowledge (incl. SESSION facts, stored as EVERYONE).
   if (unit.baseVisibility === "EVERYONE" || unit.baseVisibility === "PUBLIC") {

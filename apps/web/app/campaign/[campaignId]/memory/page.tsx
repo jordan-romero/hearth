@@ -103,8 +103,14 @@ export default async function MemoryPage({
             <article key={u.id} className="card">
               <div className="card-head">
                 <span className="tag">{u.type}</span>
-                {u.baseVisibility === "DM_ONLY" && (
-                  <span className="tag secret">DM only</span>
+                {/* State chips are for the DM managing the world. A player sees what they
+                    know as plain knowledge — never a hint that it was once secret. */}
+                {viewer.role === "DM" && u.baseVisibility === "DM_ONLY" && (
+                  <span className="tag secret">
+                    {u.grantedCharacterIds.length + u.grantedPartyIds.length > 0
+                      ? "Revealed"
+                      : "Hidden"}
+                  </span>
                 )}
               </div>
               <h2 className="card-title">{u.title}</h2>
