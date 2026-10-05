@@ -232,7 +232,9 @@ export async function savePage(
     return { ok: true as const, revision: input.baseRevision + 1 };
   });
 
-  if (result.ok) await schedulePageIndex(pageId);
+  // The save has landed. Indexing is a follow-up: if queueing it fails, the page is still saved
+  // (the next save queues it again) — never report a stored page as unsaved.
+  if (result.ok) await schedulePageIndexQuietly(pageId);
   return result;
 }
 
@@ -272,7 +274,7 @@ export async function movePage(
   if (count === 0)
     throw new WorkspaceError("That page doesn't exist any more.");
   // Its name in search carries the folder path.
-  await schedulePageIndex(pageId);
+  await schedulePageIndexQuietly(pageId);
 }
 
 /** Put a page in the trash: out of the tree and out of the memory, but restorable. */
@@ -284,7 +286,7 @@ export async function archivePage(
     where: { id: pageId, campaignId, archivedAt: null },
     data: { archivedAt: new Date() },
   });
-  if (count > 0) await schedulePageIndex(pageId, 0);
+  if (count > 0) await schedulePageIndexQuietly(pageId, 0);
 }
 
 export async function restorePage(
@@ -305,7 +307,7 @@ export async function restorePage(
     where: { id: pageId },
     data: { archivedAt: null, ...(folderStillThere ? {} : { folderId: null }) },
   });
-  await schedulePageIndex(pageId, 0);
+  await schedulePageIndexQuietly(pageId, 0);
 }
 
 export function listTrash(campaignId: string) {
@@ -357,10 +359,25 @@ export async function restorePageVersion(
     });
     await recordVersion(tx, pageId, snapshot, "RESTORE");
   });
-  await schedulePageIndex(pageId, 0);
+  await schedulePageIndexQuietly(pageId, 0);
 }
 
 // ─── Memory ──────────────────────────────────────────────────────────────────
+
+/** schedulePageIndex for paths where the user's change has already been stored. */
+async function schedulePageIndexQuietly(
+  pageId: string,
+  delaySec?: number,
+): Promise<void> {
+  try {
+    await schedulePageIndex(pageId, delaySec);
+  } catch (err) {
+    console.error(
+      `queueing index for page ${pageId} failed (the page itself is saved):`,
+      err,
+    );
+  }
+}
 
 export async function schedulePageIndex(
   pageId: string,
