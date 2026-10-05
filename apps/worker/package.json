@@ -12,8 +12,8 @@
   "dependencies": {
     "@hearth/agents": "workspace:*",
     "@hearth/db": "workspace:*",
-    "pg-boss": "^12.30.0",
-    "tsx": "^4.23.13"
+    "pg-boss": "^12.35.0",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
     "dotenv-cli": "^11.0.0"
