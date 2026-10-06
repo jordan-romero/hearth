@@ -308,6 +308,21 @@ export async function startOneNoteImport(
   if (!(await getOneNoteConnection(campaignId))) {
     throw new WorkspaceError("Connect OneNote first.");
   }
+  // Two imports at once could each find a page not yet imported and both bring it in.
+  const running = await prisma.importBatch.count({
+    where: {
+      campaignId,
+      source: "ONENOTE",
+      status: "RUNNING",
+      // One stuck "running" by a crashed worker mustn't block imports for good.
+      createdAt: { gt: new Date(Date.now() - 30 * 60_000) },
+    },
+  });
+  if (running > 0) {
+    throw new WorkspaceError(
+      "A OneNote import is already running — it shows under Past imports.",
+    );
+  }
   const batch = await prisma.importBatch.create({
     data: {
       campaignId,

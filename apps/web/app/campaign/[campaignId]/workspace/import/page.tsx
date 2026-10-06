@@ -11,6 +11,7 @@ import {
 import { requireDm } from "@/lib/campaign";
 import { ImportWizard } from "./import-wizard";
 import { OneNotePanel } from "./onenote-panel";
+import { SubmitButton } from "./submit-button";
 import { RefreshWhileRunning } from "../refresh";
 import { undoImportAction } from "./actions";
 
@@ -106,13 +107,9 @@ export default async function ImportPage({
                     <form
                       action={undoImportAction.bind(null, campaignId, b.id)}
                     >
-                      <button
-                        className="ws-link"
-                        type="submit"
-                        title="Move this import's pages to the trash"
-                      >
+                      <SubmitButton className="ws-link" pendingLabel="Undoing…">
                         Undo import
-                      </button>
+                      </SubmitButton>
                     </form>
                   )
                 )}

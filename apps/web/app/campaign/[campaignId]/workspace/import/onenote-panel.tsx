@@ -15,6 +15,7 @@ import {
   type OneNoteSection,
 } from "@hearth/agents";
 import { requireDm } from "@/lib/campaign";
+import { SubmitButton } from "./submit-button";
 
 const NOTICES: Record<string, { ok: boolean; text: string }> = {
   connected: { ok: true, text: "OneNote connected. Choose what to bring in." },
@@ -181,9 +182,9 @@ export async function OneNotePanel({
                 again only brings in what&rsquo;s new.
               </p>
               <div>
-                <button className="btn" type="submit">
+                <SubmitButton pendingLabel="Starting import…">
                   Import from OneNote
-                </button>
+                </SubmitButton>
               </div>
             </form>
           )}

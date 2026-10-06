@@ -14,6 +14,24 @@ describe("htmlToMarkdown", () => {
     );
   });
 
+  it("reads emphasis from OneNote-style spans, keeping markers against the words", () => {
+    expect(
+      htmlToMarkdown(
+        '<p>Leader of the <span style="font-weight:bold">Shepherds of Ondera </span>and <span style="font-style:italic;font-weight:700">very</span> <span style="text-decoration:line-through">old</span> news.</p>',
+      ),
+    ).toBe(
+      "Leader of the **Shepherds of Ondera** and **_very_** ~~old~~ news.",
+    );
+  });
+
+  it("ignores spans that carry no emphasis", () => {
+    expect(
+      htmlToMarkdown(
+        '<p><span style="font-family:Calibri;font-size:11pt">plain</span> text</p>',
+      ),
+    ).toBe("plain text");
+  });
+
   it("shifts headings when asked (OneNote's title is h1)", () => {
     expect(htmlToMarkdown("<h1>Body</h1>", { headingOffset: 1 })).toBe(
       "## Body",
