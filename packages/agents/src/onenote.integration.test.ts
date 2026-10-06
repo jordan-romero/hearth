@@ -169,6 +169,25 @@ describe.skipIf(!live)("OneNote import (database, faked Microsoft)", () => {
     expect(batch).toMatchObject({ pagesCreated: 1, filesSkipped: 3 });
   });
 
+  it("won't start a second import while one is running", async () => {
+    await startOneNoteImport(C, {
+      sectionIds: ["s1"],
+      destinationFolderId: null,
+      label: "first",
+    });
+    await expect(
+      startOneNoteImport(C, {
+        sectionIds: ["s1"],
+        destinationFolderId: null,
+        label: "second",
+      }),
+    ).rejects.toThrow(/already running/);
+    await prisma.importBatch.updateMany({
+      where: { campaignId: C, status: "RUNNING" },
+      data: { status: "DONE" },
+    });
+  });
+
   it("says so when the Microsoft sign-in has expired", async () => {
     graph.tokenError = "invalid_grant";
     const batch = await importAll();

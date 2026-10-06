@@ -65,6 +65,30 @@ export function htmlToMarkdown(
     if (cell !== null) cell += text;
     else line += text;
   };
+  // Close an emphasis run. Markdown only reads "**x**" as bold when the markers hug the text, so a
+  // closing marker goes before any trailing space ("**Ondera **" would stay literal asterisks).
+  const close = (marker: string) => {
+    const buf = cell !== null ? cell : line;
+    const trimmed = buf.replace(/\s+$/, "");
+    const next = trimmed + marker + buf.slice(trimmed.length);
+    if (cell !== null) cell = next;
+    else line = next;
+  };
+  const emphasis = (marker: string, open: boolean) => {
+    if (pre) return;
+    if (open) write(marker);
+    else close(marker);
+  };
+  // <span style="font-weight:bold"> and friends: how OneNote (and pasted web text) marks emphasis.
+  const spans: string[][] = [];
+  const styleMarkers = (attrs: string): string[] => {
+    const style = (attr(attrs, "style") ?? "").toLowerCase();
+    const out: string[] = [];
+    if (/font-weight\s*:\s*(bold|bolder|[6-9]00)/.test(style)) out.push("**");
+    if (/font-style\s*:\s*italic/.test(style)) out.push("_");
+    if (/text-decoration[^;]*line-through/.test(style)) out.push("~~");
+    return out;
+  };
   let typedBulletRun: number | null = null; // see below
   const flush = () => {
     let body = line
@@ -172,16 +196,25 @@ export function htmlToMarkdown(
         break;
       case "strong":
       case "b":
-        if (!pre) write("**");
+        emphasis("**", open);
         break;
       case "em":
       case "i":
-        if (!pre) write("_");
+        emphasis("_", open);
         break;
       case "s":
       case "del":
       case "strike":
-        if (!pre) write("~~");
+        emphasis("~~", open);
+        break;
+      case "span":
+        if (open) {
+          const markers = pre ? [] : styleMarkers(attrs);
+          spans.push(markers);
+          for (const m of markers) write(m);
+        } else {
+          for (const m of (spans.pop() ?? []).reverse()) close(m);
+        }
         break;
       case "code":
         if (!pre) write("`");
