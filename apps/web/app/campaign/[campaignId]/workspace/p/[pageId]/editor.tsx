@@ -24,6 +24,7 @@ import { Placeholder } from "@tiptap/extensions";
 import type { PmNode } from "@hearth/agents";
 import { savePageAction } from "../../actions";
 import { SlashCommand } from "./slash";
+import { AssistantPanel } from "./assistant-panel";
 import {
   canonMark,
   clearCanon,
@@ -63,6 +64,7 @@ export function PageEditor({
 }) {
   const router = useRouter();
   const [title, setTitle] = useState(initialTitle);
+  const [claudeOpen, setClaudeOpen] = useState(false);
   const [state, setState] = useState<SaveState>("saved");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(initialRevision);
@@ -184,6 +186,24 @@ export function PageEditor({
 
   return (
     <div className="ws-editor">
+      {!readOnly && (
+        <button
+          type="button"
+          className={`asst-toggle${claudeOpen ? " on" : ""}`}
+          aria-expanded={claudeOpen}
+          onClick={() => setClaudeOpen((o) => !o)}
+        >
+          ✦ Claude
+        </button>
+      )}
+      {claudeOpen && (
+        <AssistantPanel
+          campaignId={campaignId}
+          pageId={pageId}
+          editor={editor}
+          onClose={() => setClaudeOpen(false)}
+        />
+      )}
       <div className="ws-status" aria-live="polite">
         {state === "saving" && "Saving…"}
         {state === "dirty" && "Editing"}

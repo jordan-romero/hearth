@@ -34,6 +34,7 @@ export * from "./markdown-to-page.js";
 export * from "./workspace-import.js";
 export * from "./secrets.js";
 export * from "./onenote.js";
+export * from "./assistant.js";
 export * from "./share.js";
 export * from "./stream-transcribe.js";
 export * from "./provenance.js";
