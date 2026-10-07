@@ -27,6 +27,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     Discord({
       clientId: DISCORD_ID,
       clientSecret: DISCORD_SECRET,
+      // Discord now sends `iss` back on the login callback (RFC 9207), and Auth.js checks it
+      // against the provider's issuer — which defaults to a placeholder, so every login failed.
+      // This is the issuer Discord publishes at /.well-known/oauth-authorization-server. The
+      // endpoints stay explicit (from the provider), so this doesn't turn on discovery.
+      issuer: "https://discord.com",
     }),
   ],
   session: { strategy: "jwt" },
