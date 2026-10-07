@@ -52,7 +52,8 @@
       "@xmldom/xmldom": "^0.8.15",
       "nanoid": ">=3.3.16",
       "postcss": ">=8.5.23",
-      "source-map-js": "^1.2.2"
+      "source-map-js": "^1.2.2",
+      "sharp": "^0.35.5"
     }
   }
 }
