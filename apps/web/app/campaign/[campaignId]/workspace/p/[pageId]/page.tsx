@@ -2,13 +2,8 @@
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import {
-  getBacklinks,
-  getPage,
-  getTableColors,
-  getWorkspaceTree,
-} from "@hearth/agents";
-import { requireDm } from "@/lib/campaign";
+import { getBacklinks, getPage, getTableColors } from "@hearth/agents";
+import { requireDm, workspaceTree } from "@/lib/campaign";
 import { PageEditor } from "./editor";
 import { archivePageAction, restorePageAction } from "../../actions";
 
@@ -18,16 +13,18 @@ export default async function WorkspacePage({
   params: Promise<{ campaignId: string; pageId: string }>;
 }) {
   const { campaignId, pageId } = await params;
-  await requireDm(campaignId);
-  const page = await getPage(campaignId, pageId);
-  if (!page) notFound();
-
-  // Breadcrumb: the folders above this page.
-  const [{ folders, pages }, colors, backlinks] = await Promise.all([
-    getWorkspaceTree(campaignId),
+  // Everything at once, so a click costs one round of queries. Nothing is shown unless the DM
+  // check passes: if it fails, Promise.all rejects (a redirect or 404) and the rest is dropped.
+  const [, page, { folders, pages }, colors, backlinks] = await Promise.all([
+    requireDm(campaignId),
+    getPage(campaignId, pageId),
+    workspaceTree(campaignId),
     getTableColors(campaignId),
     getBacklinks(campaignId, pageId),
   ]);
+  if (!page) notFound();
+
+  // Breadcrumb: the folders above this page.
   const byId = new Map(folders.map((f) => [f.id, f]));
   const crumbs: string[] = [];
   for (let id = page.folderId; id; id = byId.get(id)?.parentId ?? null) {

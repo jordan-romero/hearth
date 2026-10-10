@@ -1021,6 +1021,40 @@ code {
   color: var(--ember);
   background: var(--ember-soft);
 }
+/* A page loading (workspace/p/[pageId]/loading.tsx). */
+.ws-skeleton {
+  border-radius: 6px;
+  background: var(--line);
+  animation: ws-pulse 1.2s ease-in-out infinite;
+}
+.ws-skeleton-crumbs {
+  width: 90px;
+  height: 12px;
+  margin-bottom: 34px;
+}
+.ws-skeleton-title {
+  width: 40%;
+  height: 34px;
+  margin-bottom: 36px;
+}
+.ws-skeleton-line {
+  height: 14px;
+  margin-bottom: 14px;
+}
+.ws-skeleton-line.short {
+  width: 55%;
+}
+@keyframes ws-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-skeleton {
+    animation: none;
+  }
+}
+
 /* Page links ([[ and @). */
 .ws-prose a.ws-pagelink {
   color: var(--ember);

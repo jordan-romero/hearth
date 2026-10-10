@@ -4,7 +4,9 @@
 // remember it for this browser); each row has a small menu for the things you do to it.
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+// The router's own enum: "full" fetches the whole page, not just its loading shell.
+import { PrefetchKind } from "next/dist/client/components/router-reducer/router-reducer-types";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   deleteFolderAction,
@@ -421,6 +423,12 @@ function PageRow({
   onMove: (to: string | null) => void;
 }) {
   const [moving, setMoving] = useState(false);
+  const router = useRouter();
+  // Fetch the page when the pointer (or focus) arrives, so by the click it's usually here. Only
+  // on intent: prefetching every row in view would cost a query round per page in the tree.
+  const warm = () => {
+    if (!active) router.prefetch(href, { kind: PrefetchKind.FULL });
+  };
   return (
     <li role="treeitem">
       <div
@@ -431,6 +439,8 @@ function PageRow({
           href={href}
           className="ws-page-name"
           aria-current={active ? "page" : undefined}
+          onMouseEnter={warm}
+          onFocus={warm}
         >
           {title || "Untitled"}
         </Link>

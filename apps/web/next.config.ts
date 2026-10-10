@@ -8,6 +8,10 @@ const nextConfig: NextConfig = {
     // files before the action even runs. Raised to a bounded limit that matches what the
     // library page validates against, so the two can't disagree.
     serverActions: { bodySizeLimit: `${MAX_UPLOAD_MB}mb` },
+    // Keep pages the DM has just visited (or hovered, in the workspace tree) for a little while,
+    // so going back to one is instant. The editor never trusts an older copy of a page it has
+    // saved since (see lastSaved in the workspace editor).
+    staleTimes: { dynamic: 30, static: 60 },
   },
   // The workspace packages ship TypeScript source (no build step), so Next must compile them.
   transpilePackages: ["@hearth/core", "@hearth/db", "@hearth/agents"],

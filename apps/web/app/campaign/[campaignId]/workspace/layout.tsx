@@ -1,8 +1,7 @@
 // The DM's workspace: the folder tree on the left, the open page on the right. DM-only — checked
 // here and again in every page and action under it.
 
-import { getWorkspaceTree } from "@hearth/agents";
-import { requireDm } from "@/lib/campaign";
+import { requireDm, workspaceTree } from "@/lib/campaign";
 import { WorkspaceTree } from "./tree";
 
 export default async function WorkspaceLayout({
@@ -13,8 +12,10 @@ export default async function WorkspaceLayout({
   params: Promise<{ campaignId: string }>;
 }) {
   const { campaignId } = await params;
-  await requireDm(campaignId);
-  const tree = await getWorkspaceTree(campaignId);
+  const [, tree] = await Promise.all([
+    requireDm(campaignId),
+    workspaceTree(campaignId),
+  ]);
 
   return (
     <div className="workspace">
