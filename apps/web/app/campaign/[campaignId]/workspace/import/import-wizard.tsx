@@ -48,6 +48,12 @@ function localSkip(
   return null;
 }
 
+/** The gap a dragged row would drop into: before `row` (its upper half), or after it. */
+function gapAt(row: HTMLElement, index: number, clientY: number) {
+  const box = row.getBoundingClientRect();
+  return clientY > box.top + box.height / 2 ? index + 1 : index;
+}
+
 const dirOf = (path: string) => path.split("/").slice(0, -1).join("/");
 
 export function ImportWizard({
@@ -76,8 +82,12 @@ export function ImportWizard({
   const [dragging, setDragging] = useState(false);
   // Reordering the review list: the row being dragged, and the gap it would drop into
   // (drop before row `dropAt`; rows.length = after the last one).
+  // State draws the list; the refs are what the drag events read, because the browser can fire
+  // dragover (and drop) before React has re-rendered with the new state.
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
+  const dragFromRef = useRef<number | null>(null);
+  const dropAtRef = useRef<number | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
 
@@ -142,6 +152,8 @@ export function ImportWizard({
   }
 
   function endRowDrag() {
+    dragFromRef.current = null;
+    dropAtRef.current = null;
     setDragFrom(null);
     setDropAt(null);
   }
@@ -438,10 +450,26 @@ export function ImportWizard({
           )}
           <ul
             className={`upload-list${dragFrom !== null ? " sorting" : ""}`}
+            // Anywhere on the list (borders between rows too) accepts the drop. Both events must
+            // accept it: a quick release right after entering a row only has a dragenter.
+            onDragEnter={(e) => {
+              if (dragFromRef.current !== null) e.preventDefault();
+            }}
+            onDragOver={(e) => {
+              if (dragFromRef.current !== null) e.preventDefault();
+            }}
             onDrop={(e) => {
-              if (dragFrom === null) return;
+              const from = dragFromRef.current;
+              if (from === null) return;
               e.preventDefault();
-              if (dropAt !== null) move(dragFrom, dropAt);
+              // Where it was let go, if that's over a row; else the last gap shown.
+              const row = (e.target as HTMLElement).closest<HTMLElement>(
+                ".upload-row",
+              );
+              const at = row?.dataset.index
+                ? gapAt(row, Number(row.dataset.index), e.clientY)
+                : dropAtRef.current;
+              if (at !== null) move(from, at);
               endRowDrag();
             }}
           >
@@ -473,21 +501,23 @@ export function ImportWizard({
                   ]
                     .filter(Boolean)
                     .join(" ")}
+                  data-index={r.index}
                   draggable={sortable}
                   onDragStart={(e) => {
                     if (!sortable) return;
                     e.dataTransfer.effectAllowed = "move";
                     // Firefox won't start a drag without some data.
                     e.dataTransfer.setData("text/plain", r.path);
+                    dragFromRef.current = r.index;
                     setDragFrom(r.index);
                   }}
                   onDragOver={(e) => {
-                    if (dragFrom === null) return;
+                    if (dragFromRef.current === null) return;
                     e.preventDefault();
                     e.dataTransfer.dropEffect = "move";
-                    const box = e.currentTarget.getBoundingClientRect();
-                    const lower = e.clientY > box.top + box.height / 2;
-                    setDropAt(lower ? r.index + 1 : r.index);
+                    const at = gapAt(e.currentTarget, r.index, e.clientY);
+                    dropAtRef.current = at;
+                    setDropAt(at);
                   }}
                   onDragEnd={endRowDrag}
                 >
