@@ -93,6 +93,28 @@ export async function newPage(campaignId: string, folderId: string | null) {
   redirect(`${base(campaignId)}/p/${pageId}`);
 }
 
+/** Create a page from a link ("[[Ildin]]" with no Ildin yet), without leaving the page the DM
+ * is writing. Returns the new page's id. */
+export async function createLinkedPageAction(
+  campaignId: string,
+  folderId: string | null,
+  title: string,
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  await requireDm(String(campaignId));
+  try {
+    const id = await createPage(
+      campaignId,
+      optionalId(folderId),
+      String(title ?? "").slice(0, 200),
+    );
+    revalidatePath(base(campaignId), "layout");
+    return { ok: true, id };
+  } catch (err) {
+    if (err instanceof WorkspaceError) return { ok: false, error: err.message };
+    throw err;
+  }
+}
+
 export async function movePageAction(
   campaignId: string,
   pageId: string,

@@ -1021,6 +1021,60 @@ code {
   color: var(--ember);
   background: var(--ember-soft);
 }
+/* Page links ([[ and @). */
+.ws-prose a.ws-pagelink {
+  color: var(--ember);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--ember) 45%, transparent);
+  cursor: pointer;
+}
+.ws-prose a.ws-pagelink:hover {
+  border-bottom-color: var(--ember);
+}
+.ws-prose a.ws-pagelink.unresolved {
+  color: var(--ink-2);
+  border-bottom: 1px dashed var(--ink-3);
+}
+.ws-prose a.ws-pagelink.missing {
+  color: var(--ink-3);
+  text-decoration: line-through;
+  border-bottom: 0;
+}
+.ws-prose a.ws-pagelink.ProseMirror-selectednode {
+  outline: 2px solid var(--ember-soft);
+  border-radius: 3px;
+}
+.ws-slash-item.create span {
+  color: var(--ember);
+}
+.ws-backlinks {
+  margin-top: 40px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.ws-backlinks-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.ws-backlinks ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 14px;
+}
+.ws-backlinks a {
+  color: var(--ink-2);
+}
+.ws-backlinks a:hover {
+  color: var(--ember);
+}
 .ws-slash {
   position: absolute;
   z-index: 50;

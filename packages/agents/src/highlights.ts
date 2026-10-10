@@ -13,6 +13,7 @@
 // was — what someone was told stays told — and still carries its highlight id, so if the text
 // comes back (an undo, a restored version) it picks up the same knowledge instead of a copy.
 
+import { inlineText, PAGE_LINK } from "./page-links.js";
 import { prisma, type BaseVisibility } from "@hearth/db";
 import type { PmNode } from "./page-markdown.js";
 import { embedTexts, toVectorLiteral } from "./embeddings.js";
@@ -38,7 +39,7 @@ export function extractHighlights(doc: PmNode): PageHighlight[] {
   let block = 0;
 
   const walk = (node: PmNode, inTextBlock: boolean) => {
-    if (node.type === "text") {
+    if (node.type === "text" || node.type === PAGE_LINK) {
       const mark = node.marks?.find((m) => m.type === CANON_MARK);
       const id = typeof mark?.attrs?.id === "string" ? mark.attrs.id : null;
       if (!mark || !id) return;
@@ -50,12 +51,13 @@ export function extractHighlights(doc: PmNode): PageHighlight[] {
       const existing = byId.get(id);
       if (existing) {
         existing.text +=
-          (existing.lastBlock === block ? "" : " … ") + (node.text ?? "");
+          (existing.lastBlock === block ? "" : " … ") +
+          (inlineText(node) ?? "");
         existing.lastBlock = block;
       } else {
         byId.set(id, {
           id,
-          text: node.text ?? "",
+          text: inlineText(node) ?? "",
           known: [...new Set(known)],
           everyone: mark.attrs?.everyone === true,
           lastBlock: block,
@@ -63,7 +65,9 @@ export function extractHighlights(doc: PmNode): PageHighlight[] {
       }
       return;
     }
-    const isTextBlock = !!node.content?.some((c) => c.type === "text");
+    const isTextBlock = !!node.content?.some(
+      (c) => c.type === "text" || c.type === PAGE_LINK,
+    );
     if (isTextBlock && !inTextBlock) block++;
     for (const child of node.content ?? [])
       walk(child, isTextBlock || inTextBlock);

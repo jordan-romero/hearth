@@ -1017,6 +1017,9 @@ model Page {
   versions    PageVersion[]
   /// The canon highlights on this page, as knowledge.
   units       KnowledgeUnit[]
+  /// Pages this one links to, and pages that link here (its backlinks).
+  linksOut    PageLink[]      @relation("LinksFrom")
+  linksIn     PageLink[]      @relation("LinksTo")
 
   @@index([campaignId, folderId])
   @@index([campaignId, archivedAt])
@@ -1042,6 +1045,21 @@ model PageVersion {
 }
 
 /// Who or what made a version.
+/// One page linking to another (docs/notes-feel.md §2.2): rewritten whenever the linking page is
+/// saved, so "what links here" is one indexed query.
+model PageLink {
+  fromPageId String
+  toPageId   String
+  campaignId String
+  createdAt  DateTime @default(now())
+
+  from Page @relation("LinksFrom", fields: [fromPageId], references: [id], onDelete: Cascade)
+  to   Page @relation("LinksTo", fields: [toPageId], references: [id], onDelete: Cascade)
+
+  @@id([fromPageId, toPageId])
+  @@index([toPageId])
+}
+
 enum PageChangeCause {
   DM
   CLAUDE

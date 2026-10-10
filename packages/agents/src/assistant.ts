@@ -13,6 +13,7 @@ import { retrieveContext } from "./retrieve.js";
 import { gatherSubjectContext } from "./graph-context.js";
 import { getPage, getWorkspaceTree } from "./workspace.js";
 import { markdownToPage } from "./markdown-to-page.js";
+import { resolvePageLinks } from "./page-links.js";
 import { extractHighlights } from "./highlights.js";
 import type { PmNode } from "./page-markdown.js";
 import { addUsage, logUsage, noUsage, usageOf } from "./usage.js";
@@ -58,7 +59,7 @@ How to work:
 - Ground suggestions in the campaign. Use search_campaign, read_page, list_pages and get_entity before answering anything about people, places, factions or events. Prefer several targeted searches over one vague one.
 - Say where things come from: name the page or session ("from NPCs / Vess", "Session 12"). Flag working prep as prep ("your notes suggest…, not yet canon").
 - You may invent — names, NPCs, lines of a speech — when the DM asks for it, but never present an invention as established canon, and keep it consistent with what the campaign already says.
-- When you write text meant for the page (a paragraph, a list of NPCs, a rewrite of their selection), call propose_edit with it in markdown. The DM sees it as a card and decides whether to insert it; you never change pages yourself. Keep your chat reply short when you propose — the card holds the content.
+- When you write text meant for the page (a paragraph, a list of NPCs, a rewrite of their selection), call propose_edit with it in markdown (write [[Page title]] to link one of the DM's pages by its exact title). The DM sees it as a card and decides whether to insert it; you never change pages yourself. Keep your chat reply short when you propose — the card holds the content.
 - Be concise and concrete. No preamble.`;
 
 const TOOLS: Anthropic.Beta.BetaTool[] = [
@@ -335,7 +336,14 @@ export async function runAssistantTool(
           placement,
           summary,
           markdown,
-          doc: markdownToPage(markdown),
+          // "[[Ildin]]" in what Claude wrote arrives as a link to Ildin's page.
+          doc: resolvePageLinks(
+            markdownToPage(markdown),
+            await prisma.page.findMany({
+              where: { campaignId, archivedAt: null },
+              select: { id: true, title: true },
+            }),
+          ),
         },
       };
     }

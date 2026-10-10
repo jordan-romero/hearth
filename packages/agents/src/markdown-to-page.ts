@@ -8,16 +8,18 @@
 
 import { Lexer, type Token, type Tokens } from "marked";
 import type { PmNode } from "./page-markdown.js";
+import { linkWikiTitles } from "./page-links.js";
 
 type Mark = { type: string; attrs?: Record<string, unknown> };
 
 export function markdownToPage(markdown: string): PmNode {
   const tokens = new Lexer({ gfm: true }).lex(markdown.replace(/\r\n?/g, "\n"));
   const content = blocks(tokens);
-  return {
+  // "[[Ildin]]" (OneNote's and Obsidian's page links) becomes a page link, resolved on save.
+  return linkWikiTitles({
     type: "doc",
     content: content.length ? content : [{ type: "paragraph" }],
-  };
+  });
 }
 
 /** Plain text → a page: one paragraph per blank-line-separated block, line breaks kept. */

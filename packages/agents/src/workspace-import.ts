@@ -20,7 +20,7 @@ import { isDirectUploadKey, MAX_UPLOAD_BYTES } from "./upload.js";
 import { htmlToMarkdown } from "./html-to-markdown.js";
 import { markdownToPage, textToPage } from "./markdown-to-page.js";
 import { pageToMarkdown, type PmNode } from "./page-markdown.js";
-import { schedulePageIndex, WorkspaceError } from "./workspace.js";
+import { relinkPages, schedulePageIndex, WorkspaceError } from "./workspace.js";
 
 export const IMPORTABLE_EXTENSIONS = [
   ".md",
@@ -280,6 +280,15 @@ export async function finishImport(
   batchId: string,
   skippedInBrowser: number,
 ): Promise<void> {
+  // Every page of the import now exists, so "[[Title]]" links between them can resolve.
+  const pages = await prisma.page.findMany({
+    where: { importBatchId: batchId, campaignId },
+    select: { id: true },
+  });
+  await relinkPages(
+    campaignId,
+    pages.map((p) => p.id),
+  ).catch((err) => console.error("[import] relinking pages failed:", err));
   await prisma.importBatch.updateMany({
     where: { id: batchId, campaignId, status: "RUNNING" },
     data: {

@@ -14,6 +14,12 @@ import { removeExternalDocument, syncExternalDocument } from "./external.js";
 import { syncPageHighlights } from "./highlights.js";
 import { getQueue } from "./queue.js";
 import { PAGE_INDEX_QUEUE, type PageIndexJob } from "./jobs.js";
+import {
+  linkedPageIds,
+  linkWikiTitles,
+  mayHaveLinks,
+  resolvePageLinks,
+} from "./page-links.js";
 
 /** Edits within this long of the last version fold into it, so history reads as sittings. */
 const VERSION_WINDOW_MS = 10 * 60_000;
@@ -158,6 +164,8 @@ export async function createPage(
     },
     select: { id: true },
   });
+  // "[[Ildin]]" written before there was an Ildin now leads here.
+  if (title.trim()) await relinkTitleQuietly(campaignId, title);
   return page.id;
 }
 
@@ -210,8 +218,13 @@ export async function savePage(
   if (input.content?.type !== "doc")
     throw new WorkspaceError("That isn't a page.");
   const title = input.title.trim().slice(0, NAME_MAX);
-  const markdown = pageToMarkdown(input.content);
-  const content = input.content as unknown as Prisma.InputJsonValue;
+  const links = await prepareLinks(campaignId, pageId, input.content);
+  const markdown = pageToMarkdown(links.doc);
+  const content = links.doc as unknown as Prisma.InputJsonValue;
+  const before = await prisma.page.findFirst({
+    where: { id: pageId, campaignId },
+    select: { title: true },
+  });
 
   const result = await prisma.$transaction(async (tx) => {
     const { count } = await tx.page.updateMany({
@@ -232,13 +245,160 @@ export async function savePage(
       };
     }
     await recordVersion(tx, pageId, { title, content, markdown }, "DM");
+    await recordLinks(tx, campaignId, pageId, links.targets);
     return { ok: true as const, revision: input.baseRevision + 1 };
   });
 
   // The save has landed. Indexing is a follow-up: if queueing it fails, the page is still saved
   // (the next save queues it again) — never report a stored page as unsaved.
   if (result.ok) await schedulePageIndexQuietly(pageId);
+  // A renamed page: links to it show the new name, and "[[New name]]" elsewhere now finds it.
+  if (result.ok && before && before.title !== title) {
+    await relinkPagesQuietly(campaignId, await backlinkSources(pageId));
+    if (title) await relinkTitleQuietly(campaignId, title);
+  }
   return result;
+}
+
+// ─── Page links ──────────────────────────────────────────────────────────────
+
+/** What a page's links can lead to: the campaign's pages (titles only for live ones). */
+async function linkTargets(campaignId: string) {
+  const pages = await prisma.page.findMany({
+    where: { campaignId },
+    select: { id: true, title: true, archivedAt: true },
+  });
+  return {
+    live: pages.filter((p) => !p.archivedAt),
+    ids: new Set(pages.map((p) => p.id)),
+  };
+}
+
+/** Resolve a page's links and work out which pages it links to. Skips the query when the page
+ * has no links at all. */
+async function prepareLinks(
+  campaignId: string,
+  pageId: string,
+  doc: PmNode,
+): Promise<{ doc: PmNode; targets: string[] }> {
+  if (!mayHaveLinks(doc)) return { doc, targets: [] };
+  const { live, ids } = await linkTargets(campaignId);
+  // Literal "[[Title]]" too (pasted as plain text, or typed faster than the editor's rule).
+  const resolved = resolvePageLinks(linkWikiTitles(doc), live);
+  const targets = [...linkedPageIds(resolved, campaignId)].filter(
+    (id) => ids.has(id) && id !== pageId,
+  );
+  return { doc: resolved, targets };
+}
+
+async function recordLinks(
+  tx: Prisma.TransactionClient,
+  campaignId: string,
+  pageId: string,
+  targets: string[],
+): Promise<void> {
+  await tx.pageLink.deleteMany({ where: { fromPageId: pageId } });
+  if (targets.length > 0)
+    await tx.pageLink.createMany({
+      data: targets.map((toPageId) => ({
+        fromPageId: pageId,
+        toPageId,
+        campaignId,
+      })),
+      skipDuplicates: true,
+    });
+}
+
+async function backlinkSources(pageId: string): Promise<string[]> {
+  const rows = await prisma.pageLink.findMany({
+    where: { toPageId: pageId },
+    select: { fromPageId: true },
+  });
+  return rows.map((r) => r.fromPageId);
+}
+
+/**
+ * Bring pages' links up to date outside the editor: after an import (whose pages only now all
+ * exist), when a page is created or renamed, and for the one-off backfill. Literal "[[Title]]"
+ * text becomes a page link. Not a new revision or version: an editor still open on one of these
+ * pages saves over it, and that save resolves the same links again.
+ */
+export async function relinkPages(
+  campaignId: string,
+  pageIds: readonly string[],
+): Promise<number> {
+  if (pageIds.length === 0) return 0;
+  const { live, ids } = await linkTargets(campaignId);
+  const pages = await prisma.page.findMany({
+    where: { id: { in: [...new Set(pageIds)] }, campaignId },
+    select: { id: true, content: true },
+  });
+  let changed = 0;
+  for (const page of pages) {
+    const doc = page.content as unknown as PmNode;
+    const linked = resolvePageLinks(linkWikiTitles(doc), live);
+    const targets = [...linkedPageIds(linked, campaignId)].filter(
+      (id) => ids.has(id) && id !== page.id,
+    );
+    await prisma.$transaction(async (tx) => {
+      if (linked !== doc) {
+        await tx.page.update({
+          where: { id: page.id },
+          data: {
+            content: linked as unknown as Prisma.InputJsonValue,
+            markdown: pageToMarkdown(linked),
+          },
+        });
+      }
+      await recordLinks(tx, campaignId, page.id, targets);
+    });
+    if (linked !== doc) {
+      changed++;
+      await schedulePageIndexQuietly(page.id);
+    }
+  }
+  return changed;
+}
+
+async function relinkPagesQuietly(campaignId: string, pageIds: string[]) {
+  await relinkPages(campaignId, pageIds).catch((err) =>
+    console.error("[workspace] relinking pages failed:", err),
+  );
+}
+
+/** Pages that mention "[[title]]": the ones a page with this title may now resolve. */
+async function relinkTitleQuietly(campaignId: string, title: string) {
+  const mentioning = await prisma.page
+    .findMany({
+      where: {
+        campaignId,
+        markdown: { contains: `[[${title.trim()}]]`, mode: "insensitive" },
+      },
+      select: { id: true },
+    })
+    .catch(() => []);
+  await relinkPagesQuietly(
+    campaignId,
+    mentioning.map((p) => p.id),
+  );
+}
+
+export interface Backlink {
+  id: string;
+  title: string;
+}
+
+/** The pages that link to this one ("Mentioned in"), not counting ones in the trash. */
+export async function getBacklinks(
+  campaignId: string,
+  pageId: string,
+): Promise<Backlink[]> {
+  const rows = await prisma.pageLink.findMany({
+    where: { toPageId: pageId, campaignId, from: { archivedAt: null } },
+    select: { from: { select: { id: true, title: true } } },
+    orderBy: { from: { title: "asc" } },
+  });
+  return rows.map((r) => r.from);
 }
 
 /** Add to the page's history: fold into the latest version if it's the DM's and recent. */

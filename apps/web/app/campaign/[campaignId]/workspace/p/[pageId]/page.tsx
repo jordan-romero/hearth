@@ -2,7 +2,12 @@
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getPage, getTableColors, getWorkspaceTree } from "@hearth/agents";
+import {
+  getBacklinks,
+  getPage,
+  getTableColors,
+  getWorkspaceTree,
+} from "@hearth/agents";
 import { requireDm } from "@/lib/campaign";
 import { PageEditor } from "./editor";
 import { archivePageAction, restorePageAction } from "../../actions";
@@ -18,9 +23,10 @@ export default async function WorkspacePage({
   if (!page) notFound();
 
   // Breadcrumb: the folders above this page.
-  const [{ folders }, colors] = await Promise.all([
+  const [{ folders, pages }, colors, backlinks] = await Promise.all([
     getWorkspaceTree(campaignId),
     getTableColors(campaignId),
+    getBacklinks(campaignId, pageId),
   ]);
   const byId = new Map(folders.map((f) => [f.id, f]));
   const crumbs: string[] = [];
@@ -94,7 +100,23 @@ export default async function WorkspacePage({
           name,
           color,
         }))}
+        folderId={page.folderId}
+        pages={pages.map(({ id, title }) => ({ id, title }))}
       />
+      {backlinks.length > 0 && (
+        <aside className="ws-backlinks" aria-label="Pages that link here">
+          <h2 className="ws-backlinks-title">Mentioned in</h2>
+          <ul>
+            {backlinks.map((b) => (
+              <li key={b.id}>
+                <Link href={`/campaign/${campaignId}/workspace/p/${b.id}`}>
+                  {b.title || "Untitled"}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </aside>
+      )}
     </article>
   );
 }

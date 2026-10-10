@@ -11,7 +11,7 @@ import { canSealSecrets, openSecret, sealSecret } from "./secrets.js";
 import { htmlToMarkdown } from "./html-to-markdown.js";
 import { markdownToPage } from "./markdown-to-page.js";
 import { pageToMarkdown } from "./page-markdown.js";
-import { schedulePageIndex, WorkspaceError } from "./workspace.js";
+import { relinkPages, schedulePageIndex, WorkspaceError } from "./workspace.js";
 import { getQueue } from "./queue.js";
 import { ONENOTE_IMPORT_QUEUE, type OneNoteImportJob } from "./jobs.js";
 
@@ -349,11 +349,22 @@ export async function runOneNoteImport(job: OneNoteImportJob): Promise<void> {
   });
   if (!batch || batch.status !== "RUNNING") return;
   const { campaignId } = batch;
-  const finish = (message: string | null) =>
-    prisma.importBatch.update({
+  const finish = async (message: string | null) => {
+    // Every page that came in now exists, so their links to one another (OneNote's own page
+    // links, kept as [[Title]]) can resolve.
+    const pages = await prisma.page.findMany({
+      where: { importBatchId: job.batchId, campaignId },
+      select: { id: true },
+    });
+    await relinkPages(
+      campaignId,
+      pages.map((p) => p.id),
+    ).catch((err) => console.error("[onenote] relinking pages failed:", err));
+    await prisma.importBatch.update({
       where: { id: job.batchId },
       data: { status: "DONE", finishedAt: new Date(), message },
     });
+  };
 
   try {
     const at = await accessToken(campaignId);

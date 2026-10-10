@@ -38,6 +38,9 @@ export interface HtmlToMarkdownOptions {
   headingOffset?: number;
 }
 
+/** Marks an open <a> that becomes a [[page link]] rather than a web link. */
+const WIKI_LINK = "\u0000wiki";
+
 export function htmlToMarkdown(
   html: string,
   opts: HtmlToMarkdownOptions = {},
@@ -222,12 +225,19 @@ export function htmlToMarkdown(
       case "a":
         if (open) {
           const href = attr(attrs, "href") ?? "";
-          const safe = /^(https?:|mailto:)/i.test(href) ? href : null;
+          // OneNote links its own pages with onenote: addresses, which mean nothing here; the
+          // link's text is the page's title, so it becomes a [[Title]] page link instead.
+          const safe = /^onenote:/i.test(href)
+            ? WIKI_LINK
+            : /^(https?:|mailto:)/i.test(href)
+              ? href
+              : null;
           links.push(safe);
-          if (safe) write("[");
+          if (safe) write(safe === WIKI_LINK ? "[[" : "[");
         } else {
           const href = links.pop();
-          if (href) write(`](${href})`);
+          if (href === WIKI_LINK) write("]]");
+          else if (href) write(`](${href})`);
         }
         break;
       case "img": {
