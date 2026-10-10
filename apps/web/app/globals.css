@@ -1189,6 +1189,14 @@ code {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
+.ws-colors-heading {
+  margin: 12px 0 0;
+  font-size: 15px;
+}
+.ws-color-row .ws-name-input {
+  flex: 1;
+  min-width: 140px;
+}
 .ws-color-row input[type="color"] {
   width: 36px;
   height: 28px;

@@ -337,6 +337,42 @@ export async function getTableColors(campaignId: string): Promise<TableColors> {
 
 const HEX = /^#[0-9a-f]{6}$/i;
 
+export const CHARACTER_NAME_MAX = 60;
+
+/** The DM adds a character before (or without) its player joining. Its player's `/join` with the
+ * same name claims it later (see joinCampaign), keeping every highlight already marked for it. */
+export async function addCharacter(
+  campaignId: string,
+  input: { name: string; color?: string | null },
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const name = input.name.trim().replace(/\s+/g, " ");
+  if (!name) return { ok: false, error: "Give the character a name." };
+  if (name.length > CHARACTER_NAME_MAX)
+    return {
+      ok: false,
+      error: `Keep the name under ${CHARACTER_NAME_MAX} characters.`,
+    };
+  const clash = await prisma.character.findFirst({
+    where: { campaignId, name: { equals: name, mode: "insensitive" } },
+    select: { id: true },
+  });
+  if (clash) return { ok: false, error: `There's already a ${name}.` };
+  const party = await prisma.party.findFirst({
+    where: { campaignId },
+    select: { id: true },
+  });
+  const created = await prisma.character.create({
+    data: {
+      campaignId,
+      name,
+      partyId: party?.id ?? null,
+      color: input.color && HEX.test(input.color) ? input.color : null,
+    },
+    select: { id: true },
+  });
+  return { ok: true, id: created.id };
+}
+
 /** Save the DM's colors. Ids are checked against the campaign; bad colors are ignored. */
 export async function setTableColors(
   campaignId: string,

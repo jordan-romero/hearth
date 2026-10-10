@@ -7,6 +7,10 @@
 // Saves carry the revision this editor last saw. If the page changed elsewhere in the meantime
 // (another tab, a restore), the save is refused and the DM is told instead of either copy
 // silently winning.
+//
+// Links: a click on a link to another Hearth page goes there; ⌘/Ctrl-click opens any link in a new
+// tab. A plain click on a web link just places the cursor (it's text being edited); the formatting
+// bar offers Open.
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -43,6 +47,18 @@ type SaveState = "saved" | "dirty" | "saving" | "conflict" | "error";
 
 const SAVE_DELAY_MS = 800;
 
+/** A link's address as a path within Hearth, or null when it leads elsewhere. */
+function hearthPath(href: string): string | null {
+  try {
+    const url = new URL(href, window.location.href);
+    return url.origin === window.location.origin
+      ? url.pathname + url.search + url.hash
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function PageEditor({
   campaignId,
   pageId,
@@ -77,6 +93,12 @@ export function PageEditor({
   // The editor is created once, so its change handler goes through a ref to always reach the
   // current save logic (and the editor itself, which doesn't exist on the first render).
   const scheduleRef = useRef<() => void>(() => {});
+  const openLinkRef = useRef<(href: string, newTab: boolean) => void>(() => {});
+  openLinkRef.current = (href, newTab) => {
+    const path = hearthPath(href);
+    if (path && !newTab) router.push(path);
+    else window.open(path ?? href, "_blank", "noopener,noreferrer");
+  };
 
   const editor = useEditor({
     immediatelyRender: false,
@@ -104,6 +126,17 @@ export function PageEditor({
     onUpdate: () => scheduleRef.current(),
     editorProps: {
       attributes: { class: "ws-prose", "aria-label": "Page content" },
+      handleClick: (_view, _pos, event) => {
+        if (event.button !== 0) return false;
+        const a = (event.target as HTMLElement | null)?.closest?.("a[href]");
+        const href = a?.getAttribute("href");
+        if (!href) return false;
+        const newTab = event.metaKey || event.ctrlKey;
+        if (!newTab && !hearthPath(href)) return false;
+        event.preventDefault();
+        openLinkRef.current(href, newTab);
+        return true;
+      },
     },
   });
 
@@ -245,8 +278,10 @@ export function PageEditor({
       {editor && !readOnly && (
         <FormatBar
           editor={editor}
+          campaignId={campaignId}
           tableColor={tableColor}
           characters={characters}
+          openLink={(href) => openLinkRef.current(href, true)}
         />
       )}
       <EditorContent editor={editor} />
@@ -286,13 +321,18 @@ function Legend({
 
 function FormatBar({
   editor,
+  campaignId,
   tableColor,
   characters,
+  openLink,
 }: {
   editor: Editor;
+  campaignId: string;
   tableColor: string;
   characters: TableCharacter[];
+  openLink: (href: string) => void;
 }) {
+  const router = useRouter();
   // The editor doesn't re-render React on every keystroke; subscribe to what the bar shows.
   const state = useEditorState({
     editor,
@@ -303,6 +343,9 @@ function FormatBar({
       h2: e.isActive("heading", { level: 2 }),
       h3: e.isActive("heading", { level: 3 }),
       link: e.isActive("link"),
+      href: e.isActive("link")
+        ? (e.getAttributes("link").href as string | undefined)
+        : undefined,
       canon: currentCanon(e),
     }),
   });
@@ -339,8 +382,9 @@ function FormatBar({
       editor={editor}
       className="ws-bubble"
       // Also open when the cursor sits in a highlight, so its knowers can be changed.
+      // And in a link, to open or remove it.
       shouldShow={({ editor: e, from, to }) =>
-        from !== to || e.isActive("canon")
+        from !== to || e.isActive("canon") || e.isActive("link")
       }
     >
       <div className="ws-bubble-row">
@@ -382,10 +426,22 @@ function FormatBar({
               editor.chain().focus().unsetLink().run();
               return;
             }
-            const href = window.prompt("Link to");
+            const href = window.prompt(
+              "Link to — a web address, or a Hearth page's address",
+            );
             if (href) editor.chain().focus().setLink({ href }).run();
           },
-          "Link",
+          state.link ? "Remove link" : "Link",
+        )}
+        {state.href && (
+          <button
+            type="button"
+            title={state.href}
+            onMouseDown={keep}
+            onClick={() => openLink(state.href!)}
+          >
+            Open ↗
+          </button>
         )}
       </div>
       <div
@@ -438,6 +494,17 @@ function FormatBar({
             </button>
           );
         })}
+        <button
+          type="button"
+          className="ws-chip ws-chip-quiet"
+          onMouseDown={keep}
+          onClick={() =>
+            router.push(`/campaign/${campaignId}/workspace/colors`)
+          }
+          title="Add a character, or change colors"
+        >
+          + Add
+        </button>
         {canon && (
           <button
             type="button"

@@ -66,7 +66,9 @@ mechanism, extended from facts to page text.
 ### Character colors
 
 The DM assigns each character a color, plus one for the party. Used **everywhere** the same way:
-page highlights, transcripts, character pages, the Ask tab, Claude's answers. Settings → Table.
+page highlights, transcripts, character pages, the Ask tab, Claude's answers. Set on the
+workspace's **Table colors** page (`/workspace/colors`), where the DM can also add a character
+before its player joins (their `/join` with the same name claims it).
 
 ### Highlights
 

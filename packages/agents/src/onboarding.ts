@@ -202,6 +202,28 @@ export async function joinCampaign(
       renamed: true,
     };
   }
+  // The DM may have added this character before its player joined: claim it rather than make a
+  // second one, so the highlights already marked for it carry over.
+  const unclaimed = await prisma.character.findFirst({
+    where: {
+      campaignId,
+      membershipId: null,
+      name: { equals: characterName.trim(), mode: "insensitive" },
+    },
+    select: { id: true, name: true },
+  });
+  if (unclaimed) {
+    await prisma.character.update({
+      where: { id: unclaimed.id },
+      data: { membershipId: membership.id, ...sheet },
+    });
+    return {
+      kind: "joined",
+      characterId: unclaimed.id,
+      characterName: unclaimed.name,
+      renamed: false,
+    };
+  }
   const created = await prisma.character.create({
     data: {
       campaignId,

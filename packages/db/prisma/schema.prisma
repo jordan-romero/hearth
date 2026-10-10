@@ -231,7 +231,9 @@ model Party {
 model Character {
   id           String  @id @default(cuid())
   campaignId   String
-  membershipId String
+  /// The player who plays this character. Null when the DM added it from the web before its
+  /// player joined; their `/join` with the same name claims it.
+  membershipId String?
   partyId      String?
   name         String
 
@@ -254,8 +256,8 @@ model Character {
   updatedAt DateTime @updatedAt
 
   campaign   Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
-  party      Party?     @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  membership Membership? @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  party      Party?      @relation(fields: [partyId], references: [id], onDelete: SetNull)
 
   grants             KnowledgeGrant[]    @relation("GrantCharacter")
   revealEvents       RevealEvent[]       @relation("RevealCharacter")

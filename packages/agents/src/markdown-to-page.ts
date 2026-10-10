@@ -196,8 +196,9 @@ function inlines(tokens: Token[] | undefined, marks: Mark[] = []): PmNode[] {
         break;
       case "link": {
         const l = t as Tokens.Link;
-        // Only web and mail links survive; anything else (javascript:, data:) becomes plain text.
-        const safe = /^(https?:|mailto:)/i.test(l.href);
+        // Only web and mail links, and paths within Hearth (a link to another page), survive;
+        // anything else (javascript:, data:, //elsewhere) becomes plain text.
+        const safe = /^(https?:|mailto:|\/(?![/\\]))/i.test(l.href);
         out.push(
           ...inlines(
             l.tokens,
