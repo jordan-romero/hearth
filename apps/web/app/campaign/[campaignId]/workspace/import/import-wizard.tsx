@@ -2,7 +2,8 @@
 
 // Bring a DM's notes in, once: pick or drop files or a whole folder, see the folders and pages it
 // will make, choose where they go, and import. Folders keep their shape; every file becomes an
-// editable page, starting as working prep.
+// editable page, starting as working prep. Before importing, the DM can drag the files into the
+// order the pages should sit in their folders.
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -73,6 +74,10 @@ export function ImportWizard({
   const [outcomes, setOutcomes] = useState<Record<number, Outcome>>({});
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  // Reordering the review list: the row being dragged, and the gap it would drop into
+  // (drop before row `dropAt`; rows.length = after the last one).
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dropAt, setDropAt] = useState<number | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
 
@@ -125,6 +130,22 @@ export function ImportWizard({
     setPhase("review");
   }
 
+  /** Move the file at `from` so it lands in the gap before `to`. */
+  function move(from: number, to: number) {
+    if (to === from || to === from + 1) return;
+    setPicked((prev) => {
+      const next = [...prev];
+      const [row] = next.splice(from, 1);
+      next.splice(to > from ? to - 1 : to, 0, row!);
+      return next;
+    });
+  }
+
+  function endRowDrag() {
+    setDragFrom(null);
+    setDropAt(null);
+  }
+
   async function onDrop(e: DragEvent<HTMLDivElement>) {
     e.preventDefault();
     setDragging(false);
@@ -156,6 +177,15 @@ export function ImportWizard({
       return;
     }
     const { batchId, folders: folderIds } = begun;
+    // Each page's place among the others landing in the same folder, in the order the list shows.
+    const positions = new Map<number, number>();
+    const perFolder = new Map<string, number>();
+    for (const row of importable) {
+      const folder = folderPathFor(row.path);
+      const n = perFolder.get(folder) ?? 0;
+      positions.set(row.index, n);
+      perFolder.set(folder, n + 1);
+    }
     const set = (i: number, o: Outcome) =>
       setOutcomes((prev) => ({ ...prev, [i]: o }));
 
@@ -166,6 +196,7 @@ export function ImportWizard({
         set(row.index, { state: "working" });
         const folderId = folderIds[folderPathFor(row.path)] ?? null;
         const fileName = row.path.split("/").pop()!;
+        const position = positions.get(row.index) ?? 0;
         try {
           let result;
           if (direct) {
@@ -194,6 +225,7 @@ export function ImportWizard({
               key: prepared.key,
               fileName,
               folderId,
+              position,
             });
           } else {
             const form = new FormData();
@@ -201,6 +233,7 @@ export function ImportWizard({
             form.set("batchId", batchId);
             form.set("fileName", fileName);
             form.set("folderId", folderId ?? "");
+            form.set("position", String(position));
             form.set("file", row.file);
             result = await importPosted(form);
           }
@@ -398,15 +431,97 @@ export function ImportWizard({
           )}
           {error && <p className="notice error">{error}</p>}
 
-          <ul className="upload-list">
+          {phase === "review" && importable.length > 1 && (
+            <p className="muted small" style={{ margin: 0 }}>
+              Drag files to set the order their pages appear in.
+            </p>
+          )}
+          <ul
+            className={`upload-list${dragFrom !== null ? " sorting" : ""}`}
+            onDrop={(e) => {
+              if (dragFrom === null) return;
+              e.preventDefault();
+              if (dropAt !== null) move(dragFrom, dropAt);
+              endRowDrag();
+            }}
+          >
             {rows.map((r) => {
+              const sortable = phase === "review";
+              // Only mark a gap the dragged row would actually move into.
+              const gap =
+                dragFrom !== null &&
+                dropAt !== null &&
+                dropAt !== dragFrom &&
+                dropAt !== dragFrom + 1
+                  ? dropAt
+                  : null;
               const o =
                 outcomes[r.index] ??
                 (r.skip
                   ? { state: "skipped" as const, reason: r.skip }
                   : { state: "waiting" as const });
               return (
-                <li key={r.index} className="upload-row">
+                <li
+                  key={`${r.path}:${r.file.lastModified}:${r.file.size}`}
+                  className={[
+                    "upload-row",
+                    dragFrom === r.index && "lifted",
+                    gap === r.index && "drop-before",
+                    gap === rows.length &&
+                      r.index === rows.length - 1 &&
+                      "drop-after",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  draggable={sortable}
+                  onDragStart={(e) => {
+                    if (!sortable) return;
+                    e.dataTransfer.effectAllowed = "move";
+                    // Firefox won't start a drag without some data.
+                    e.dataTransfer.setData("text/plain", r.path);
+                    setDragFrom(r.index);
+                  }}
+                  onDragOver={(e) => {
+                    if (dragFrom === null) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    const box = e.currentTarget.getBoundingClientRect();
+                    const lower = e.clientY > box.top + box.height / 2;
+                    setDropAt(lower ? r.index + 1 : r.index);
+                  }}
+                  onDragEnd={endRowDrag}
+                >
+                  {sortable && (
+                    <button
+                      type="button"
+                      className="upload-grip"
+                      aria-label={`Move ${r.path} (use the up and down arrow keys)`}
+                      title="Drag to reorder"
+                      onKeyDown={(e) => {
+                        const to =
+                          e.key === "ArrowUp"
+                            ? r.index - 1
+                            : e.key === "ArrowDown"
+                              ? r.index + 2
+                              : null;
+                        if (to === null || to < 0 || to > rows.length) return;
+                        e.preventDefault();
+                        move(r.index, to);
+                        // Keep focus on the moved row's handle after React re-renders the list.
+                        const list = e.currentTarget.closest("ul");
+                        const landed = e.key === "ArrowUp" ? to : to - 1;
+                        requestAnimationFrame(() =>
+                          list
+                            ?.querySelectorAll<HTMLButtonElement>(
+                              ".upload-grip",
+                            )
+                            [landed]?.focus(),
+                        );
+                      }}
+                    >
+                      <span aria-hidden>⠿</span>
+                    </button>
+                  )}
                   <span className="upload-name" title={r.path}>
                     {o.state === "imported" ? (
                       <Link
