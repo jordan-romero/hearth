@@ -17,6 +17,7 @@ import {
   renameFolderAction,
   type ActionResult,
 } from "./actions";
+import { openQuickSwitcher, QuickSwitcher } from "./quick-switcher";
 
 interface Folder {
   id: string;
@@ -178,8 +179,21 @@ export function WorkspaceTree({
 
   const empty = folders.length === 0 && pages.length === 0;
 
+  // For ⌘K: every page with the folders it sits in.
+  const switcherPages = useMemo(() => {
+    const pathById = new Map(folderPaths.map((f) => [f.id, f.path]));
+    return pages
+      .filter((p) => p.title.trim())
+      .map((p) => ({
+        id: p.id,
+        title: p.title,
+        where: p.folderId ? (pathById.get(p.folderId) ?? "") : "",
+      }));
+  }, [pages, folderPaths]);
+
   return (
     <nav className="ws-tree" aria-busy={pending}>
+      <QuickSwitcher campaignId={campaignId} pages={switcherPages} />
       <div className="ws-tree-head">
         <Link
           href={base}
@@ -201,6 +215,15 @@ export function WorkspaceTree({
           />
         </div>
       </div>
+      <button
+        type="button"
+        className="ws-find"
+        onClick={openQuickSwitcher}
+        title="Go to a page (⌘K)"
+      >
+        <span>Go to a page…</span>
+        <kbd>⌘K</kbd>
+      </button>
       {error && (
         <p className="ws-error" role="alert">
           {error}
