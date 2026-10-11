@@ -2289,7 +2289,7 @@ async function announceReveal(
         where: { id: scopeId },
         include: { membership: { include: { user: true } } },
       });
-      const discordUserId = character?.membership.user.discordUserId;
+      const discordUserId = character?.membership?.user.discordUserId;
       if (!discordUserId)
         return {
           delivered: false,
