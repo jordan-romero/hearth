@@ -28,8 +28,8 @@ export interface PageLinkOptions {
   base: string;
   /** The campaign's pages, read fresh each time (new pages arrive while the editor is open). */
   pages: () => PageRef[];
-  /** The page being edited: not offered as a link to itself. */
-  currentPageId: string;
+  /** The page being edited (it changes as pages are opened): not offered as a link to itself. */
+  currentPageId: () => string;
   /** Make a page with this title; its id, or null if it couldn't be made. */
   createPage: (title: string) => Promise<string | null>;
 }
@@ -77,7 +77,7 @@ function isSubsequence(q: string, t: string) {
 
 function picks(options: PageLinkOptions, raw: string): Pick[] {
   const query = raw.replace(/\]+$/, "").trim();
-  const pages = rankPages(options.pages(), query, options.currentPageId);
+  const pages = rankPages(options.pages(), query, options.currentPageId());
   const exact = pages.some((p) => norm(p.title) === norm(query));
   return [
     ...pages.map((page): Pick => ({ kind: "page", page })),
@@ -178,7 +178,7 @@ export const PageLink = Node.create<PageLinkOptions>({
     return {
       base: "",
       pages: () => [],
-      currentPageId: "",
+      currentPageId: () => "",
       createPage: async () => null,
     };
   },
