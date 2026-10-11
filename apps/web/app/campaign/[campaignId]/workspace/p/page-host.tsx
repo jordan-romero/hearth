@@ -159,7 +159,7 @@ function PageView({
         doc={doc}
         tableColor={tableColor}
         characters={characters}
-        pages={pages.map(({ id, title }) => ({ id, title }))}
+        pages={pages.map(({ id, title, icon }) => ({ id, title, icon }))}
         openPage={openPage}
       />
       {doc.backlinks.length > 0 && (

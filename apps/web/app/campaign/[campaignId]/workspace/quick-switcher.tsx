@@ -13,6 +13,7 @@ import { useWorkspace } from "./workspace-context";
 export interface SwitcherPage {
   id: string;
   title: string;
+  icon: string | null;
   /** "NPCs / Shepherds", or "" at the top level. */
   where: string;
 }
@@ -149,7 +150,10 @@ export function QuickSwitcher({
                 go(p);
               }}
             >
-              <span>{p.title}</span>
+              <span>
+                {p.icon && <span className="ws-row-icon">{p.icon}</span>}
+                {p.title}
+              </span>
               {p.where && <small>{p.where}</small>}
             </li>
           ))}

@@ -7,6 +7,7 @@ import type { PmNode } from "@hearth/agents";
 export interface PageDoc {
   id: string;
   title: string;
+  icon: string | null;
   content: PmNode;
   revision: number;
   folderId: string | null;
@@ -31,6 +32,7 @@ export async function getPageDocs(
       select: {
         id: true,
         title: true,
+        icon: true,
         content: true,
         revision: true,
         folderId: true,

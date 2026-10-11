@@ -14,12 +14,19 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { fetchDocs, getDoc, titleOf, useStoreVersion } from "./page-store";
+import {
+  fetchDocs,
+  getDoc,
+  iconOf,
+  titleOf,
+  useStoreVersion,
+} from "./page-store";
 
 export interface WorkspacePage {
   id: string;
   folderId: string | null;
   title: string;
+  icon: string | null;
 }
 export interface WorkspaceFolder {
   id: string;
@@ -94,7 +101,12 @@ export function WorkspaceProvider({
 
   // Titles as typed in this tab win over the server's list until it catches up.
   const pages = useMemo(
-    () => serverPages.map((p) => ({ ...p, title: titleOf(p.id, p.title) })),
+    () =>
+      serverPages.map((p) => ({
+        ...p,
+        title: titleOf(p.id, p.title),
+        icon: iconOf(p.id, p.icon),
+      })),
     // storeVersion: titles live in the store, so a change there recomputes this.
     [serverPages, storeVersion],
   );

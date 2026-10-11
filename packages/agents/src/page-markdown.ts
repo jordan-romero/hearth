@@ -64,6 +64,14 @@ function block(node: PmNode, indent: string): string {
     }
     case "horizontalRule":
       return `${indent}---`;
+    case "callout": {
+      // Obsidian's callout syntax, so it reads (and imports) as one.
+      const variant =
+        typeof node.attrs?.variant === "string" ? node.attrs.variant : "note";
+      return [`[!${variant}]`, ...blocks(c, "").split("\n")]
+        .map((line) => `${indent}> ${line}`.trimEnd())
+        .join("\n");
+    }
     case "table":
       return table(c, indent);
     default:

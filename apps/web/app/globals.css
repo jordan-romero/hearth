@@ -1123,6 +1123,120 @@ code {
   border-top: 1px solid var(--line);
 }
 
+/* Page icons, templates and callouts (workspace/p/[pageId]/page-extras.tsx). */
+.ws-row-icon {
+  margin-right: 6px;
+}
+.ws-icon-wrap {
+  position: relative;
+  margin: 4px 0 2px;
+}
+.ws-page-icon {
+  padding: 2px 4px;
+  font-size: 40px;
+  line-height: 1.1;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.ws-page-icon:hover {
+  background: var(--line);
+}
+.ws-page-icon.empty {
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-3);
+  opacity: 0;
+}
+.ws-editor:hover .ws-page-icon.empty,
+.ws-page-icon.empty:focus-visible {
+  opacity: 1;
+}
+.ws-icon-picker {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 4px);
+  left: 0;
+  display: grid;
+  gap: 8px;
+  width: 300px;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgb(0 0 0 / 0.25);
+}
+.ws-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 2px;
+}
+.ws-icon-grid button {
+  font-size: 18px;
+  padding: 3px 0;
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.ws-icon-grid button:hover {
+  background: var(--line);
+}
+.ws-templates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+.ws-templates .ws-chip {
+  font: inherit;
+  font-size: 13px;
+  padding: 3px 10px;
+  color: var(--ink-2);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.ws-templates .ws-chip:hover {
+  color: var(--ink);
+  border-color: var(--ember);
+}
+.ws-prose .ws-callout {
+  position: relative;
+  margin: 12px 0;
+  padding: 10px 14px 10px 44px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.ws-prose .ws-callout::before {
+  content: attr(data-icon);
+  position: absolute;
+  top: 9px;
+  left: 14px;
+  font-size: 17px;
+}
+.ws-prose .ws-callout > :first-child {
+  margin-top: 0;
+}
+.ws-prose .ws-callout > :last-child {
+  margin-bottom: 0;
+}
+.ws-prose .ws-callout[data-callout="warning"] {
+  border-color: color-mix(in srgb, var(--gold) 55%, var(--line));
+}
+.ws-prose .ws-callout[data-callout="secret"] {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--ember) 50%, var(--line));
+}
+.ws-prose .ws-callout[data-callout="tip"] {
+  border-color: color-mix(in srgb, var(--ember) 30%, var(--line));
+}
+
 /* Link previews and unlinked mentions. */
 .ws-preview {
   position: fixed;
