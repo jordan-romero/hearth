@@ -132,6 +132,81 @@ export async function moveFolder(
   });
 }
 
+/** Where `id` goes among `siblings` (their ids, in order): before `beforeId`, or last. */
+function placeAmong(siblings: string[], id: string, beforeId: string | null) {
+  const ids = siblings.filter((s) => s !== id);
+  const at = beforeId ? ids.indexOf(beforeId) : -1;
+  ids.splice(at >= 0 ? at : ids.length, 0, id);
+  return ids;
+}
+
+/**
+ * Drag and drop in the tree: put a folder inside `parentId` (null: the top level), before the
+ * sibling folder `beforeId` (null: last). Positions are written directly, so arranging the tree
+ * doesn't count as editing anything.
+ */
+export async function placeFolder(
+  campaignId: string,
+  folderId: string,
+  parentId: string | null,
+  beforeId: string | null,
+): Promise<void> {
+  const folder = await ownFolder(campaignId, folderId);
+  if (folder?.parentId !== parentId)
+    await moveFolder(campaignId, folderId, parentId); // refuses a folder inside itself
+  const siblings = await prisma.folder.findMany({
+    where: { campaignId, parentId },
+    orderBy: [{ position: "asc" }, { name: "asc" }],
+    select: { id: true },
+  });
+  const ids = placeAmong(
+    siblings.map((f) => f.id),
+    folderId,
+    beforeId,
+  );
+  await prisma.$executeRaw`
+    UPDATE "Folder" AS f SET "position" = v.pos
+    FROM unnest(${ids}::text[], ${ids.map((_, i) => i)}::int[]) AS v(id, pos)
+    WHERE f.id = v.id AND f."campaignId" = ${campaignId}`;
+}
+
+/** Drag and drop in the tree: put a page in `folderId` (null: the top level), before the page
+ * `beforeId` (null: last). */
+export async function placePage(
+  campaignId: string,
+  pageId: string,
+  folderId: string | null,
+  beforeId: string | null,
+): Promise<void> {
+  await ownFolder(campaignId, folderId);
+  const page = await prisma.page.findFirst({
+    where: { id: pageId, campaignId },
+    select: { folderId: true },
+  });
+  if (!page) throw new WorkspaceError("That page doesn't exist any more.");
+  const siblings = await prisma.page.findMany({
+    where: { campaignId, folderId, archivedAt: null },
+    orderBy: [{ position: "asc" }, { title: "asc" }],
+    select: { id: true },
+  });
+  const ids = placeAmong(
+    siblings.map((p) => p.id),
+    pageId,
+    beforeId,
+  );
+  await prisma.$transaction([
+    prisma.$executeRaw`
+      UPDATE "Page" SET "folderId" = ${folderId}
+      WHERE id = ${pageId} AND "campaignId" = ${campaignId}`,
+    prisma.$executeRaw`
+      UPDATE "Page" AS p SET "position" = v.pos
+      FROM unnest(${ids}::text[], ${ids.map((_, i) => i)}::int[]) AS v(id, pos)
+      WHERE p.id = v.id AND p."campaignId" = ${campaignId}`,
+  ]);
+  // Its name in search carries the folder path.
+  if (page.folderId !== folderId) await schedulePageIndexQuietly(pageId);
+}
+
 /** Delete an empty folder. One that still holds folders or pages is refused, never emptied. */
 export async function deleteFolder(
   campaignId: string,

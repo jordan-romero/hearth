@@ -14,6 +14,8 @@ import {
   linkMentions,
   moveFolder,
   movePage,
+  placeFolder,
+  placePage,
   renameFolder,
   restorePage,
   restorePageVersion,
@@ -146,6 +148,40 @@ export async function setPageIconAction(
 ): Promise<ActionResult> {
   return run(campaignId, () =>
     setPageIcon(campaignId, String(pageId), icon ? String(icon) : null),
+  );
+}
+
+/** Drag and drop in the tree: a page into a folder (or the top level), before a sibling. */
+export async function placePageAction(
+  campaignId: string,
+  pageId: string,
+  folderId: string | null,
+  beforeId: string | null,
+): Promise<ActionResult> {
+  return run(campaignId, () =>
+    placePage(
+      campaignId,
+      String(pageId),
+      optionalId(folderId),
+      optionalId(beforeId),
+    ),
+  );
+}
+
+/** Drag and drop in the tree: a folder into another (or the top level), before a sibling. */
+export async function placeFolderAction(
+  campaignId: string,
+  folderId: string,
+  parentId: string | null,
+  beforeId: string | null,
+): Promise<ActionResult> {
+  return run(campaignId, () =>
+    placeFolder(
+      campaignId,
+      String(folderId),
+      optionalId(parentId),
+      optionalId(beforeId),
+    ),
   );
 }
 

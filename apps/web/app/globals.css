@@ -1021,6 +1021,39 @@ code {
   color: var(--ember);
   background: var(--ember-soft);
 }
+/* Drag and drop in the tree (workspace/tree.tsx). */
+.ws-tree .ws-row[draggable="true"] {
+  cursor: grab;
+}
+.ws-tree .ws-row.lifted {
+  opacity: 0.4;
+}
+.ws-tree .ws-row.drop-before {
+  box-shadow: inset 0 2px 0 var(--ember);
+}
+.ws-tree .ws-row.drop-after {
+  box-shadow: inset 0 -2px 0 var(--ember);
+}
+.ws-tree .ws-row.drop-into {
+  background: var(--ember-soft);
+  outline: 1px solid var(--ember);
+  outline-offset: -1px;
+}
+.ws-root-drop {
+  margin-top: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--ink-3);
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  text-align: center;
+}
+.ws-root-drop.over {
+  color: var(--ember);
+  border-color: var(--ember);
+  background: var(--ember-soft);
+}
+
 /* ⌘K quick switcher (workspace/quick-switcher.tsx). */
 .ws-find {
   display: flex;
