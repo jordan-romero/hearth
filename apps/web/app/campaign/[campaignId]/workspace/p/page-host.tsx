@@ -9,7 +9,11 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { archivePageAction, restorePageAction } from "../actions";
+import {
+  archivePageAction,
+  linkMentionsAction,
+  restorePageAction,
+} from "../actions";
 import {
   fetchDocs,
   getDoc,
@@ -174,6 +178,93 @@ function PageView({
           </ul>
         </aside>
       )}
+      <UnlinkedMentions doc={doc} />
     </article>
+  );
+}
+
+interface Mention {
+  id: string;
+  title: string;
+  snippet: string;
+}
+
+/** Pages that name this one in plain text without linking it, each with a one-click "Link". */
+function UnlinkedMentions({ doc }: { doc: PageDoc }) {
+  const { campaignId, base, openPage } = useWorkspace();
+  const [mentions, setMentions] = useState<Mention[]>([]);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    fetch(`${base}/page-data/mentions?id=${encodeURIComponent(doc.id)}`, {
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((m: Mention[]) => live && setMentions(m))
+      .catch(() => live && setMentions([]));
+    return () => {
+      live = false;
+    };
+    // The title matters too: a renamed page has different mentions.
+  }, [base, doc.id, doc.title, doc.revision, nonce]);
+
+  if (mentions.length === 0) return null;
+
+  async function link(from: string) {
+    setBusy(from);
+    const result = await linkMentionsAction(campaignId, from, doc.id).catch(
+      () => null,
+    );
+    setBusy(null);
+    if (result?.ok) {
+      await fetchDocs(base, [from, doc.id]); // their text, and this page's "Mentioned in"
+      setNonce((n) => n + 1);
+    }
+  }
+
+  return (
+    <aside className="ws-mentions" aria-label="Unlinked mentions">
+      <button
+        type="button"
+        className="ws-backlinks-title ws-mentions-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        {open ? "▾" : "▸"} Unlinked mentions ({mentions.length})
+      </button>
+      {open && (
+        <ul>
+          {mentions.map((m) => (
+            <li key={m.id}>
+              <div className="ws-mention-head">
+                <a
+                  href={`${base}/p/${m.id}`}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+                    e.preventDefault();
+                    openPage(m.id);
+                  }}
+                >
+                  {m.title || "Untitled"}
+                </a>
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  disabled={busy === m.id}
+                  onClick={() => void link(m.id)}
+                  title={`Turn “${doc.title}” there into a link to this page`}
+                >
+                  {busy === m.id ? "Linking…" : "Link"}
+                </button>
+              </div>
+              <p className="muted small">{m.snippet}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </aside>
   );
 }

@@ -32,8 +32,9 @@ interface WorkspaceApi {
   base: string;
   pages: WorkspacePage[];
   folders: WorkspaceFolder[];
-  /** Open a page: in place when the editor is showing, else by navigating. */
-  openPage: (id: string) => void;
+  /** Open a page (at a heading, optionally): in place when the editor is showing, else by
+   * navigating. */
+  openPage: (id: string, heading?: string | null) => void;
   /** Fetch a page ahead (hover, focus) so opening it is instant. */
   warmPage: (id: string) => void;
 }
@@ -52,6 +53,24 @@ export function openPageId(base: string, pathname: string): string | null {
   return pathname.startsWith(`${base}/p/`) && m
     ? decodeURIComponent(m[1]!)
     : null;
+}
+
+/** Run after the editor has swapped pages (two frames: React, then the editor's DOM). */
+function afterSwitch(fn: () => void) {
+  requestAnimationFrame(() => requestAnimationFrame(fn));
+}
+
+/** Scroll the open page to a heading by its text. */
+export function scrollToHeading(heading: string) {
+  const want = heading.trim().replace(/\s+/g, " ").toLowerCase();
+  const el = [
+    ...document.querySelectorAll<HTMLElement>(
+      ".ws-prose h1, .ws-prose h2, .ws-prose h3, .ws-prose h4",
+    ),
+  ].find(
+    (h) => h.textContent?.trim().replace(/\s+/g, " ").toLowerCase() === want,
+  );
+  el?.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
 /** How many pages to fetch ahead in the background, so most clicks need nothing from the server. */
@@ -84,14 +103,17 @@ export function WorkspaceProvider({
   pathnameRef.current = pathname;
 
   const openPage = useCallback(
-    (id: string) => {
-      const href = `${base}/p/${encodeURIComponent(id)}`;
+    (id: string, heading?: string | null) => {
+      const path = `${base}/p/${encodeURIComponent(id)}`;
+      const href = `${path}${heading ? `#${encodeURIComponent(heading)}` : ""}`;
       if (openPageId(base, pathnameRef.current)) {
         // The editor is showing: it follows the address. Next.js keeps its router in step with
         // pushState, so back and forward work as usual.
-        if (pathnameRef.current !== href)
+        if (window.location.pathname + window.location.hash !== href)
           window.history.pushState(null, "", href);
         if (!getDoc(id)) void fetchDocs(base, [id]);
+        // Once the page is showing, go to the heading.
+        if (heading) afterSwitch(() => scrollToHeading(heading));
       } else {
         router.push(href);
       }
