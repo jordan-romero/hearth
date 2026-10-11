@@ -16,6 +16,7 @@ import {
   type ActionResult,
 } from "./actions";
 import { openQuickSwitcher, QuickSwitcher } from "./quick-switcher";
+import { openShortcuts, ShortcutSheet } from "./shortcuts";
 import { useWorkspace } from "./workspace-context";
 
 interface Folder {
@@ -196,6 +197,7 @@ export function WorkspaceTree({
   return (
     <nav className="ws-tree" aria-busy={pending}>
       <QuickSwitcher campaignId={campaignId} pages={switcherPages} />
+      <ShortcutSheet />
       <div className="ws-tree-head">
         <Link
           href={base}
@@ -258,6 +260,13 @@ export function WorkspaceTree({
       >
         Trash
       </Link>
+      <button
+        type="button"
+        className="ws-trash ws-help"
+        onClick={openShortcuts}
+      >
+        Shortcuts &amp; tips <kbd>?</kbd>
+      </button>
     </nav>
   );
 }
