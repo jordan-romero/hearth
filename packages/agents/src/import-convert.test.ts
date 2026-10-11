@@ -122,6 +122,19 @@ describe("markdownToPage", () => {
     );
   });
 
+  it("reads Obsidian callouts as callouts, and writes them back the same way", () => {
+    const page = markdownToPage(
+      "> [!secret] The vizier\n> is a dragon.\n\n> [!danger]\n> Traps",
+    );
+    expect(page.content?.map((n) => [n.type, n.attrs?.variant])).toEqual([
+      ["callout", "secret"],
+      ["callout", "warning"],
+    ]);
+    expect(pageToMarkdown(page)).toBe(
+      "> [!secret]\n> The vizier\n> is a dragon.\n\n> [!warning]\n> Traps",
+    );
+  });
+
   it("never keeps a script link", () => {
     const page = markdownToPage("[x](javascript:alert(1))");
     expect(JSON.stringify(page)).not.toContain("javascript");

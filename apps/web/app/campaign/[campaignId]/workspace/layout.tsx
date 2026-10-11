@@ -22,6 +22,7 @@ export default async function WorkspaceLayout({
     id: p.id,
     folderId: p.folderId,
     title: p.title,
+    icon: p.icon,
   }));
   return (
     <WorkspaceProvider
