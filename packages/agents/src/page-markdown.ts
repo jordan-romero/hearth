@@ -3,6 +3,8 @@
 // small and known (whatever the workspace editor offers), and anything unrecognised still yields
 // its text instead of being dropped.
 
+import { inlineText, PAGE_LINK } from "./page-links.js";
+
 export interface PmNode {
   type: string;
   attrs?: Record<string, unknown>;
@@ -100,7 +102,7 @@ function table(rows: PmNode[], indent: string): string {
 function plain(nodes: PmNode[]): string {
   return nodes
     .map((n) =>
-      n.type === "hardBreak" ? "\n" : (n.text ?? plain(n.content ?? [])),
+      n.type === "hardBreak" ? "\n" : (inlineText(n) ?? plain(n.content ?? [])),
     )
     .join("");
 }
@@ -109,6 +111,8 @@ function inline(nodes: PmNode[]): string {
   return nodes
     .map((n) => {
       if (n.type === "hardBreak") return "  \n";
+      // A link to another page reads as the page's name, the way Obsidian writes it.
+      if (n.type === PAGE_LINK) return `[[${inlineText(n)}]]`;
       if (n.type !== "text") return n.text ?? inline(n.content ?? []);
       let t = n.text ?? "";
       const marks = new Set((n.marks ?? []).map((m) => m.type));

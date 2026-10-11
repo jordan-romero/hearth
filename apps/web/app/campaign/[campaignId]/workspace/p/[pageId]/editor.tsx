@@ -10,7 +10,8 @@
 //
 // Links: a click on a link to another Hearth page goes there; ⌘/Ctrl-click opens any link in a new
 // tab. A plain click on a web link just places the cursor (it's text being edited); the formatting
-// bar offers Open.
+// bar offers Open. Page links ([[ or @) are in page-link.ts; clicking a dashed one (no such page
+// yet) creates the page and opens it.
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -26,8 +27,9 @@ import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { TableKit } from "@tiptap/extension-table";
 import { Placeholder } from "@tiptap/extensions";
 import type { PmNode } from "@hearth/agents";
-import { savePageAction } from "../../actions";
+import { createLinkedPageAction, savePageAction } from "../../actions";
 import { SlashCommand } from "./slash";
+import { PageLink, setLinkTarget, type PageRef } from "./page-link";
 import { AssistantPanel } from "./assistant-panel";
 import {
   canonMark,
@@ -68,9 +70,15 @@ export function PageEditor({
   readOnly,
   tableColor,
   characters,
+  folderId,
+  pages,
 }: {
   campaignId: string;
   pageId: string;
+  /** Where a page created from a link goes: beside this one. */
+  folderId: string | null;
+  /** Every page in the campaign, for page links. */
+  pages: PageRef[];
   initialTitle: string;
   initialContent: PmNode;
   initialRevision: number;
@@ -94,6 +102,25 @@ export function PageEditor({
   // current save logic (and the editor itself, which doesn't exist on the first render).
   const scheduleRef = useRef<() => void>(() => {});
   const openLinkRef = useRef<(href: string, newTab: boolean) => void>(() => {});
+  const base = `/campaign/${campaignId}/workspace`;
+  // Page links read the page list through refs: the editor is made once, and pages created from
+  // a link count before the server's list catches up.
+  const pagesRef = useRef(pages);
+  pagesRef.current = pages;
+  const createdRef = useRef<PageRef[]>([]);
+  const createPageRef = useRef<(title: string) => Promise<string | null>>(
+    async () => null,
+  );
+  createPageRef.current = async (title) => {
+    const result = await createLinkedPageAction(
+      campaignId,
+      folderId,
+      title,
+    ).catch(() => null);
+    if (!result?.ok) return null;
+    createdRef.current = [...createdRef.current, { id: result.id, title }];
+    return result.id;
+  };
   openLinkRef.current = (href, newTab) => {
     const path = hearthPath(href);
     if (path && !newTab) router.push(path);
@@ -117,6 +144,12 @@ export function PageEditor({
             : "Write, or press / for blocks…",
       }),
       SlashCommand,
+      PageLink.configure({
+        base,
+        currentPageId: pageId,
+        pages: () => [...pagesRef.current, ...createdRef.current],
+        createPage: (title) => createPageRef.current(title),
+      }),
       canonMark({
         table: tableColor,
         characters: Object.fromEntries(characters.map((c) => [c.id, c.color])),
@@ -128,7 +161,19 @@ export function PageEditor({
       attributes: { class: "ws-prose", "aria-label": "Page content" },
       handleClick: (_view, _pos, event) => {
         if (event.button !== 0) return false;
-        const a = (event.target as HTMLElement | null)?.closest?.("a[href]");
+        const target = event.target as HTMLElement | null;
+        const unresolved = target?.closest?.("a[data-page-link='']");
+        if (unresolved) {
+          event.preventDefault();
+          const label = unresolved.textContent ?? "";
+          void createPageRef.current(label).then((id) => {
+            if (!id || !editorRef.current) return;
+            setLinkTarget(editorRef.current, label, id);
+            router.push(`${base}/p/${id}`);
+          });
+          return true;
+        }
+        const a = target?.closest?.("a[href]");
         const href = a?.getAttribute("href");
         if (!href) return false;
         const newTab = event.metaKey || event.ctrlKey;
@@ -139,6 +184,9 @@ export function PageEditor({
       },
     },
   });
+
+  const editorRef = useRef(editor);
+  editorRef.current = editor;
 
   const save = useCallback(async () => {
     if (!editor || readOnly) return;
