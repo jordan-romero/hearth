@@ -161,7 +161,7 @@ export function PageEditor({
         placeholder: ({ node }) =>
           node.type.name === "heading"
             ? "Heading"
-            : "Write, or press / for blocks…",
+            : "Write, or press / for blocks, [[ to link a page…",
       }),
       SlashCommand,
       PageLink.configure({
