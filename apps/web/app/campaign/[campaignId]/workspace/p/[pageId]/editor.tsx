@@ -49,6 +49,16 @@ type SaveState = "saved" | "dirty" | "saving" | "conflict" | "error";
 
 const SAVE_DELAY_MS = 800;
 
+/**
+ * What this tab last saved of each page. Pages are kept for a while in the router's cache (and
+ * fetched ahead on hover), so coming back to a page can bring an older copy than the one just
+ * saved here; the editor opens on whichever is newer.
+ */
+const lastSaved = new Map<
+  string,
+  { revision: number; title: string; content: PmNode }
+>();
+
 /** A link's address as a path within Hearth, or null when it leads elsewhere. */
 function hearthPath(href: string): string | null {
   try {
@@ -87,6 +97,12 @@ export function PageEditor({
   characters: TableCharacter[];
 }) {
   const router = useRouter();
+  const newer = lastSaved.get(pageId);
+  if (newer && newer.revision > initialRevision) {
+    initialRevision = newer.revision;
+    initialTitle = newer.title;
+    initialContent = newer.content;
+  }
   const [title, setTitle] = useState(initialTitle);
   const [claudeOpen, setClaudeOpen] = useState(false);
   const [state, setState] = useState<SaveState>("saved");
@@ -197,11 +213,12 @@ export function PageEditor({
     inFlight.current = true;
     setState("saving");
     const sentTitle = titleRef.current;
+    const sentContent = editor.getJSON() as PmNode;
     const result = await savePageAction(campaignId, pageId, {
       title: sentTitle,
       // As a string: the editor's JSON can hold objects React won't pass to a server action
       // as plain data.
-      content: JSON.stringify(editor.getJSON()),
+      content: JSON.stringify(sentContent),
       baseRevision: revision.current,
     }).catch(() => ({
       ok: false as const,
@@ -211,6 +228,11 @@ export function PageEditor({
 
     if (result.ok) {
       revision.current = result.revision;
+      lastSaved.set(pageId, {
+        revision: result.revision,
+        title: sentTitle,
+        content: sentContent,
+      });
       setError(null);
       if (sentTitle !== savedTitle.current) {
         savedTitle.current = sentTitle;
