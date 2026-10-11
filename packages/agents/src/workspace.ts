@@ -18,6 +18,7 @@ import {
   linkedPageIds,
   linkWikiTitles,
   mayHaveLinks,
+  pageLinkNode,
   resolvePageLinks,
 } from "./page-links.js";
 
@@ -381,6 +382,152 @@ async function relinkTitleQuietly(campaignId: string, title: string) {
     campaignId,
     mentioning.map((p) => p.id),
   );
+}
+
+// ─── Unlinked mentions ───────────────────────────────────────────────────────
+
+/** Shorter titles ("Act", "Ty") would match everyday words; Obsidian has the same limit. */
+const MENTION_MIN = 3;
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The title as a whole word or phrase, any case. */
+function mentionPattern(title: string, flags = "iu") {
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}])${escapeRe(title.trim()).replace(/\s+/g, "\\s+")}(?![\\p{L}\\p{N}])`,
+    flags,
+  );
+}
+
+const isPlain = (n: PmNode) =>
+  n.type === "text" &&
+  !n.marks?.some((m) => m.type === "link" || m.type === "code");
+
+/** The page's words that aren't already a link (or code), block by block. */
+function unlinkedText(doc: PmNode): string {
+  const blocks: string[] = [];
+  const walk = (node: PmNode) => {
+    if (node.type === "codeBlock") return;
+    if (node.content?.some((c) => c.type === "text")) {
+      blocks.push(
+        node.content.map((c) => (isPlain(c) ? c.text : " ")).join(""),
+      );
+      return;
+    }
+    node.content?.forEach(walk);
+  };
+  walk(doc);
+  return blocks.join("\n");
+}
+
+export interface UnlinkedMention {
+  id: string;
+  title: string;
+  /** The words around the first mention. */
+  snippet: string;
+}
+
+/** Pages that name this page in plain text without linking it (Obsidian's "unlinked mentions"). */
+export async function getUnlinkedMentions(
+  campaignId: string,
+  pageId: string,
+): Promise<UnlinkedMention[]> {
+  const page = await prisma.page.findFirst({
+    where: { id: pageId, campaignId },
+    select: { title: true },
+  });
+  const title = page?.title.trim() ?? "";
+  if (title.length < MENTION_MIN) return [];
+  const candidates = await prisma.page.findMany({
+    where: {
+      campaignId,
+      archivedAt: null,
+      id: { not: pageId },
+      markdown: { contains: title, mode: "insensitive" },
+    },
+    select: { id: true, title: true, content: true },
+    orderBy: { updatedAt: "desc" },
+    take: 60,
+  });
+  const pattern = mentionPattern(title);
+  const out: UnlinkedMention[] = [];
+  for (const c of candidates) {
+    const text = unlinkedText(c.content as unknown as PmNode);
+    const m = pattern.exec(text);
+    if (!m) continue;
+    const from = Math.max(0, m.index - 60);
+    const to = Math.min(text.length, m.index + m[0].length + 60);
+    out.push({
+      id: c.id,
+      title: c.title,
+      snippet: `${from > 0 ? "…" : ""}${text.slice(from, to).replace(/\s+/g, " ").trim()}${to < text.length ? "…" : ""}`,
+    });
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
+/**
+ * Turn every plain-text mention of a page's title in another page into a link to it ("Link" on
+ * an unlinked mention). Saved like the DM's own edit, so it's in the page's history.
+ */
+export async function linkMentions(
+  campaignId: string,
+  fromPageId: string,
+  toPageId: string,
+): Promise<number> {
+  const [from, to] = await Promise.all([
+    prisma.page.findFirst({
+      where: { id: fromPageId, campaignId },
+      select: { title: true, content: true, revision: true },
+    }),
+    prisma.page.findFirst({
+      where: { id: toPageId, campaignId, archivedAt: null },
+      select: { title: true },
+    }),
+  ]);
+  if (!from || !to)
+    throw new WorkspaceError("That page doesn't exist any more.");
+  const title = to.title.trim();
+  if (title.length < MENTION_MIN) return 0;
+  const pattern = mentionPattern(title, "giu");
+  let count = 0;
+
+  const walk = (node: PmNode): PmNode => {
+    if (node.type === "codeBlock" || !node.content) return node;
+    const content: PmNode[] = [];
+    for (const child of node.content) {
+      if (!isPlain(child)) {
+        content.push(walk(child));
+        continue;
+      }
+      const s = child.text ?? "";
+      let last = 0;
+      for (const m of s.matchAll(pattern)) {
+        if (m.index! > last)
+          content.push({ ...child, text: s.slice(last, m.index) });
+        content.push({
+          ...pageLinkNode(toPageId, title),
+          ...(child.marks?.length ? { marks: child.marks } : {}),
+        });
+        last = m.index! + m[0].length;
+        count++;
+      }
+      if (last === 0) content.push(child);
+      else if (last < s.length) content.push({ ...child, text: s.slice(last) });
+    }
+    return { ...node, content };
+  };
+  const linked = walk(from.content as unknown as PmNode);
+  if (count === 0) return 0;
+  const result = await savePage(campaignId, fromPageId, {
+    title: from.title,
+    content: linked,
+    baseRevision: from.revision,
+  });
+  if (!result.ok)
+    throw new WorkspaceError("That page just changed — try again.");
+  return count;
 }
 
 export interface Backlink {

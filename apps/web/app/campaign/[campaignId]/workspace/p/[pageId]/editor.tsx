@@ -37,7 +37,9 @@ import {
   type PageDoc,
 } from "../../page-store";
 import { SlashCommand } from "./slash";
-import { PageLink, setLinkTarget, type PageRef } from "./page-link";
+import { headingsOf, PageLink, setLinkTarget, type PageRef } from "./page-link";
+import { LinkPreview } from "./link-preview";
+import { scrollToHeading } from "../../workspace-context";
 import { AssistantPanel } from "./assistant-panel";
 import {
   canonMark,
@@ -96,7 +98,7 @@ export function PageEditor({
   characters: TableCharacter[];
   /** Every page in the campaign, for page links. */
   pages: PageRef[];
-  openPage: (id: string) => void;
+  openPage: (id: string, heading?: string | null) => void;
 }) {
   const router = useRouter();
   const base = `/campaign/${campaignId}/workspace`;
@@ -141,8 +143,12 @@ export function PageEditor({
   };
   openLinkRef.current = (href, newTab) => {
     const path = hearthPath(href);
-    const page = path?.match(new RegExp(`^${base}/p/([^/?#]+)$`));
-    if (page && !newTab) openPage(decodeURIComponent(page[1]!));
+    const page = path?.match(new RegExp(`^${base}/p/([^/?#]+)(?:#(.*))?$`));
+    if (page && !newTab)
+      openPage(
+        decodeURIComponent(page[1]!),
+        page[2] ? decodeURIComponent(page[2]) : null,
+      );
     else if (path && !newTab) router.push(path);
     else window.open(path ?? href, "_blank", "noopener,noreferrer");
   };
@@ -169,6 +175,10 @@ export function PageEditor({
         currentPageId: () => current.current,
         pages: () => [...pagesRef.current, ...createdRef.current],
         createPage: (title) => createPageRef.current(title),
+        headings: (id) => {
+          const d = getDoc(id);
+          return d ? headingsOf(d.content) : [];
+        },
       }),
       canonMark({
         table: tableColor,
@@ -185,7 +195,10 @@ export function PageEditor({
         const unresolved = target?.closest?.("a[data-page-link='']");
         if (unresolved) {
           event.preventDefault();
-          const label = unresolved.textContent ?? "";
+          const label =
+            unresolved.getAttribute("data-label") ??
+            unresolved.textContent ??
+            "";
           void createPageRef.current(label).then((id) => {
             if (!id || !editorRef.current) return;
             setLinkTarget(editorRef.current, label, id);
@@ -315,9 +328,19 @@ export function PageEditor({
       titleRef.current = d.title;
       setState("saved");
       setError(null);
+      // Opened at a heading ("…/p/id#History"): go to it once the page is drawn.
+      const hash = decodeURIComponent(window.location.hash.slice(1));
+      if (hash) requestAnimationFrame(() => scrollToHeading(hash));
     },
     [editor],
   );
+
+  // Opened by its address at a heading.
+  useEffect(() => {
+    if (!editor) return;
+    const hash = decodeURIComponent(window.location.hash.slice(1));
+    if (hash) requestAnimationFrame(() => scrollToHeading(hash));
+  }, [editor]);
 
   // Another page opened: save what's waiting on this one, then switch.
   useEffect(() => {
@@ -428,6 +451,7 @@ export function PageEditor({
         />
       )}
       <EditorContent editor={editor} />
+      <LinkPreview base={base} />
     </div>
   );
 }

@@ -37,6 +37,14 @@ describe("linkWikiTitles", () => {
     );
   });
 
+  it("keeps a heading: [[Ildin#History]]", () => {
+    const doc = linkWikiTitles(para(text("See [[Ildin#Early life]].")));
+    expect(doc).toEqual(
+      para(text("See "), pageLinkNode(null, "Ildin", "Early life"), text(".")),
+    );
+    expect(pageToMarkdown(doc)).toBe("See [[Ildin#Early life]].");
+  });
+
   it("leaves code, and text without links, untouched", () => {
     const doc = para(text("[[x]]", [{ type: "code" }]), text("no links"));
     expect(linkWikiTitles(doc)).toBe(doc);

@@ -92,17 +92,37 @@ Ordered by what the DM feels most. Each numbered item is a shippable PR.
 
 ⌘K / ⌘P opens a fuzzy finder over page and folder titles (the tree is already on the client).
 
-### 5. Instant switching, step two _(large — only if 3 isn't enough)_
+### 5. Instant switching, step two _(large)_
 
-One long-lived editor that swaps documents (`setContent` + `history.pushState`), backed by a
-client page cache and a `GET` route, prefetched on hover. Per-page revision, debounce and undo
-history; revalidate on open; a `conflict` reloads that page. This is the OneNote feel, and the
-most state to keep correct.
+One long-lived editor that swaps documents (`history.pushState`), backed by a client page store
+filled in the background and on hover from a DM-only `page-data` route. Per-page revision,
+debounce and undo history; re-checked with the server on open; a conflict loads the server's copy
+in place. Titles show in the sidebar as they're typed. This is the OneNote feel.
 
-### Later
+### 6. Easy to learn _(small)_
 
-Hover previews of linked pages · drag pages within the tree · page properties/tags (NPC, Location,
-Faction) · a graph view over the campaign graph Hearth already builds.
+The DM should be able to learn the workspace from the workspace. A "How the workspace works" card
+on its front page (until hidden); a shortcuts & tips sheet (⌘/, `?`, or the sidebar); the empty
+line's hint mentions `[[`; the `/` menu has "Link to a page".
+
+### 7. Obsidian-depth linking _(medium)_
+
+- **Hover previews:** rest on a page link (or a "Mentioned in" entry) to see how that page begins.
+- **Unlinked mentions:** under "Mentioned in", the pages that name this one in plain text, each
+  with **Link**, which turns those mentions into links (saved as an edit, so it's in history).
+- **Heading links:** `[[Ildin#History]]`; in the picker, `#` after a page's name lists its
+  headings. Opening one scrolls to the section.
+
+### Next
+
+The direction: as rich as Notion and OneNote, linked like Obsidian, learnable without a manual.
+
+1. **Templates** for what a DM writes most: NPC, Location, Faction, Session prep, with "New page
+   from template" and the `/` menu.
+2. **Page icons** (an emoji per page, in the tree and on links) and **callout / toggle blocks**.
+3. **Drag and drop in the tree:** move and reorder pages and folders.
+4. **Page properties / tags** (NPC, Location, Faction; a page's status) and filtering by them.
+5. **Graph view** of how pages link, alongside the campaign graph Hearth already builds.
 
 ---
 

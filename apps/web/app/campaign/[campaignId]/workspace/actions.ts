@@ -11,6 +11,7 @@ import {
   createFolder,
   createPage,
   deleteFolder,
+  linkMentions,
   moveFolder,
   movePage,
   renameFolder,
@@ -109,6 +110,27 @@ export async function createLinkedPageAction(
     );
     revalidatePath(base(campaignId), "layout");
     return { ok: true, id };
+  } catch (err) {
+    if (err instanceof WorkspaceError) return { ok: false, error: err.message };
+    throw err;
+  }
+}
+
+/** "Link" on an unlinked mention: every plain mention of a page's name in another page becomes
+ * a link to it. */
+export async function linkMentionsAction(
+  campaignId: string,
+  fromPageId: string,
+  toPageId: string,
+): Promise<{ ok: true; count: number } | { ok: false; error: string }> {
+  await requireDm(String(campaignId));
+  try {
+    const count = await linkMentions(
+      campaignId,
+      String(fromPageId),
+      String(toPageId),
+    );
+    return { ok: true, count };
   } catch (err) {
     if (err instanceof WorkspaceError) return { ok: false, error: err.message };
     throw err;
