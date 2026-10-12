@@ -9,6 +9,7 @@ import {
   CHARACTER_NAME_MAX,
   DEFAULT_CHARACTER_COLORS,
   getTableColors,
+  removeCharacter,
   setTableColors,
 } from "@hearth/agents";
 import { requireDm } from "@/lib/campaign";
@@ -18,10 +19,15 @@ export default async function TableColorsPage({
   searchParams,
 }: {
   params: Promise<{ campaignId: string }>;
-  searchParams: Promise<{ saved?: string; added?: string; error?: string }>;
+  searchParams: Promise<{
+    saved?: string;
+    added?: string;
+    removed?: string;
+    error?: string;
+  }>;
 }) {
   const { campaignId } = await params;
-  const { saved, added, error } = await searchParams;
+  const { saved, added, removed, error } = await searchParams;
   await requireDm(campaignId);
   const colors = await getTableColors(campaignId);
 
@@ -39,6 +45,18 @@ export default async function TableColorsPage({
     });
     revalidatePath(`/campaign/${campaignId}`, "layout");
     redirect(`/campaign/${campaignId}/workspace/colors?saved=1`);
+  }
+
+  async function remove(id: string) {
+    "use server";
+    await requireDm(campaignId);
+    const name = colors.characters.find((c) => c.id === id)?.name ?? "";
+    const result = await removeCharacter(campaignId, id);
+    const here = `/campaign/${campaignId}/workspace/colors`;
+    if (!result.ok)
+      redirect(`${here}?error=${encodeURIComponent(result.error)}`);
+    revalidatePath(`/campaign/${campaignId}`, "layout");
+    redirect(`${here}?removed=${encodeURIComponent(name)}`);
   }
 
   async function add(formData: FormData) {
@@ -70,6 +88,7 @@ export default async function TableColorsPage({
       </p>
       {saved && <p className="notice ok">Colors saved.</p>}
       {added && <p className="notice ok">Added {added}.</p>}
+      {removed && <p className="notice ok">Removed {removed}.</p>}
       {error && <p className="notice error">{error}</p>}
       <form action={save} className="ws-colors">
         <label className="ws-color-row" htmlFor="table">
@@ -102,11 +121,22 @@ export default async function TableColorsPage({
               <label htmlFor={`c-${c.id}`}>
                 <strong>{c.name}</strong>
                 {!c.custom && <span className="muted small"> · default</span>}
+                {c.player && <span className="muted small"> · player</span>}
               </label>
               {c.custom && (
                 <label className="check muted small">
                   <input type="checkbox" name={`reset-${c.id}`} /> use default
                 </label>
+              )}
+              {!c.player && (
+                <button
+                  type="submit"
+                  formAction={remove.bind(null, c.id)}
+                  className="ws-link danger ws-color-remove"
+                  title={`Remove ${c.name}. No player has joined as them, so nobody loses anything.`}
+                >
+                  Remove
+                </button>
               )}
             </div>
           ))

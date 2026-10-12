@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { prisma } from "@hearth/db";
-import { addCharacter, getTableColors } from "./highlights.js";
+import { addCharacter, getTableColors, removeCharacter } from "./highlights.js";
 import { joinCampaign } from "./onboarding.js";
 
 // Throwaway database only — see workspace.integration.test.ts.
@@ -45,6 +45,16 @@ describe.skipIf(!live)("DM-added characters (database)", () => {
     });
   });
 
+  it("removes a character no player has claimed", async () => {
+    const added = await addCharacter(C, { name: "Dalakai" });
+    expect(added.ok).toBe(true);
+    if (!added.ok) return;
+    expect(await removeCharacter(C, added.id)).toEqual({ ok: true });
+    expect((await getTableColors(C)).characters.map((c) => c.name)).toEqual([
+      "Dalakhi",
+    ]);
+  });
+
   it("the player's /join with the same name claims it instead of making another", async () => {
     const before = await prisma.character.findFirstOrThrow({
       where: { campaignId: C, name: "Dalakhi" },
@@ -65,5 +75,19 @@ describe.skipIf(!live)("DM-added characters (database)", () => {
       class: "Bard",
     });
     expect(after[0]!.membershipId).not.toBeNull();
+  });
+
+  it("won't remove a player's character", async () => {
+    const claimed = await prisma.character.findFirstOrThrow({
+      where: { campaignId: C, name: "Dalakhi" },
+    });
+    expect(await removeCharacter(C, claimed.id)).toEqual({
+      ok: false,
+      error: "Dalakhi belongs to a player, so it can't be removed here.",
+    });
+    expect(await removeCharacter("someone_else", claimed.id)).toEqual({
+      ok: false,
+      error: "That character is already gone.",
+    });
   });
 });

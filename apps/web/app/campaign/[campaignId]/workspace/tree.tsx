@@ -27,6 +27,7 @@ import {
 } from "./actions";
 import { openQuickSwitcher, QuickSwitcher } from "./quick-switcher";
 import { openShortcuts, ShortcutSheet } from "./shortcuts";
+import { useKeys } from "./keys";
 import { useWorkspace } from "./workspace-context";
 
 interface Folder {
@@ -104,6 +105,7 @@ export function WorkspaceTree({
   pages = local?.pages ?? livePages;
   folders = local?.folders ?? folders;
   const pathname = usePathname();
+  const { mod } = useKeys();
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -434,10 +436,10 @@ export function WorkspaceTree({
         type="button"
         className="ws-find"
         onClick={openQuickSwitcher}
-        title="Go to a page (⌘K)"
+        title={`Go to a page (${mod} K)`}
       >
         <span>Go to a page…</span>
-        <kbd>⌘K</kbd>
+        <kbd>{mod} K</kbd>
       </button>
       {error && (
         <p className="ws-error" role="alert">

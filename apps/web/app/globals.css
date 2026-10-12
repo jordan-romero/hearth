@@ -1684,6 +1684,10 @@ code {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
+.ws-color-remove {
+  margin-left: auto;
+  font-size: 12px;
+}
 .ws-colors-heading {
   margin: 12px 0 0;
   font-size: 15px;
