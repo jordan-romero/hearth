@@ -32,9 +32,9 @@
     "ws": "^8.22.0"
   },
   "devDependencies": {
-    "@types/ws": "^8.18.1",
+    "@types/ws": "^8.18.2",
     "dotenv-cli": "^11.0.0",
     "tsx": "^4.23.15",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.3"
   }
 }
