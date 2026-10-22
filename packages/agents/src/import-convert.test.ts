@@ -113,6 +113,15 @@ describe("markdownToPage", () => {
     expect(pageToMarkdown(markdownToPage(md))).toBe(md);
   });
 
+  it("keeps a link to another Hearth page, but not one to another site", () => {
+    const page = markdownToPage(
+      "[Ildin](/campaign/c1/workspace/p/p1) and [x](//evil.test/a)",
+    );
+    expect(pageToMarkdown(page)).toBe(
+      "[Ildin](/campaign/c1/workspace/p/p1) and x",
+    );
+  });
+
   it("never keeps a script link", () => {
     const page = markdownToPage("[x](javascript:alert(1))");
     expect(JSON.stringify(page)).not.toContain("javascript");
