@@ -20,15 +20,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.129.0",
-    "@deepgram/sdk": "^5.13.0",
+    "@anthropic-ai/sdk": "^0.135.0",
+    "@deepgram/sdk": "^5.15.0",
     "@hearth/core": "workspace:*",
     "@hearth/db": "workspace:*",
-    "@supabase/supabase-js": "^2.117.2",
+    "@supabase/supabase-js": "^2.118.0",
     "mammoth": "^1.13.0",
-    "marked": "^18.1.0",
-    "pg-boss": "^12.35.0",
-    "unpdf": "^1.8.1",
+    "marked": "^18.1.1",
+    "pg-boss": "^12.38.0",
+    "unpdf": "^1.9.0",
     "ws": "^8.22.0"
   },
   "devDependencies": {
