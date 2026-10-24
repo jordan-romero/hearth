@@ -25,7 +25,7 @@
   },
   "devDependencies": {
     "dotenv-cli": "^11.0.0",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.5"
   },
   "optionalDependencies": {
     "@discordjs/opus": "^0.10.0"
