@@ -1,11 +1,11 @@
-// One workspace page, open in the editor.
+// One workspace page. The page host (../page-host.tsx) shows it in the shared editor; this route
+// fetches the server's copy, so opening a page by its address (or reloading) always starts from
+// the latest, and hands it to the page store.
 
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getPage, getTableColors, getWorkspaceTree } from "@hearth/agents";
 import { requireDm } from "@/lib/campaign";
-import { PageEditor } from "./editor";
-import { archivePageAction, restorePageAction } from "../../actions";
+import { getPageDocs } from "@/lib/page-docs";
+import { PageData } from "./page-data";
 
 export default async function WorkspacePage({
   params,
@@ -13,88 +13,11 @@ export default async function WorkspacePage({
   params: Promise<{ campaignId: string; pageId: string }>;
 }) {
   const { campaignId, pageId } = await params;
-  await requireDm(campaignId);
-  const page = await getPage(campaignId, pageId);
-  if (!page) notFound();
-
-  // Breadcrumb: the folders above this page.
-  const [{ folders }, colors] = await Promise.all([
-    getWorkspaceTree(campaignId),
-    getTableColors(campaignId),
+  // Both at once; nothing is returned unless the DM check passes (Promise.all rejects first).
+  const [, [doc]] = await Promise.all([
+    requireDm(campaignId),
+    getPageDocs(campaignId, [pageId]),
   ]);
-  const byId = new Map(folders.map((f) => [f.id, f]));
-  const crumbs: string[] = [];
-  for (let id = page.folderId; id; id = byId.get(id)?.parentId ?? null) {
-    const f = byId.get(id);
-    if (!f) break;
-    crumbs.unshift(f.name);
-  }
-
-  const archive = archivePageAction.bind(null, campaignId, pageId);
-  const restore = restorePageAction.bind(null, campaignId, pageId);
-
-  return (
-    <article className="ws-page">
-      <div className="ws-page-bar">
-        <span className="ws-crumbs">
-          {crumbs.length ? crumbs.join(" / ") : "Top level"}
-        </span>
-        <div className="ws-page-actions">
-          {page.originalFileName && (
-            <a
-              className="ws-link"
-              href={`/campaign/${campaignId}/workspace/p/${pageId}/original`}
-              title="Download the file this page was imported from"
-            >
-              Original: {page.originalFileName}
-            </a>
-          )}
-          <Link
-            className="ws-link"
-            href={`/campaign/${campaignId}/workspace/p/${pageId}/history`}
-          >
-            History
-          </Link>
-          {page.archivedAt ? (
-            <form
-              action={async () => {
-                "use server";
-                await restore();
-              }}
-            >
-              <button className="ws-link" type="submit">
-                Restore from trash
-              </button>
-            </form>
-          ) : (
-            <form action={archive}>
-              <button className="ws-link" type="submit">
-                Move to trash
-              </button>
-            </form>
-          )}
-        </div>
-      </div>
-      {page.archivedAt && (
-        <p className="notice error">
-          This page is in the trash. Restore it to edit.
-        </p>
-      )}
-      <PageEditor
-        key={page.id}
-        campaignId={campaignId}
-        pageId={page.id}
-        initialTitle={page.title}
-        initialContent={page.content}
-        initialRevision={page.revision}
-        readOnly={!!page.archivedAt}
-        tableColor={colors.table}
-        characters={colors.characters.map(({ id, name, color }) => ({
-          id,
-          name,
-          color,
-        }))}
-      />
-    </article>
-  );
+  if (!doc) notFound();
+  return <PageData doc={doc} />;
 }

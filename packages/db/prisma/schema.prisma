@@ -231,7 +231,9 @@ model Party {
 model Character {
   id           String  @id @default(cuid())
   campaignId   String
-  membershipId String
+  /// The player who plays this character. Null when the DM added it from the web before its
+  /// player joined; their `/join` with the same name claims it.
+  membershipId String?
   partyId      String?
   name         String
 
@@ -254,8 +256,8 @@ model Character {
   updatedAt DateTime @updatedAt
 
   campaign   Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  membership Membership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
-  party      Party?     @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  membership Membership? @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  party      Party?      @relation(fields: [partyId], references: [id], onDelete: SetNull)
 
   grants             KnowledgeGrant[]    @relation("GrantCharacter")
   revealEvents       RevealEvent[]       @relation("RevealCharacter")
@@ -987,6 +989,8 @@ model Page {
   /// Null = at the top level of the workspace.
   folderId         String?
   title            String    @default("")
+  /// An emoji the DM picked for the page, shown in the tree, on links and in the title.
+  icon             String?
   /// The editor's document (ProseMirror JSON) — lossless, the source of truth.
   content          Json
   /// The same text as markdown, derived on save: what search, Claude and the memory read.
@@ -1015,6 +1019,9 @@ model Page {
   versions    PageVersion[]
   /// The canon highlights on this page, as knowledge.
   units       KnowledgeUnit[]
+  /// Pages this one links to, and pages that link here (its backlinks).
+  linksOut    PageLink[]      @relation("LinksFrom")
+  linksIn     PageLink[]      @relation("LinksTo")
 
   @@index([campaignId, folderId])
   @@index([campaignId, archivedAt])
@@ -1040,6 +1047,21 @@ model PageVersion {
 }
 
 /// Who or what made a version.
+/// One page linking to another (docs/notes-feel.md §2.2): rewritten whenever the linking page is
+/// saved, so "what links here" is one indexed query.
+model PageLink {
+  fromPageId String
+  toPageId   String
+  campaignId String
+  createdAt  DateTime @default(now())
+
+  from Page @relation("LinksFrom", fields: [fromPageId], references: [id], onDelete: Cascade)
+  to   Page @relation("LinksTo", fields: [toPageId], references: [id], onDelete: Cascade)
+
+  @@id([fromPageId, toPageId])
+  @@index([toPageId])
+}
+
 enum PageChangeCause {
   DM
   CLAUDE

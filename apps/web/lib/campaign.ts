@@ -1,10 +1,15 @@
 // One place where a request becomes an authorized viewer. Every campaign page goes through
 // this, so "are you allowed to be here" is answered once rather than per-page.
 
+import { cache } from "react";
 import { redirect, notFound } from "next/navigation";
 import { auth } from "@/auth";
 import { prisma } from "@hearth/db";
-import { resolveMember, type ResolvedMember } from "@hearth/agents";
+import {
+  getWorkspaceTree,
+  resolveMember,
+  type ResolvedMember,
+} from "@hearth/agents";
 
 export interface CampaignContext {
   viewer: ResolvedMember;
@@ -12,24 +17,30 @@ export interface CampaignContext {
 }
 
 /** The signed-in member's context for a campaign, or a redirect/404. Non-members get a 404
- * rather than a 403 — a stranger shouldn't learn that a campaign exists. */
-export async function requireMember(
-  campaignId: string,
-): Promise<CampaignContext> {
-  const session = await auth();
-  if (!session?.discordUserId) redirect("/");
+ * rather than a 403 — a stranger shouldn't learn that a campaign exists. Once per request: the
+ * layouts and the page all ask, and React's cache answers them from the first. */
+export const requireMember = cache(
+  async (campaignId: string): Promise<CampaignContext> => {
+    const session = await auth();
+    if (!session?.discordUserId) redirect("/");
 
-  const viewer = await resolveMember(campaignId, session.discordUserId);
-  if (!viewer) notFound();
+    // Both at once: the campaign's name is only shown once the membership checks out.
+    const [viewer, campaign] = await Promise.all([
+      resolveMember(campaignId, session.discordUserId),
+      prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { id: true, name: true },
+      }),
+    ]);
+    if (!viewer || !campaign) notFound();
 
-  const campaign = await prisma.campaign.findUnique({
-    where: { id: campaignId },
-    select: { id: true, name: true },
-  });
-  if (!campaign) notFound();
+    return { viewer, campaign };
+  },
+);
 
-  return { viewer, campaign };
-}
+/** The workspace's folders and pages, once per request (the layout and the open page both use
+ * it). */
+export const workspaceTree = cache(getWorkspaceTree);
 
 /**
  * The same, but only for the DM.

@@ -11,12 +11,16 @@ import {
   createFolder,
   createPage,
   deleteFolder,
+  linkMentions,
   moveFolder,
   movePage,
+  placeFolder,
+  placePage,
   renameFolder,
   restorePage,
   restorePageVersion,
   savePage,
+  setPageIcon,
   WorkspaceError,
   type PmNode,
   type SaveResult,
@@ -91,6 +95,94 @@ export async function newPage(campaignId: string, folderId: string | null) {
   }
   revalidatePath(base(campaignId), "layout");
   redirect(`${base(campaignId)}/p/${pageId}`);
+}
+
+/** Create a page from a link ("[[Ildin]]" with no Ildin yet), without leaving the page the DM
+ * is writing. Returns the new page's id. */
+export async function createLinkedPageAction(
+  campaignId: string,
+  folderId: string | null,
+  title: string,
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  await requireDm(String(campaignId));
+  try {
+    const id = await createPage(
+      campaignId,
+      optionalId(folderId),
+      String(title ?? "").slice(0, 200),
+    );
+    revalidatePath(base(campaignId), "layout");
+    return { ok: true, id };
+  } catch (err) {
+    if (err instanceof WorkspaceError) return { ok: false, error: err.message };
+    throw err;
+  }
+}
+
+/** "Link" on an unlinked mention: every plain mention of a page's name in another page becomes
+ * a link to it. */
+export async function linkMentionsAction(
+  campaignId: string,
+  fromPageId: string,
+  toPageId: string,
+): Promise<{ ok: true; count: number } | { ok: false; error: string }> {
+  await requireDm(String(campaignId));
+  try {
+    const count = await linkMentions(
+      campaignId,
+      String(fromPageId),
+      String(toPageId),
+    );
+    return { ok: true, count };
+  } catch (err) {
+    if (err instanceof WorkspaceError) return { ok: false, error: err.message };
+    throw err;
+  }
+}
+
+/** Set or clear a page's icon. */
+export async function setPageIconAction(
+  campaignId: string,
+  pageId: string,
+  icon: string | null,
+): Promise<ActionResult> {
+  return run(campaignId, () =>
+    setPageIcon(campaignId, String(pageId), icon ? String(icon) : null),
+  );
+}
+
+/** Drag and drop in the tree: a page into a folder (or the top level), before a sibling. */
+export async function placePageAction(
+  campaignId: string,
+  pageId: string,
+  folderId: string | null,
+  beforeId: string | null,
+): Promise<ActionResult> {
+  return run(campaignId, () =>
+    placePage(
+      campaignId,
+      String(pageId),
+      optionalId(folderId),
+      optionalId(beforeId),
+    ),
+  );
+}
+
+/** Drag and drop in the tree: a folder into another (or the top level), before a sibling. */
+export async function placeFolderAction(
+  campaignId: string,
+  folderId: string,
+  parentId: string | null,
+  beforeId: string | null,
+): Promise<ActionResult> {
+  return run(campaignId, () =>
+    placeFolder(
+      campaignId,
+      String(folderId),
+      optionalId(parentId),
+      optionalId(beforeId),
+    ),
+  );
 }
 
 export async function movePageAction(

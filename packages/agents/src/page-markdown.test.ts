@@ -100,7 +100,19 @@ describe("pageToMarkdown", () => {
 
   it("keeps the text of blocks it doesn't know", () => {
     expect(
-      pageToMarkdown(doc({ type: "callout", content: [p(t("Beware"))] })),
+      pageToMarkdown(doc({ type: "details", content: [p(t("Beware"))] })),
     ).toBe("Beware");
+  });
+
+  it("writes a callout as Obsidian's > [!kind]", () => {
+    expect(
+      pageToMarkdown(
+        doc({
+          type: "callout",
+          attrs: { variant: "warning" },
+          content: [p(t("Beware"))],
+        }),
+      ),
+    ).toBe("> [!warning]\n> Beware");
   });
 });

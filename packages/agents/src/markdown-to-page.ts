@@ -8,16 +8,18 @@
 
 import { Lexer, type Token, type Tokens } from "marked";
 import type { PmNode } from "./page-markdown.js";
+import { linkWikiTitles } from "./page-links.js";
 
 type Mark = { type: string; attrs?: Record<string, unknown> };
 
 export function markdownToPage(markdown: string): PmNode {
   const tokens = new Lexer({ gfm: true }).lex(markdown.replace(/\r\n?/g, "\n"));
   const content = blocks(tokens);
-  return {
+  // "[[Ildin]]" (OneNote's and Obsidian's page links) becomes a page link, resolved on save.
+  return linkWikiTitles({
     type: "doc",
     content: content.length ? content : [{ type: "paragraph" }],
-  };
+  });
 }
 
 /** Plain text → a page: one paragraph per blank-line-separated block, line breaks kept. */
@@ -78,10 +80,13 @@ function blocks(tokens: Token[]): PmNode[] {
         break;
       case "blockquote": {
         const inner = blocks((t as Tokens.Blockquote).tokens);
-        out.push({
-          type: "blockquote",
-          content: inner.length ? inner : [paragraph([])],
-        });
+        const callout = calloutOf(inner);
+        out.push(
+          callout ?? {
+            type: "blockquote",
+            content: inner.length ? inner : [paragraph([])],
+          },
+        );
         break;
       }
       case "code": {
@@ -108,6 +113,38 @@ function blocks(tokens: Token[]): PmNode[] {
     }
   }
   return out;
+}
+
+export const CALLOUT_VARIANTS = ["note", "tip", "warning", "secret"] as const;
+
+/** Obsidian's callout, "> [!note] …": a blockquote whose first line names the kind. Kinds Hearth
+ * doesn't have become a note; the rest of the first line stays as text. */
+function calloutOf(inner: PmNode[]): PmNode | null {
+  const first = inner[0];
+  const lead = first?.type === "paragraph" ? first.content?.[0] : undefined;
+  const m =
+    lead?.type === "text" ? lead.text?.match(/^\[!(\w+)\][+-]?\s*/) : null;
+  if (!first || !lead || !m) return null;
+  const kind = m[1]!.toLowerCase();
+  const variant = (CALLOUT_VARIANTS as readonly string[]).includes(kind)
+    ? kind
+    : kind === "danger" || kind === "caution"
+      ? "warning"
+      : "note";
+  const rest = lead.text!.slice(m[0].length);
+  const firstContent = [
+    ...(rest ? [{ ...lead, text: rest }] : []),
+    ...(first.content ?? []).slice(1),
+  ];
+  const content = [
+    ...(firstContent.length ? [{ ...first, content: firstContent }] : []),
+    ...inner.slice(1),
+  ];
+  return {
+    type: "callout",
+    attrs: { variant },
+    content: content.length ? content : [paragraph([])],
+  };
 }
 
 function list(l: Tokens.List): PmNode {
@@ -196,8 +233,9 @@ function inlines(tokens: Token[] | undefined, marks: Mark[] = []): PmNode[] {
         break;
       case "link": {
         const l = t as Tokens.Link;
-        // Only web and mail links survive; anything else (javascript:, data:) becomes plain text.
-        const safe = /^(https?:|mailto:)/i.test(l.href);
+        // Only web and mail links, and paths within Hearth (a link to another page), survive;
+        // anything else (javascript:, data:, //elsewhere) becomes plain text.
+        const safe = /^(https?:|mailto:|\/(?![/\\]))/i.test(l.href);
         out.push(
           ...inlines(
             l.tokens,

@@ -113,6 +113,28 @@ describe("markdownToPage", () => {
     expect(pageToMarkdown(markdownToPage(md))).toBe(md);
   });
 
+  it("keeps a link to another Hearth page, but not one to another site", () => {
+    const page = markdownToPage(
+      "[Ildin](/campaign/c1/workspace/p/p1) and [x](//evil.test/a)",
+    );
+    expect(pageToMarkdown(page)).toBe(
+      "[Ildin](/campaign/c1/workspace/p/p1) and x",
+    );
+  });
+
+  it("reads Obsidian callouts as callouts, and writes them back the same way", () => {
+    const page = markdownToPage(
+      "> [!secret] The vizier\n> is a dragon.\n\n> [!danger]\n> Traps",
+    );
+    expect(page.content?.map((n) => [n.type, n.attrs?.variant])).toEqual([
+      ["callout", "secret"],
+      ["callout", "warning"],
+    ]);
+    expect(pageToMarkdown(page)).toBe(
+      "> [!secret]\n> The vizier\n> is a dragon.\n\n> [!warning]\n> Traps",
+    );
+  });
+
   it("never keeps a script link", () => {
     const page = markdownToPage("[x](javascript:alert(1))");
     expect(JSON.stringify(page)).not.toContain("javascript");

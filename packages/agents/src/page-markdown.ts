@@ -3,6 +3,8 @@
 // small and known (whatever the workspace editor offers), and anything unrecognised still yields
 // its text instead of being dropped.
 
+import { headingOf, inlineText, PAGE_LINK } from "./page-links.js";
+
 export interface PmNode {
   type: string;
   attrs?: Record<string, unknown>;
@@ -62,6 +64,14 @@ function block(node: PmNode, indent: string): string {
     }
     case "horizontalRule":
       return `${indent}---`;
+    case "callout": {
+      // Obsidian's callout syntax, so it reads (and imports) as one.
+      const variant =
+        typeof node.attrs?.variant === "string" ? node.attrs.variant : "note";
+      return [`[!${variant}]`, ...blocks(c, "").split("\n")]
+        .map((line) => `${indent}> ${line}`.trimEnd())
+        .join("\n");
+    }
     case "table":
       return table(c, indent);
     default:
@@ -100,7 +110,7 @@ function table(rows: PmNode[], indent: string): string {
 function plain(nodes: PmNode[]): string {
   return nodes
     .map((n) =>
-      n.type === "hardBreak" ? "\n" : (n.text ?? plain(n.content ?? [])),
+      n.type === "hardBreak" ? "\n" : (inlineText(n) ?? plain(n.content ?? [])),
     )
     .join("");
 }
@@ -109,6 +119,11 @@ function inline(nodes: PmNode[]): string {
   return nodes
     .map((n) => {
       if (n.type === "hardBreak") return "  \n";
+      // A link to another page reads as the page's name, the way Obsidian writes it.
+      if (n.type === PAGE_LINK) {
+        const heading = headingOf(n);
+        return `[[${inlineText(n)}${heading ? `#${heading}` : ""}]]`;
+      }
       if (n.type !== "text") return n.text ?? inline(n.content ?? []);
       let t = n.text ?? "";
       const marks = new Set((n.marks ?? []).map((m) => m.type));

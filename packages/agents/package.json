@@ -13,6 +13,7 @@
     "demo": "dotenv -e ../../.env -- tsx src/demo.ts",
     "link": "dotenv -e ../../.env -- tsx src/link.ts",
     "backfill:sources": "dotenv -e ../../.env -- tsx src/backfill-sources.ts",
+    "backfill:links": "dotenv -e ../../.env -- tsx src/backfill-links.ts",
     "graph:build": "dotenv -e ../../.env -- tsx src/graph-backfill.ts",
     "graph:eval": "dotenv -e ../../.env -- tsx src/graph-eval.ts",
     "recap:characters": "dotenv -e ../../.env -- tsx src/character-recap-backfill.ts",

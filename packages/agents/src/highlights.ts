@@ -13,6 +13,7 @@
 // was — what someone was told stays told — and still carries its highlight id, so if the text
 // comes back (an undo, a restored version) it picks up the same knowledge instead of a copy.
 
+import { inlineText, PAGE_LINK } from "./page-links.js";
 import { prisma, type BaseVisibility } from "@hearth/db";
 import type { PmNode } from "./page-markdown.js";
 import { embedTexts, toVectorLiteral } from "./embeddings.js";
@@ -38,7 +39,7 @@ export function extractHighlights(doc: PmNode): PageHighlight[] {
   let block = 0;
 
   const walk = (node: PmNode, inTextBlock: boolean) => {
-    if (node.type === "text") {
+    if (node.type === "text" || node.type === PAGE_LINK) {
       const mark = node.marks?.find((m) => m.type === CANON_MARK);
       const id = typeof mark?.attrs?.id === "string" ? mark.attrs.id : null;
       if (!mark || !id) return;
@@ -50,12 +51,13 @@ export function extractHighlights(doc: PmNode): PageHighlight[] {
       const existing = byId.get(id);
       if (existing) {
         existing.text +=
-          (existing.lastBlock === block ? "" : " … ") + (node.text ?? "");
+          (existing.lastBlock === block ? "" : " … ") +
+          (inlineText(node) ?? "");
         existing.lastBlock = block;
       } else {
         byId.set(id, {
           id,
-          text: node.text ?? "",
+          text: inlineText(node) ?? "",
           known: [...new Set(known)],
           everyone: mark.attrs?.everyone === true,
           lastBlock: block,
@@ -63,7 +65,9 @@ export function extractHighlights(doc: PmNode): PageHighlight[] {
       }
       return;
     }
-    const isTextBlock = !!node.content?.some((c) => c.type === "text");
+    const isTextBlock = !!node.content?.some(
+      (c) => c.type === "text" || c.type === PAGE_LINK,
+    );
     if (isTextBlock && !inTextBlock) block++;
     for (const child of node.content ?? [])
       walk(child, isTextBlock || inTextBlock);
@@ -306,7 +310,14 @@ export const DEFAULT_TABLE_COLOR = "#c99a2e";
 
 export interface TableColors {
   table: string;
-  characters: { id: string; name: string; color: string; custom: boolean }[];
+  characters: {
+    id: string;
+    name: string;
+    color: string;
+    custom: boolean;
+    /** A player has joined as this character (else the DM added it and it can be removed). */
+    player: boolean;
+  }[];
 }
 
 /** Every character's color (theirs, or a default by order of creation) and the table's. */
@@ -319,7 +330,7 @@ export async function getTableColors(campaignId: string): Promise<TableColors> {
     prisma.character.findMany({
       where: { campaignId },
       orderBy: { createdAt: "asc" },
-      select: { id: true, name: true, color: true },
+      select: { id: true, name: true, color: true, membershipId: true },
     }),
   ]);
   return {
@@ -331,11 +342,77 @@ export async function getTableColors(campaignId: string): Promise<TableColors> {
         c.color ??
         DEFAULT_CHARACTER_COLORS[i % DEFAULT_CHARACTER_COLORS.length]!,
       custom: !!c.color,
+      player: !!c.membershipId,
     })),
   };
 }
 
 const HEX = /^#[0-9a-f]{6}$/i;
+
+export const CHARACTER_NAME_MAX = 60;
+
+/** The DM adds a character before (or without) its player joining. Its player's `/join` with the
+ * same name claims it later (see joinCampaign), keeping every highlight already marked for it. */
+export async function addCharacter(
+  campaignId: string,
+  input: { name: string; color?: string | null },
+): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  const name = input.name.trim().replace(/\s+/g, " ");
+  if (!name) return { ok: false, error: "Give the character a name." };
+  if (name.length > CHARACTER_NAME_MAX)
+    return {
+      ok: false,
+      error: `Keep the name under ${CHARACTER_NAME_MAX} characters.`,
+    };
+  const clash = await prisma.character.findFirst({
+    where: { campaignId, name: { equals: name, mode: "insensitive" } },
+    select: { id: true },
+  });
+  if (clash) return { ok: false, error: `There's already a ${name}.` };
+  const party = await prisma.party.findFirst({
+    where: { campaignId },
+    select: { id: true },
+  });
+  const created = await prisma.character.create({
+    data: {
+      campaignId,
+      name,
+      partyId: party?.id ?? null,
+      color: input.color && HEX.test(input.color) ? input.color : null,
+    },
+    select: { id: true },
+  });
+  return { ok: true, id: created.id };
+}
+
+/**
+ * Remove a character the DM added that no player has claimed (a test, a typo, a character who
+ * never joined). A player's character can't be removed this way: deleting it would take back
+ * everything its player has been told.
+ */
+export async function removeCharacter(
+  campaignId: string,
+  characterId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const character = await prisma.character.findFirst({
+    where: { id: characterId, campaignId },
+    select: { membershipId: true, name: true },
+  });
+  if (!character)
+    return { ok: false, error: "That character is already gone." };
+  if (character.membershipId)
+    return {
+      ok: false,
+      error: `${character.name} belongs to a player, so it can't be removed here.`,
+    };
+  // Only removes it if it's still unclaimed (a /join could land in between).
+  const { count } = await prisma.character.deleteMany({
+    where: { id: characterId, campaignId, membershipId: null },
+  });
+  return count
+    ? { ok: true }
+    : { ok: false, error: `${character.name} was just claimed by a player.` };
+}
 
 /** Save the DM's colors. Ids are checked against the campaign; bad colors are ignored. */
 export async function setTableColors(

@@ -14,6 +14,13 @@ import { removeExternalDocument, syncExternalDocument } from "./external.js";
 import { syncPageHighlights } from "./highlights.js";
 import { getQueue } from "./queue.js";
 import { PAGE_INDEX_QUEUE, type PageIndexJob } from "./jobs.js";
+import {
+  linkedPageIds,
+  linkWikiTitles,
+  mayHaveLinks,
+  pageLinkNode,
+  resolvePageLinks,
+} from "./page-links.js";
 
 /** Edits within this long of the last version fold into it, so history reads as sittings. */
 const VERSION_WINDOW_MS = 10 * 60_000;
@@ -38,6 +45,7 @@ export interface TreePage {
   id: string;
   folderId: string | null;
   title: string;
+  icon: string | null;
   updatedAt: Date;
 }
 
@@ -54,7 +62,13 @@ export async function getWorkspaceTree(
     prisma.page.findMany({
       where: { campaignId, archivedAt: null },
       orderBy: [{ position: "asc" }, { title: "asc" }],
-      select: { id: true, folderId: true, title: true, updatedAt: true },
+      select: {
+        id: true,
+        folderId: true,
+        title: true,
+        icon: true,
+        updatedAt: true,
+      },
     }),
   ]);
   return { folders, pages };
@@ -118,6 +132,81 @@ export async function moveFolder(
   });
 }
 
+/** Where `id` goes among `siblings` (their ids, in order): before `beforeId`, or last. */
+function placeAmong(siblings: string[], id: string, beforeId: string | null) {
+  const ids = siblings.filter((s) => s !== id);
+  const at = beforeId ? ids.indexOf(beforeId) : -1;
+  ids.splice(at >= 0 ? at : ids.length, 0, id);
+  return ids;
+}
+
+/**
+ * Drag and drop in the tree: put a folder inside `parentId` (null: the top level), before the
+ * sibling folder `beforeId` (null: last). Positions are written directly, so arranging the tree
+ * doesn't count as editing anything.
+ */
+export async function placeFolder(
+  campaignId: string,
+  folderId: string,
+  parentId: string | null,
+  beforeId: string | null,
+): Promise<void> {
+  const folder = await ownFolder(campaignId, folderId);
+  if (folder?.parentId !== parentId)
+    await moveFolder(campaignId, folderId, parentId); // refuses a folder inside itself
+  const siblings = await prisma.folder.findMany({
+    where: { campaignId, parentId },
+    orderBy: [{ position: "asc" }, { name: "asc" }],
+    select: { id: true },
+  });
+  const ids = placeAmong(
+    siblings.map((f) => f.id),
+    folderId,
+    beforeId,
+  );
+  await prisma.$executeRaw`
+    UPDATE "Folder" AS f SET "position" = v.pos
+    FROM unnest(${ids}::text[], ${ids.map((_, i) => i)}::int[]) AS v(id, pos)
+    WHERE f.id = v.id AND f."campaignId" = ${campaignId}`;
+}
+
+/** Drag and drop in the tree: put a page in `folderId` (null: the top level), before the page
+ * `beforeId` (null: last). */
+export async function placePage(
+  campaignId: string,
+  pageId: string,
+  folderId: string | null,
+  beforeId: string | null,
+): Promise<void> {
+  await ownFolder(campaignId, folderId);
+  const page = await prisma.page.findFirst({
+    where: { id: pageId, campaignId },
+    select: { folderId: true },
+  });
+  if (!page) throw new WorkspaceError("That page doesn't exist any more.");
+  const siblings = await prisma.page.findMany({
+    where: { campaignId, folderId, archivedAt: null },
+    orderBy: [{ position: "asc" }, { title: "asc" }],
+    select: { id: true },
+  });
+  const ids = placeAmong(
+    siblings.map((p) => p.id),
+    pageId,
+    beforeId,
+  );
+  await prisma.$transaction([
+    prisma.$executeRaw`
+      UPDATE "Page" SET "folderId" = ${folderId}
+      WHERE id = ${pageId} AND "campaignId" = ${campaignId}`,
+    prisma.$executeRaw`
+      UPDATE "Page" AS p SET "position" = v.pos
+      FROM unnest(${ids}::text[], ${ids.map((_, i) => i)}::int[]) AS v(id, pos)
+      WHERE p.id = v.id AND p."campaignId" = ${campaignId}`,
+  ]);
+  // Its name in search carries the folder path.
+  if (page.folderId !== folderId) await schedulePageIndexQuietly(pageId);
+}
+
 /** Delete an empty folder. One that still holds folders or pages is refused, never emptied. */
 export async function deleteFolder(
   campaignId: string,
@@ -158,6 +247,8 @@ export async function createPage(
     },
     select: { id: true },
   });
+  // "[[Ildin]]" written before there was an Ildin now leads here.
+  if (title.trim()) await relinkTitleQuietly(campaignId, title);
   return page.id;
 }
 
@@ -210,8 +301,13 @@ export async function savePage(
   if (input.content?.type !== "doc")
     throw new WorkspaceError("That isn't a page.");
   const title = input.title.trim().slice(0, NAME_MAX);
-  const markdown = pageToMarkdown(input.content);
-  const content = input.content as unknown as Prisma.InputJsonValue;
+  const links = await prepareLinks(campaignId, pageId, input.content);
+  const markdown = pageToMarkdown(links.doc);
+  const content = links.doc as unknown as Prisma.InputJsonValue;
+  const before = await prisma.page.findFirst({
+    where: { id: pageId, campaignId },
+    select: { title: true },
+  });
 
   const result = await prisma.$transaction(async (tx) => {
     const { count } = await tx.page.updateMany({
@@ -232,13 +328,306 @@ export async function savePage(
       };
     }
     await recordVersion(tx, pageId, { title, content, markdown }, "DM");
+    await recordLinks(tx, campaignId, pageId, links.targets);
     return { ok: true as const, revision: input.baseRevision + 1 };
   });
 
   // The save has landed. Indexing is a follow-up: if queueing it fails, the page is still saved
   // (the next save queues it again) — never report a stored page as unsaved.
   if (result.ok) await schedulePageIndexQuietly(pageId);
+  // A renamed page: links to it show the new name, and "[[New name]]" elsewhere now finds it.
+  if (result.ok && before && before.title !== title) {
+    await relinkPagesQuietly(campaignId, await backlinkSources(pageId));
+    if (title) await relinkTitleQuietly(campaignId, title);
+  }
   return result;
+}
+
+// ─── Page links ──────────────────────────────────────────────────────────────
+
+/** What a page's links can lead to: the campaign's pages (titles only for live ones). */
+async function linkTargets(campaignId: string) {
+  const pages = await prisma.page.findMany({
+    where: { campaignId },
+    select: { id: true, title: true, archivedAt: true },
+  });
+  return {
+    live: pages.filter((p) => !p.archivedAt),
+    ids: new Set(pages.map((p) => p.id)),
+  };
+}
+
+/** Resolve a page's links and work out which pages it links to. Skips the query when the page
+ * has no links at all. */
+async function prepareLinks(
+  campaignId: string,
+  pageId: string,
+  doc: PmNode,
+): Promise<{ doc: PmNode; targets: string[] }> {
+  if (!mayHaveLinks(doc)) return { doc, targets: [] };
+  const { live, ids } = await linkTargets(campaignId);
+  // Literal "[[Title]]" too (pasted as plain text, or typed faster than the editor's rule).
+  const resolved = resolvePageLinks(linkWikiTitles(doc), live);
+  const targets = [...linkedPageIds(resolved, campaignId)].filter(
+    (id) => ids.has(id) && id !== pageId,
+  );
+  return { doc: resolved, targets };
+}
+
+async function recordLinks(
+  tx: Prisma.TransactionClient,
+  campaignId: string,
+  pageId: string,
+  targets: string[],
+): Promise<void> {
+  await tx.pageLink.deleteMany({ where: { fromPageId: pageId } });
+  if (targets.length > 0)
+    await tx.pageLink.createMany({
+      data: targets.map((toPageId) => ({
+        fromPageId: pageId,
+        toPageId,
+        campaignId,
+      })),
+      skipDuplicates: true,
+    });
+}
+
+async function backlinkSources(pageId: string): Promise<string[]> {
+  const rows = await prisma.pageLink.findMany({
+    where: { toPageId: pageId },
+    select: { fromPageId: true },
+  });
+  return rows.map((r) => r.fromPageId);
+}
+
+/**
+ * Bring pages' links up to date outside the editor: after an import (whose pages only now all
+ * exist), when a page is created or renamed, and for the one-off backfill. Literal "[[Title]]"
+ * text becomes a page link. Not a new revision or version: an editor still open on one of these
+ * pages saves over it, and that save resolves the same links again.
+ */
+export async function relinkPages(
+  campaignId: string,
+  pageIds: readonly string[],
+): Promise<number> {
+  if (pageIds.length === 0) return 0;
+  const { live, ids } = await linkTargets(campaignId);
+  const pages = await prisma.page.findMany({
+    where: { id: { in: [...new Set(pageIds)] }, campaignId },
+    select: { id: true, content: true },
+  });
+  let changed = 0;
+  for (const page of pages) {
+    const doc = page.content as unknown as PmNode;
+    const linked = resolvePageLinks(linkWikiTitles(doc), live);
+    const targets = [...linkedPageIds(linked, campaignId)].filter(
+      (id) => ids.has(id) && id !== page.id,
+    );
+    await prisma.$transaction(async (tx) => {
+      if (linked !== doc) {
+        await tx.page.update({
+          where: { id: page.id },
+          data: {
+            content: linked as unknown as Prisma.InputJsonValue,
+            markdown: pageToMarkdown(linked),
+          },
+        });
+      }
+      await recordLinks(tx, campaignId, page.id, targets);
+    });
+    if (linked !== doc) {
+      changed++;
+      await schedulePageIndexQuietly(page.id);
+    }
+  }
+  return changed;
+}
+
+async function relinkPagesQuietly(campaignId: string, pageIds: string[]) {
+  await relinkPages(campaignId, pageIds).catch((err) =>
+    console.error("[workspace] relinking pages failed:", err),
+  );
+}
+
+/** Pages that mention "[[title]]": the ones a page with this title may now resolve. */
+async function relinkTitleQuietly(campaignId: string, title: string) {
+  const mentioning = await prisma.page
+    .findMany({
+      where: {
+        campaignId,
+        markdown: { contains: `[[${title.trim()}]]`, mode: "insensitive" },
+      },
+      select: { id: true },
+    })
+    .catch(() => []);
+  await relinkPagesQuietly(
+    campaignId,
+    mentioning.map((p) => p.id),
+  );
+}
+
+// ─── Unlinked mentions ───────────────────────────────────────────────────────
+
+/** Shorter titles ("Act", "Ty") would match everyday words; Obsidian has the same limit. */
+const MENTION_MIN = 3;
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** The title as a whole word or phrase, any case. */
+function mentionPattern(title: string, flags = "iu") {
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}])${escapeRe(title.trim()).replace(/\s+/g, "\\s+")}(?![\\p{L}\\p{N}])`,
+    flags,
+  );
+}
+
+const isPlain = (n: PmNode) =>
+  n.type === "text" &&
+  !n.marks?.some((m) => m.type === "link" || m.type === "code");
+
+/** The page's words that aren't already a link (or code), block by block. */
+function unlinkedText(doc: PmNode): string {
+  const blocks: string[] = [];
+  const walk = (node: PmNode) => {
+    if (node.type === "codeBlock") return;
+    if (node.content?.some((c) => c.type === "text")) {
+      blocks.push(
+        node.content.map((c) => (isPlain(c) ? c.text : " ")).join(""),
+      );
+      return;
+    }
+    node.content?.forEach(walk);
+  };
+  walk(doc);
+  return blocks.join("\n");
+}
+
+export interface UnlinkedMention {
+  id: string;
+  title: string;
+  /** The words around the first mention. */
+  snippet: string;
+}
+
+/** Pages that name this page in plain text without linking it (Obsidian's "unlinked mentions"). */
+export async function getUnlinkedMentions(
+  campaignId: string,
+  pageId: string,
+): Promise<UnlinkedMention[]> {
+  const page = await prisma.page.findFirst({
+    where: { id: pageId, campaignId },
+    select: { title: true },
+  });
+  const title = page?.title.trim() ?? "";
+  if (title.length < MENTION_MIN) return [];
+  const candidates = await prisma.page.findMany({
+    where: {
+      campaignId,
+      archivedAt: null,
+      id: { not: pageId },
+      markdown: { contains: title, mode: "insensitive" },
+    },
+    select: { id: true, title: true, content: true },
+    orderBy: { updatedAt: "desc" },
+    take: 60,
+  });
+  const pattern = mentionPattern(title);
+  const out: UnlinkedMention[] = [];
+  for (const c of candidates) {
+    const text = unlinkedText(c.content as unknown as PmNode);
+    const m = pattern.exec(text);
+    if (!m) continue;
+    const from = Math.max(0, m.index - 60);
+    const to = Math.min(text.length, m.index + m[0].length + 60);
+    out.push({
+      id: c.id,
+      title: c.title,
+      snippet: `${from > 0 ? "…" : ""}${text.slice(from, to).replace(/\s+/g, " ").trim()}${to < text.length ? "…" : ""}`,
+    });
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
+/**
+ * Turn every plain-text mention of a page's title in another page into a link to it ("Link" on
+ * an unlinked mention). Saved like the DM's own edit, so it's in the page's history.
+ */
+export async function linkMentions(
+  campaignId: string,
+  fromPageId: string,
+  toPageId: string,
+): Promise<number> {
+  const [from, to] = await Promise.all([
+    prisma.page.findFirst({
+      where: { id: fromPageId, campaignId },
+      select: { title: true, content: true, revision: true },
+    }),
+    prisma.page.findFirst({
+      where: { id: toPageId, campaignId, archivedAt: null },
+      select: { title: true },
+    }),
+  ]);
+  if (!from || !to)
+    throw new WorkspaceError("That page doesn't exist any more.");
+  const title = to.title.trim();
+  if (title.length < MENTION_MIN) return 0;
+  const pattern = mentionPattern(title, "giu");
+  let count = 0;
+
+  const walk = (node: PmNode): PmNode => {
+    if (node.type === "codeBlock" || !node.content) return node;
+    const content: PmNode[] = [];
+    for (const child of node.content) {
+      if (!isPlain(child)) {
+        content.push(walk(child));
+        continue;
+      }
+      const s = child.text ?? "";
+      let last = 0;
+      for (const m of s.matchAll(pattern)) {
+        if (m.index! > last)
+          content.push({ ...child, text: s.slice(last, m.index) });
+        content.push({
+          ...pageLinkNode(toPageId, title),
+          ...(child.marks?.length ? { marks: child.marks } : {}),
+        });
+        last = m.index! + m[0].length;
+        count++;
+      }
+      if (last === 0) content.push(child);
+      else if (last < s.length) content.push({ ...child, text: s.slice(last) });
+    }
+    return { ...node, content };
+  };
+  const linked = walk(from.content as unknown as PmNode);
+  if (count === 0) return 0;
+  const result = await savePage(campaignId, fromPageId, {
+    title: from.title,
+    content: linked,
+    baseRevision: from.revision,
+  });
+  if (!result.ok)
+    throw new WorkspaceError("That page just changed — try again.");
+  return count;
+}
+
+export interface Backlink {
+  id: string;
+  title: string;
+}
+
+/** The pages that link to this one ("Mentioned in"), not counting ones in the trash. */
+export async function getBacklinks(
+  campaignId: string,
+  pageId: string,
+): Promise<Backlink[]> {
+  const rows = await prisma.pageLink.findMany({
+    where: { toPageId: pageId, campaignId, from: { archivedAt: null } },
+    select: { from: { select: { id: true, title: true } } },
+    orderBy: { from: { title: "asc" } },
+  });
+  return rows.map((r) => r.from);
 }
 
 /** Add to the page's history: fold into the latest version if it's the DM's and recent. */
@@ -278,6 +667,31 @@ export async function movePage(
     throw new WorkspaceError("That page doesn't exist any more.");
   // Its name in search carries the folder path.
   await schedulePageIndexQuietly(pageId);
+}
+
+/** An emoji (or a couple: a flag, a skin tone) — anything longer isn't an icon. */
+const ICON_MAX = 16;
+
+/** Give a page an icon, or take it away (null). */
+export async function setPageIcon(
+  campaignId: string,
+  pageId: string,
+  icon: string | null,
+): Promise<void> {
+  const value = icon?.trim() || null;
+  if (
+    value &&
+    ([...value].length > 4 ||
+      value.length > ICON_MAX ||
+      /[\p{L}\p{N}]/u.test(value))
+  )
+    throw new WorkspaceError("Pick an emoji for the icon.");
+  const { count } = await prisma.page.updateMany({
+    where: { id: pageId, campaignId },
+    data: { icon: value },
+  });
+  if (count === 0)
+    throw new WorkspaceError("That page doesn't exist any more.");
 }
 
 /** Put a page in the trash: out of the tree and out of the memory, but restorable. */
