@@ -28,6 +28,7 @@ interface Page {
   id: string;
   folderId: string | null;
   title: string;
+  icon?: string | null;
 }
 
 const OPEN_KEY = "hearth.workspace.open";
@@ -169,6 +170,7 @@ export function WorkspaceTree({
               pageId={p.id}
               href={href}
               title={p.title}
+              icon={p.icon ?? null}
               depth={depth}
               active={active}
               folderPaths={folderPaths}
@@ -190,6 +192,7 @@ export function WorkspaceTree({
       .map((p) => ({
         id: p.id,
         title: p.title,
+        icon: p.icon ?? null,
         where: p.folderId ? (pathById.get(p.folderId) ?? "") : "",
       }));
   }, [pages, folderPaths]);
@@ -445,6 +448,7 @@ function PageRow({
   pageId,
   href,
   title,
+  icon,
   depth,
   active,
   folderPaths,
@@ -453,6 +457,7 @@ function PageRow({
   pageId: string;
   href: string;
   title: string;
+  icon: string | null;
   depth: number;
   active: boolean;
   folderPaths: { id: string; path: string }[];
@@ -484,6 +489,7 @@ function PageRow({
             openPage(pageId);
           }}
         >
+          {icon && <span className="ws-row-icon">{icon}</span>}
           {title || "Untitled"}
         </Link>
         <RowMenu items={[["Move to…", () => setMoving(true)]]} />

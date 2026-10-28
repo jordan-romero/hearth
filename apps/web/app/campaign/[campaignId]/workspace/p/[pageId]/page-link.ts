@@ -21,6 +21,7 @@ import { suggestionPopup } from "./slash";
 export interface PageRef {
   id: string;
   title: string;
+  icon?: string | null;
 }
 
 export interface PageLinkOptions {
@@ -212,7 +213,11 @@ function suggest(
         empty: "Type a page's name",
         show: (p) =>
           p.kind === "page"
-            ? { title: p.page.title }
+            ? {
+                title: p.page.icon
+                  ? `${p.page.icon} ${p.page.title}`
+                  : p.page.title,
+              }
             : p.kind === "heading"
               ? { title: p.heading, hint: `in ${p.page.title}` }
               : {
@@ -272,7 +277,8 @@ export const PageLink = Node.create<PageLinkOptions>({
     const heading = node.attrs.heading as string | null;
     const page = id ? this.options.pages().find((p) => p.id === id) : undefined;
     const name = page?.title || node.attrs.label || "Untitled";
-    const text = heading ? `${name} › ${heading}` : name;
+    const named = page?.icon ? `${page.icon} ${name}` : name;
+    const text = heading ? `${named} › ${heading}` : named;
     return [
       "a",
       mergeAttributes(HTMLAttributes, {

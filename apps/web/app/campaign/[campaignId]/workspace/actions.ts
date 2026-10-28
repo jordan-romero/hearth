@@ -18,6 +18,7 @@ import {
   restorePage,
   restorePageVersion,
   savePage,
+  setPageIcon,
   WorkspaceError,
   type PmNode,
   type SaveResult,
@@ -135,6 +136,17 @@ export async function linkMentionsAction(
     if (err instanceof WorkspaceError) return { ok: false, error: err.message };
     throw err;
   }
+}
+
+/** Set or clear a page's icon. */
+export async function setPageIconAction(
+  campaignId: string,
+  pageId: string,
+  icon: string | null,
+): Promise<ActionResult> {
+  return run(campaignId, () =>
+    setPageIcon(campaignId, String(pageId), icon ? String(icon) : null),
+  );
 }
 
 export async function movePageAction(

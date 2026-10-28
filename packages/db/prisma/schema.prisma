@@ -989,6 +989,8 @@ model Page {
   /// Null = at the top level of the workspace.
   folderId         String?
   title            String    @default("")
+  /// An emoji the DM picked for the page, shown in the tree, on links and in the title.
+  icon             String?
   /// The editor's document (ProseMirror JSON) — lossless, the source of truth.
   content          Json
   /// The same text as markdown, derived on save: what search, Claude and the memory read.

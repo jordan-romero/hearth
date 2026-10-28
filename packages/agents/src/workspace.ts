@@ -45,6 +45,7 @@ export interface TreePage {
   id: string;
   folderId: string | null;
   title: string;
+  icon: string | null;
   updatedAt: Date;
 }
 
@@ -61,7 +62,13 @@ export async function getWorkspaceTree(
     prisma.page.findMany({
       where: { campaignId, archivedAt: null },
       orderBy: [{ position: "asc" }, { title: "asc" }],
-      select: { id: true, folderId: true, title: true, updatedAt: true },
+      select: {
+        id: true,
+        folderId: true,
+        title: true,
+        icon: true,
+        updatedAt: true,
+      },
     }),
   ]);
   return { folders, pages };
@@ -585,6 +592,31 @@ export async function movePage(
     throw new WorkspaceError("That page doesn't exist any more.");
   // Its name in search carries the folder path.
   await schedulePageIndexQuietly(pageId);
+}
+
+/** An emoji (or a couple: a flag, a skin tone) — anything longer isn't an icon. */
+const ICON_MAX = 16;
+
+/** Give a page an icon, or take it away (null). */
+export async function setPageIcon(
+  campaignId: string,
+  pageId: string,
+  icon: string | null,
+): Promise<void> {
+  const value = icon?.trim() || null;
+  if (
+    value &&
+    ([...value].length > 4 ||
+      value.length > ICON_MAX ||
+      /[\p{L}\p{N}]/u.test(value))
+  )
+    throw new WorkspaceError("Pick an emoji for the icon.");
+  const { count } = await prisma.page.updateMany({
+    where: { id: pageId, campaignId },
+    data: { icon: value },
+  });
+  if (count === 0)
+    throw new WorkspaceError("That page doesn't exist any more.");
 }
 
 /** Put a page in the trash: out of the tree and out of the memory, but restorable. */
