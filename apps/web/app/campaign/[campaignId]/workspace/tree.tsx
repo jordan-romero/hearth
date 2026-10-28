@@ -4,9 +4,7 @@
 // remember it for this browser); each row has a small menu for the things you do to it.
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-// The router's own enum: "full" fetches the whole page, not just its loading shell.
-import { PrefetchKind } from "next/dist/client/components/router-reducer/router-reducer-types";
+import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   deleteFolderAction,
@@ -18,6 +16,8 @@ import {
   type ActionResult,
 } from "./actions";
 import { openQuickSwitcher, QuickSwitcher } from "./quick-switcher";
+import { openShortcuts, ShortcutSheet } from "./shortcuts";
+import { useWorkspace } from "./workspace-context";
 
 interface Folder {
   id: string;
@@ -51,6 +51,8 @@ export function WorkspaceTree({
   folders: Folder[];
   pages: Page[];
 }) {
+  // The same pages, with titles as typed in the editor, so a rename shows here at once.
+  pages = useWorkspace().pages;
   const pathname = usePathname();
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
@@ -164,6 +166,7 @@ export function WorkspaceTree({
           return (
             <PageRow
               key={p.id}
+              pageId={p.id}
               href={href}
               title={p.title}
               depth={depth}
@@ -194,6 +197,7 @@ export function WorkspaceTree({
   return (
     <nav className="ws-tree" aria-busy={pending}>
       <QuickSwitcher campaignId={campaignId} pages={switcherPages} />
+      <ShortcutSheet />
       <div className="ws-tree-head">
         <Link
           href={base}
@@ -256,6 +260,13 @@ export function WorkspaceTree({
       >
         Trash
       </Link>
+      <button
+        type="button"
+        className="ws-trash ws-help"
+        onClick={openShortcuts}
+      >
+        Shortcuts &amp; tips <kbd>?</kbd>
+      </button>
     </nav>
   );
 }
@@ -431,6 +442,7 @@ function FolderRow({
 }
 
 function PageRow({
+  pageId,
   href,
   title,
   depth,
@@ -438,6 +450,7 @@ function PageRow({
   folderPaths,
   onMove,
 }: {
+  pageId: string;
   href: string;
   title: string;
   depth: number;
@@ -446,11 +459,11 @@ function PageRow({
   onMove: (to: string | null) => void;
 }) {
   const [moving, setMoving] = useState(false);
-  const router = useRouter();
-  // Fetch the page when the pointer (or focus) arrives, so by the click it's usually here. Only
-  // on intent: prefetching every row in view would cost a query round per page in the tree.
+  const { openPage, warmPage } = useWorkspace();
+  // Fetch the page when the pointer (or focus) arrives, so by the click it's here (the workspace
+  // also fetches its pages in the background).
   const warm = () => {
-    if (!active) router.prefetch(href, { kind: PrefetchKind.FULL });
+    if (!active) warmPage(pageId);
   };
   return (
     <li role="treeitem">
@@ -464,6 +477,12 @@ function PageRow({
           aria-current={active ? "page" : undefined}
           onMouseEnter={warm}
           onFocus={warm}
+          onClick={(e) => {
+            // ⌘/Ctrl/Shift-click keeps the browser's own behaviour (a new tab or window).
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+            e.preventDefault();
+            openPage(pageId);
+          }}
         >
           {title || "Untitled"}
         </Link>

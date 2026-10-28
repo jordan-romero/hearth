@@ -73,6 +73,13 @@ const ITEMS: Item[] = [
         .run(),
   },
   {
+    title: "Link to a page",
+    hint: "Or type [[ anywhere",
+    keywords: "link page mention wiki [[ @",
+    // Leaves "[[" behind, which opens the page picker.
+    run: (e, r) => e.chain().focus().deleteRange(r).insertContent("[[").run(),
+  },
+  {
     title: "Divider",
     hint: "A line across the page",
     keywords: "hr rule separator",

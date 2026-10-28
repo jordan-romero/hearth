@@ -5,10 +5,10 @@
 // fetched ahead, so opening it is instant. No match? Enter makes a page with that name.
 
 import { useRouter } from "next/navigation";
-import { PrefetchKind } from "next/dist/client/components/router-reducer/router-reducer-types";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createLinkedPageAction } from "./actions";
 import { rankPages } from "./p/[pageId]/page-link";
+import { useWorkspace } from "./workspace-context";
 
 export interface SwitcherPage {
   id: string;
@@ -27,13 +27,12 @@ export function QuickSwitcher({
   pages: SwitcherPage[];
 }) {
   const router = useRouter();
+  const { openPage, warmPage } = useWorkspace();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const [creating, setCreating] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-  const base = `/campaign/${campaignId}/workspace`;
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -70,15 +69,12 @@ export function QuickSwitcher({
 
   const highlighted = matches[index];
   useEffect(() => {
-    if (open && highlighted)
-      router.prefetch(`${base}/p/${highlighted.id}`, {
-        kind: PrefetchKind.FULL,
-      });
-  }, [open, highlighted, router, base]);
+    if (open && highlighted) warmPage(highlighted.id);
+  }, [open, highlighted, warmPage]);
 
   function go(page: SwitcherPage) {
     setOpen(false);
-    router.push(`${base}/p/${page.id}`);
+    openPage(page.id);
   }
 
   async function create() {
@@ -91,7 +87,8 @@ export function QuickSwitcher({
     setCreating(false);
     if (!result?.ok) return;
     setOpen(false);
-    router.push(`${base}/p/${result.id}`);
+    router.refresh(); // the sidebar lists the new page
+    openPage(result.id);
   }
 
   if (!open) return null;
