@@ -8,6 +8,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Editor } from "@tiptap/react";
+import { useKeys } from "../../keys";
 import type { AssistantEvent, PmNode, Placement } from "@hearth/agents";
 
 type Proposal = Extract<AssistantEvent, { type: "proposal" }>;
@@ -37,6 +38,7 @@ export function AssistantPanel({
   editor: Editor | null;
   onClose: () => void;
 }) {
+  const { mod } = useKeys();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [history, setHistory] = useState<unknown[]>([]);
   const [input, setInput] = useState("");
@@ -240,7 +242,7 @@ export function AssistantPanel({
                   <div className="asst-card-actions">
                     {inserted.has(p.id) ? (
                       <span className="muted small">
-                        Inserted — undo with ⌘Z
+                        Inserted — undo with {mod} Z
                       </span>
                     ) : (
                       <button

@@ -310,7 +310,14 @@ export const DEFAULT_TABLE_COLOR = "#c99a2e";
 
 export interface TableColors {
   table: string;
-  characters: { id: string; name: string; color: string; custom: boolean }[];
+  characters: {
+    id: string;
+    name: string;
+    color: string;
+    custom: boolean;
+    /** A player has joined as this character (else the DM added it and it can be removed). */
+    player: boolean;
+  }[];
 }
 
 /** Every character's color (theirs, or a default by order of creation) and the table's. */
@@ -323,7 +330,7 @@ export async function getTableColors(campaignId: string): Promise<TableColors> {
     prisma.character.findMany({
       where: { campaignId },
       orderBy: { createdAt: "asc" },
-      select: { id: true, name: true, color: true },
+      select: { id: true, name: true, color: true, membershipId: true },
     }),
   ]);
   return {
@@ -335,6 +342,7 @@ export async function getTableColors(campaignId: string): Promise<TableColors> {
         c.color ??
         DEFAULT_CHARACTER_COLORS[i % DEFAULT_CHARACTER_COLORS.length]!,
       custom: !!c.color,
+      player: !!c.membershipId,
     })),
   };
 }
@@ -375,6 +383,35 @@ export async function addCharacter(
     select: { id: true },
   });
   return { ok: true, id: created.id };
+}
+
+/**
+ * Remove a character the DM added that no player has claimed (a test, a typo, a character who
+ * never joined). A player's character can't be removed this way: deleting it would take back
+ * everything its player has been told.
+ */
+export async function removeCharacter(
+  campaignId: string,
+  characterId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const character = await prisma.character.findFirst({
+    where: { id: characterId, campaignId },
+    select: { membershipId: true, name: true },
+  });
+  if (!character)
+    return { ok: false, error: "That character is already gone." };
+  if (character.membershipId)
+    return {
+      ok: false,
+      error: `${character.name} belongs to a player, so it can't be removed here.`,
+    };
+  // Only removes it if it's still unclaimed (a /join could land in between).
+  const { count } = await prisma.character.deleteMany({
+    where: { id: characterId, campaignId, membershipId: null },
+  });
+  return count
+    ? { ok: true }
+    : { ok: false, error: `${character.name} was just claimed by a player.` };
 }
 
 /** Save the DM's colors. Ids are checked against the campaign; bad colors are ignored. */
