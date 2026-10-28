@@ -39,10 +39,16 @@ type Pick = { kind: "page"; page: PageRef } | { kind: "create"; title: string };
 const MAX_PICKS = 8;
 const norm = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
 
-/** Best matches first: exact, then prefix, word prefix, anywhere, then letters in order. */
-function rankPages(pages: PageRef[], query: string, exclude: string) {
+/** Best matches first: exact, then prefix, word prefix, anywhere, then letters in order. With
+ * no query, the first `limit` pages as given. */
+export function rankPages<T extends PageRef>(
+  pages: T[],
+  query: string,
+  exclude = "",
+  limit = MAX_PICKS,
+): T[] {
   const q = norm(query);
-  const scored: { page: PageRef; score: number }[] = [];
+  const scored: { page: T; score: number }[] = [];
   for (const page of pages) {
     if (page.id === exclude || !page.title.trim()) continue;
     const t = norm(page.title);
@@ -59,7 +65,7 @@ function rankPages(pages: PageRef[], query: string, exclude: string) {
     .sort(
       (a, b) => a.score - b.score || a.page.title.length - b.page.title.length,
     )
-    .slice(0, MAX_PICKS)
+    .slice(0, limit)
     .map((s) => s.page);
 }
 
