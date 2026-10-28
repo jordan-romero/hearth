@@ -6,15 +6,10 @@
 
 import { useEffect, useState } from "react";
 import { openQuickSwitcher } from "./quick-switcher";
-
-const isMac = () =>
-  typeof navigator !== "undefined" &&
-  /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
+import { useKeys } from "./keys";
 
 function useMod() {
-  const [mod, setMod] = useState("Ctrl");
-  useEffect(() => setMod(isMac() ? "⌘" : "Ctrl"), []);
-  return mod;
+  return useKeys().mod;
 }
 
 const OPEN_EVENT = "hearth:shortcuts";
@@ -29,7 +24,7 @@ const typing = (t: EventTarget | null) =>
 
 export function ShortcutSheet() {
   const [open, setOpen] = useState(false);
-  const mod = useMod();
+  const { mod, shift } = useKeys();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -75,7 +70,7 @@ export function ShortcutSheet() {
         ["```", "Code block"],
         ["---", "A line across the page"],
         [`${mod} B  /  ${mod} I`, "Bold / italic"],
-        [`${mod} Z  /  ${mod} ⇧ Z`, "Undo / redo"],
+        [`${mod} Z  /  ${mod} ${shift} Z`, "Undo / redo"],
       ],
     ],
     [
