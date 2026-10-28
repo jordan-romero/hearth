@@ -21,6 +21,7 @@ interface Entry extends PageDoc {
 
 const docs = new Map<string, Entry>();
 const titles = new Map<string, string>();
+const icons = new Map<string, string | null>();
 const listeners = new Set<() => void>();
 let version = 0;
 
@@ -62,6 +63,19 @@ export function setTitle(id: string, title: string) {
   if (titles.get(id) === title) return;
   titles.set(id, title);
   changed();
+}
+
+/** An icon as just picked in this tab (null: removed). */
+export function setIcon(id: string, icon: string | null) {
+  icons.set(id, icon);
+  const kept = docs.get(id);
+  if (kept) docs.set(id, { ...kept, icon });
+  changed();
+}
+
+/** The latest icon for a page: as picked in this tab, else as the server sent it. */
+export function iconOf(id: string, fallback: string | null): string | null {
+  return icons.has(id) ? icons.get(id)! : fallback;
 }
 
 /** The latest title for a page: as typed in this tab, else as the server sent it. */

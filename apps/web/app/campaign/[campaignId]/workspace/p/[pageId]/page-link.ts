@@ -2,7 +2,7 @@
 // to pick a page by name, or create one; type or paste [[Ildin]] and it becomes a link to Ildin's
 // page. A link points at the page by id, so renaming the page never breaks it, and it always
 // shows the page's current title. A link to a page that doesn't exist yet is dashed; clicking it
-// creates the page.
+// creates the page. After a page's name, # picks one of its headings: [[Ildin#History]].
 //
 // The node's JSON shape is shared with the server (packages/agents/src/page-links.ts), which
 // resolves links on save and keeps the record of what links where.
@@ -21,6 +21,7 @@ import { suggestionPopup } from "./slash";
 export interface PageRef {
   id: string;
   title: string;
+  icon?: string | null;
 }
 
 export interface PageLinkOptions {
@@ -32,9 +33,47 @@ export interface PageLinkOptions {
   currentPageId: () => string;
   /** Make a page with this title; its id, or null if it couldn't be made. */
   createPage: (title: string) => Promise<string | null>;
+  /** A page's headings, if the browser has the page. */
+  headings: (pageId: string) => string[];
 }
 
-type Pick = { kind: "page"; page: PageRef } | { kind: "create"; title: string };
+type Pick =
+  | { kind: "page"; page: PageRef }
+  | { kind: "heading"; page: PageRef; heading: string }
+  | { kind: "create"; title: string };
+
+/** Every heading in a page, in order. */
+export function headingsOf(doc: {
+  type: string;
+  content?: unknown[];
+}): string[] {
+  const out: string[] = [];
+  const walk = (n: { type?: string; content?: unknown[]; text?: string }) => {
+    if (n.type === "heading") {
+      const t = (n.content ?? [])
+        .map((c) => {
+          const node = c as { text?: string; attrs?: { label?: string } };
+          return node.text ?? node.attrs?.label ?? "";
+        })
+        .join("")
+        .trim();
+      if (t) out.push(t);
+      return;
+    }
+    for (const c of n.content ?? []) walk(c as typeof n);
+  };
+  walk(doc);
+  return out;
+}
+
+/** The address of a page, or of a heading in it. */
+export function pageHref(
+  base: string,
+  pageId: string,
+  heading?: string | null,
+) {
+  return `${base}/p/${pageId}${heading ? `#${encodeURIComponent(heading)}` : ""}`;
+}
 
 const MAX_PICKS = 8;
 const norm = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
@@ -77,6 +116,18 @@ function isSubsequence(q: string, t: string) {
 
 function picks(options: PageLinkOptions, raw: string): Pick[] {
   const query = raw.replace(/\]+$/, "").trim();
+  // "Ildin#Hist": that page's headings.
+  const hash = query.indexOf("#");
+  if (hash > 0) {
+    const page = rankPages(options.pages(), query.slice(0, hash), "", 1)[0];
+    if (!page) return [];
+    const want = norm(query.slice(hash + 1));
+    return options
+      .headings(page.id)
+      .filter((h) => norm(h).includes(want))
+      .slice(0, MAX_PICKS)
+      .map((heading): Pick => ({ kind: "heading", page, heading }));
+  }
   const pages = rankPages(options.pages(), query, options.currentPageId());
   const exact = pages.some((p) => norm(p.title) === norm(query));
   return [
@@ -87,12 +138,16 @@ function picks(options: PageLinkOptions, raw: string): Pick[] {
 
 /** The link for a title typed or pasted as [[Title]]: to the one page with that title, or
  * unresolved (dashed, click to create) when there's none. */
-function attrsFor(options: PageLinkOptions, title: string) {
-  const label = title.trim();
+function attrsFor(options: PageLinkOptions, typed: string) {
+  const [title = "", heading] = typed.split("#").map((s) => s.trim());
+  const label = title;
   const matches = options.pages().filter((p) => norm(p.title) === norm(label));
-  return matches.length === 1
-    ? { pageId: matches[0]!.id, label: matches[0]!.title }
-    : { pageId: null, label };
+  return {
+    ...(matches.length === 1
+      ? { pageId: matches[0]!.id, label: matches[0]!.title }
+      : { pageId: null, label }),
+    heading: heading || null,
+  };
 }
 
 /** Point the first unresolved link with this label at a page that now exists. */
@@ -137,12 +192,13 @@ function suggest(
     },
     items: ({ query }) => picks(options, query),
     command: ({ editor: e, range, props }) => {
-      const label = props.kind === "page" ? props.page.title : props.title;
-      const pageId = props.kind === "page" ? props.page.id : null;
+      const label = props.kind === "create" ? props.title : props.page.title;
+      const pageId = props.kind === "create" ? null : props.page.id;
+      const heading = props.kind === "heading" ? props.heading : null;
       e.chain()
         .focus()
         .insertContentAt(range, [
-          { type: "pageLink", attrs: { pageId, label } },
+          { type: "pageLink", attrs: { pageId, label, heading } },
           { type: "text", text: " " },
         ])
         .run();
@@ -157,12 +213,18 @@ function suggest(
         empty: "Type a page's name",
         show: (p) =>
           p.kind === "page"
-            ? { title: p.page.title }
-            : {
-                title: `Create “${p.title}”`,
-                hint: "A new page, linked here",
-                className: "create",
-              },
+            ? {
+                title: p.page.icon
+                  ? `${p.page.icon} ${p.page.title}`
+                  : p.page.title,
+              }
+            : p.kind === "heading"
+              ? { title: p.heading, hint: `in ${p.page.title}` }
+              : {
+                  title: `Create “${p.title}”`,
+                  hint: "A new page, linked here",
+                  className: "create",
+                },
       }),
   });
 }
@@ -180,6 +242,7 @@ export const PageLink = Node.create<PageLinkOptions>({
       pages: () => [],
       currentPageId: () => "",
       createPage: async () => null,
+      headings: () => [],
     };
   },
 
@@ -192,7 +255,13 @@ export const PageLink = Node.create<PageLinkOptions>({
       },
       label: {
         default: "",
-        parseHTML: (el) => el.textContent ?? "",
+        parseHTML: (el) =>
+          el.getAttribute("data-label") ?? el.textContent ?? "",
+        renderHTML: () => ({}),
+      },
+      heading: {
+        default: null,
+        parseHTML: (el) => el.getAttribute("data-heading") || null,
         renderHTML: () => ({}),
       },
     };
@@ -205,14 +274,19 @@ export const PageLink = Node.create<PageLinkOptions>({
 
   renderHTML({ node, HTMLAttributes }) {
     const id = node.attrs.pageId as string | null;
+    const heading = node.attrs.heading as string | null;
     const page = id ? this.options.pages().find((p) => p.id === id) : undefined;
-    const text = page?.title || node.attrs.label || "Untitled";
+    const name = page?.title || node.attrs.label || "Untitled";
+    const named = page?.icon ? `${page.icon} ${name}` : name;
+    const text = heading ? `${named} › ${heading}` : named;
     return [
       "a",
       mergeAttributes(HTMLAttributes, {
         "data-page-link": id ?? "",
+        "data-label": node.attrs.label,
+        ...(heading ? { "data-heading": heading } : {}),
         class: `ws-pagelink${!id ? " unresolved" : page ? "" : " missing"}`,
-        ...(id ? { href: `${this.options.base}/p/${id}` } : {}),
+        ...(id ? { href: pageHref(this.options.base, id, heading) } : {}),
         title: !id
           ? `No page called “${text}” yet. Click to create it.`
           : page
@@ -224,7 +298,8 @@ export const PageLink = Node.create<PageLinkOptions>({
   },
 
   renderText({ node }) {
-    return `[[${node.attrs.label}]]`;
+    const heading = node.attrs.heading as string | null;
+    return `[[${node.attrs.label}${heading ? `#${heading}` : ""}]]`;
   },
 
   addInputRules() {

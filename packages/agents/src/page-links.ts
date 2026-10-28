@@ -2,7 +2,8 @@
 // { type: "pageLink", attrs: { pageId, label } }: it points at the page by id, so renaming a page
 // never breaks it, and `label` is the page's title as last seen (kept current on save, and what
 // shows if the page is gone). `pageId: null` is a link not yet resolved: "[[Ildin]]" before
-// there's an Ildin, or text that just arrived from an import, a paste or Claude.
+// there's an Ildin, or text that just arrived from an import, a paste or Claude. An optional
+// `heading` points at a section of the page: "[[Ildin#History]]".
 //
 // Pure: no database. The workspace service resolves links on save and records what links where.
 
@@ -10,11 +11,26 @@ import type { PmNode } from "./page-markdown.js";
 
 export const PAGE_LINK = "pageLink";
 
-/** "[[Ildin]]", or "[[Ildin|the ferryman]]" (Obsidian's alias form: the title is what links). */
-const WIKI = /\[\[([^[\]|\n]+)(?:\|[^[\]\n]*)?\]\]/g;
+/** "[[Ildin]]", "[[Ildin#History]]" (a section), or "[[Ildin|the ferryman]]" (Obsidian's alias
+ * form: the title is what links). */
+const WIKI = /\[\[([^[\]|#\n]+)(?:#([^[\]|\n]+))?(?:\|[^[\]\n]*)?\]\]/g;
 
-export function pageLinkNode(pageId: string | null, label: string): PmNode {
-  return { type: PAGE_LINK, attrs: { pageId, label } };
+export function pageLinkNode(
+  pageId: string | null,
+  label: string,
+  heading?: string | null,
+): PmNode {
+  return {
+    type: PAGE_LINK,
+    attrs: { pageId, label, ...(heading ? { heading } : {}) },
+  };
+}
+
+/** The section a page link points at, if any. */
+export function headingOf(node: PmNode): string | null {
+  return typeof node.attrs?.heading === "string" && node.attrs.heading
+    ? node.attrs.heading
+    : null;
 }
 
 /** The words an inline node stands for: a text node's text, a page link's label. */
@@ -69,7 +85,7 @@ function splitWiki(text: PmNode): PmNode[] {
     if (!title) continue;
     if (m.index! > last) out.push({ ...text, text: s.slice(last, m.index) });
     out.push({
-      ...pageLinkNode(null, title),
+      ...pageLinkNode(null, title, m[2]?.trim()),
       ...(text.marks?.length ? { marks: text.marks } : {}),
     });
     last = m.index! + m[0].length;

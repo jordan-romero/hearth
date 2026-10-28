@@ -28,16 +28,30 @@ import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { TableKit } from "@tiptap/extension-table";
 import { Placeholder } from "@tiptap/extensions";
 import type { PmNode } from "@hearth/agents";
-import { createLinkedPageAction, savePageAction } from "../../actions";
+import {
+  createLinkedPageAction,
+  savePageAction,
+  setPageIconAction,
+} from "../../actions";
 import {
   fetchDocs,
   getDoc,
   savedDoc,
+  setIcon,
   setTitle as showTitle,
   type PageDoc,
 } from "../../page-store";
 import { SlashCommand } from "./slash";
-import { PageLink, setLinkTarget, type PageRef } from "./page-link";
+import { headingsOf, PageLink, setLinkTarget, type PageRef } from "./page-link";
+import { LinkPreview } from "./link-preview";
+import {
+  Callout,
+  IconButton,
+  isEmptyDoc,
+  TemplateChips,
+  type Template,
+} from "./page-extras";
+import { scrollToHeading } from "../../workspace-context";
 import { AssistantPanel } from "./assistant-panel";
 import {
   canonMark,
@@ -96,7 +110,7 @@ export function PageEditor({
   characters: TableCharacter[];
   /** Every page in the campaign, for page links. */
   pages: PageRef[];
-  openPage: (id: string) => void;
+  openPage: (id: string, heading?: string | null) => void;
 }) {
   const router = useRouter();
   const base = `/campaign/${campaignId}/workspace`;
@@ -141,8 +155,12 @@ export function PageEditor({
   };
   openLinkRef.current = (href, newTab) => {
     const path = hearthPath(href);
-    const page = path?.match(new RegExp(`^${base}/p/([^/?#]+)$`));
-    if (page && !newTab) openPage(decodeURIComponent(page[1]!));
+    const page = path?.match(new RegExp(`^${base}/p/([^/?#]+)(?:#(.*))?$`));
+    if (page && !newTab)
+      openPage(
+        decodeURIComponent(page[1]!),
+        page[2] ? decodeURIComponent(page[2]) : null,
+      );
     else if (path && !newTab) router.push(path);
     else window.open(path ?? href, "_blank", "noopener,noreferrer");
   };
@@ -164,11 +182,16 @@ export function PageEditor({
             : "Write, or press / for blocks, [[ to link a page…",
       }),
       SlashCommand,
+      Callout,
       PageLink.configure({
         base,
         currentPageId: () => current.current,
         pages: () => [...pagesRef.current, ...createdRef.current],
         createPage: (title) => createPageRef.current(title),
+        headings: (id) => {
+          const d = getDoc(id);
+          return d ? headingsOf(d.content) : [];
+        },
       }),
       canonMark({
         table: tableColor,
@@ -185,7 +208,10 @@ export function PageEditor({
         const unresolved = target?.closest?.("a[data-page-link='']");
         if (unresolved) {
           event.preventDefault();
-          const label = unresolved.textContent ?? "";
+          const label =
+            unresolved.getAttribute("data-label") ??
+            unresolved.textContent ??
+            "";
           void createPageRef.current(label).then((id) => {
             if (!id || !editorRef.current) return;
             setLinkTarget(editorRef.current, label, id);
@@ -315,9 +341,19 @@ export function PageEditor({
       titleRef.current = d.title;
       setState("saved");
       setError(null);
+      // Opened at a heading ("…/p/id#History"): go to it once the page is drawn.
+      const hash = decodeURIComponent(window.location.hash.slice(1));
+      if (hash) requestAnimationFrame(() => scrollToHeading(hash));
     },
     [editor],
   );
+
+  // Opened by its address at a heading.
+  useEffect(() => {
+    if (!editor) return;
+    const hash = decodeURIComponent(window.location.hash.slice(1));
+    if (hash) requestAnimationFrame(() => scrollToHeading(hash));
+  }, [editor]);
 
   // Another page opened: save what's waiting on this one, then switch.
   useEffect(() => {
@@ -397,6 +433,14 @@ export function PageEditor({
           </span>
         )}
       </div>
+      <IconButton
+        icon={doc.icon}
+        readOnly={readOnly}
+        onChange={(icon) => {
+          setIcon(pageId, icon); // shown everywhere at once
+          void setPageIconAction(campaignId, pageId, icon);
+        }}
+      />
       <input
         className="ws-title"
         value={title}
@@ -418,6 +462,17 @@ export function PageEditor({
         }}
       />
       <Legend tableColor={tableColor} characters={characters} />
+      {!readOnly && (
+        <Templates
+          editor={editor}
+          onPick={(t) => {
+            if (!doc.icon) {
+              setIcon(pageId, t.icon);
+              void setPageIconAction(campaignId, pageId, t.icon);
+            }
+          }}
+        />
+      )}
       {editor && !readOnly && (
         <FormatBar
           editor={editor}
@@ -428,7 +483,31 @@ export function PageEditor({
         />
       )}
       <EditorContent editor={editor} />
+      <LinkPreview base={base} />
     </div>
+  );
+}
+
+/** On an empty page: start from an NPC, Location, Faction or Session template. */
+function Templates({
+  editor,
+  onPick,
+}: {
+  editor: Editor | null;
+  onPick: (t: Template) => void;
+}) {
+  const empty = useEditorState({
+    editor,
+    selector: ({ editor: e }) => isEmptyDoc(e),
+  });
+  if (!editor || !empty) return null;
+  return (
+    <TemplateChips
+      onPick={(t) => {
+        editor.chain().focus().setContent(t.html).focus("start").run();
+        onPick(t);
+      }}
+    />
   );
 }
 
