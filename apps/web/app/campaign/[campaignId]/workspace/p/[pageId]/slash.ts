@@ -7,6 +7,7 @@ import Suggestion, {
   type SuggestionKeyDownProps,
 } from "@tiptap/suggestion";
 import { computePosition, flip, offset, shift } from "@floating-ui/dom";
+import { insertCallout, TEMPLATES } from "./page-extras";
 
 interface Item {
   title: string;
@@ -71,6 +72,46 @@ const ITEMS: Item[] = [
         .deleteRange(r)
         .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
         .run(),
+  },
+  {
+    title: "Callout",
+    hint: "💡 A note that stands out",
+    keywords: "callout note box info highlight",
+    run: (e, r) => {
+      e.chain().focus().deleteRange(r).run();
+      insertCallout(e, "note");
+    },
+  },
+  {
+    title: "DM secret",
+    hint: "🤫 For your eyes only",
+    keywords: "secret callout hidden private dm",
+    run: (e, r) => {
+      e.chain().focus().deleteRange(r).run();
+      insertCallout(e, "secret");
+    },
+  },
+  {
+    title: "Warning",
+    hint: "⚠️ A danger, a rule to remember",
+    keywords: "warning callout danger caution",
+    run: (e, r) => {
+      e.chain().focus().deleteRange(r).run();
+      insertCallout(e, "warning");
+    },
+  },
+  ...TEMPLATES.map((t): Item => ({
+    title: `${t.label} template`,
+    hint: `${t.icon} Headings to fill in`,
+    keywords: `template ${t.key} ${t.label.toLowerCase()}`,
+    run: (e, r) => e.chain().focus().deleteRange(r).insertContent(t.html).run(),
+  })),
+  {
+    title: "Link to a page",
+    hint: "Or type [[ anywhere",
+    keywords: "link page mention wiki [[ @",
+    // Leaves "[[" behind, which opens the page picker.
+    run: (e, r) => e.chain().focus().deleteRange(r).insertContent("[[").run(),
   },
   {
     title: "Divider",

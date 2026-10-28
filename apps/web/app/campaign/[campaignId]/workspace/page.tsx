@@ -4,6 +4,7 @@ import Link from "next/link";
 import { getWorkspaceTree } from "@hearth/agents";
 import { requireDm } from "@/lib/campaign";
 import { NewPageButton } from "./new-page-button";
+import { GettingStarted } from "./shortcuts";
 
 export default async function WorkspaceHome({
   params,
@@ -24,6 +25,7 @@ export default async function WorkspaceHome({
         <h2 className="ws-title-static">Your workspace</h2>
         <NewPageButton campaignId={campaignId} />
       </div>
+      <GettingStarted />
       {recent.length === 0 ? (
         <div className="ws-empty-state">
           <p>

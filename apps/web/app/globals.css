@@ -1021,6 +1021,447 @@ code {
   color: var(--ember);
   background: var(--ember-soft);
 }
+/* Drag and drop in the tree (workspace/tree.tsx). */
+.ws-tree .ws-row[draggable="true"] {
+  cursor: grab;
+}
+.ws-tree .ws-row.lifted {
+  opacity: 0.4;
+}
+.ws-tree .ws-row.drop-before {
+  box-shadow: inset 0 2px 0 var(--ember);
+}
+.ws-tree .ws-row.drop-after {
+  box-shadow: inset 0 -2px 0 var(--ember);
+}
+.ws-tree .ws-row.drop-into {
+  background: var(--ember-soft);
+  outline: 1px solid var(--ember);
+  outline-offset: -1px;
+}
+.ws-root-drop {
+  margin-top: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--ink-3);
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  text-align: center;
+}
+.ws-root-drop.over {
+  color: var(--ember);
+  border-color: var(--ember);
+  background: var(--ember-soft);
+}
+
+/* ⌘K quick switcher (workspace/quick-switcher.tsx). */
+.ws-find {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: 2px 0 10px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-3);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.ws-find:hover {
+  color: var(--ink-2);
+}
+.ws-find kbd,
+.qs-help kbd {
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink-3);
+}
+.qs-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 16px;
+  background: color-mix(in srgb, #000 45%, transparent);
+}
+.qs {
+  width: min(560px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgb(0 0 0 / 0.35);
+  overflow: hidden;
+}
+.qs-input {
+  width: 100%;
+  padding: 14px 16px;
+  font: inherit;
+  font-size: 16px;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  outline: none;
+}
+.qs-list {
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+}
+.qs-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.qs-item small {
+  flex-shrink: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.qs-item.on {
+  background: var(--ember-soft);
+}
+.qs-item.create span {
+  color: var(--ember);
+}
+.qs-empty {
+  padding: 10px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+.qs-help {
+  margin: 0;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--ink-3);
+  border-top: 1px solid var(--line);
+}
+
+/* Page icons, templates and callouts (workspace/p/[pageId]/page-extras.tsx). */
+.ws-row-icon {
+  margin-right: 6px;
+}
+.ws-icon-wrap {
+  position: relative;
+  margin: 4px 0 2px;
+}
+.ws-page-icon {
+  padding: 2px 4px;
+  font-size: 40px;
+  line-height: 1.1;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.ws-page-icon:hover {
+  background: var(--line);
+}
+.ws-page-icon.empty {
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-3);
+  opacity: 0;
+}
+.ws-editor:hover .ws-page-icon.empty,
+.ws-page-icon.empty:focus-visible {
+  opacity: 1;
+}
+.ws-icon-picker {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 4px);
+  left: 0;
+  display: grid;
+  gap: 8px;
+  width: 300px;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgb(0 0 0 / 0.25);
+}
+.ws-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 2px;
+}
+.ws-icon-grid button {
+  font-size: 18px;
+  padding: 3px 0;
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.ws-icon-grid button:hover {
+  background: var(--line);
+}
+.ws-templates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+.ws-templates .ws-chip {
+  font: inherit;
+  font-size: 13px;
+  padding: 3px 10px;
+  color: var(--ink-2);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.ws-templates .ws-chip:hover {
+  color: var(--ink);
+  border-color: var(--ember);
+}
+.ws-prose .ws-callout {
+  position: relative;
+  margin: 12px 0;
+  padding: 10px 14px 10px 44px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.ws-prose .ws-callout::before {
+  content: attr(data-icon);
+  position: absolute;
+  top: 9px;
+  left: 14px;
+  font-size: 17px;
+}
+.ws-prose .ws-callout > :first-child {
+  margin-top: 0;
+}
+.ws-prose .ws-callout > :last-child {
+  margin-bottom: 0;
+}
+.ws-prose .ws-callout[data-callout="warning"] {
+  border-color: color-mix(in srgb, var(--gold) 55%, var(--line));
+}
+.ws-prose .ws-callout[data-callout="secret"] {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--ember) 50%, var(--line));
+}
+.ws-prose .ws-callout[data-callout="tip"] {
+  border-color: color-mix(in srgb, var(--ember) 30%, var(--line));
+}
+
+/* Link previews and unlinked mentions. */
+.ws-preview {
+  position: fixed;
+  z-index: 90;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 36px rgb(0 0 0 / 0.25);
+  font-size: 13px;
+  pointer-events: none;
+}
+.ws-preview strong {
+  font-size: 14px;
+  color: var(--ink);
+}
+.ws-preview small {
+  color: var(--ink-3);
+}
+.ws-preview p {
+  margin: 6px 0 0;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+.ws-mentions {
+  margin-top: 18px;
+}
+.ws-mentions-toggle {
+  padding: 0;
+  font: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.ws-mentions ul {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.ws-mention-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+.ws-mention-head a {
+  color: var(--ink);
+}
+.ws-mentions p {
+  margin: 2px 0 0;
+}
+.btn.small {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+/* Shortcuts sheet and getting started (workspace/shortcuts.tsx). */
+.qs.sheet {
+  width: min(640px, 100%);
+}
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.sheet-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.sheet-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 6px 24px;
+  max-height: 65vh;
+  overflow-y: auto;
+  padding: 10px 16px 16px;
+}
+.sheet-body h3 {
+  margin: 10px 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.sheet-body dl {
+  margin: 0;
+}
+.sheet-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.sheet-row dt {
+  margin: 0;
+}
+.sheet-row dd {
+  margin: 0;
+  color: var(--ink-2);
+}
+.sheet-row kbd,
+.ws-welcome kbd,
+.ws-help kbd {
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--ground);
+  white-space: nowrap;
+}
+.ws-help {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.ws-welcome {
+  margin: 0 0 24px;
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ember);
+  border-radius: 10px;
+}
+.ws-welcome h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.ws-welcome ol {
+  margin: 0 0 14px;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--ink-2);
+}
+.ws-welcome strong {
+  color: var(--ink);
+}
+.ws-welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+/* A page loading (workspace/p/[pageId]/loading.tsx). */
+.ws-skeleton {
+  border-radius: 6px;
+  background: var(--line);
+  animation: ws-pulse 1.2s ease-in-out infinite;
+}
+.ws-skeleton-crumbs {
+  width: 90px;
+  height: 12px;
+  margin-bottom: 34px;
+}
+.ws-skeleton-title {
+  width: 40%;
+  height: 34px;
+  margin-bottom: 36px;
+}
+.ws-skeleton-line {
+  height: 14px;
+  margin-bottom: 14px;
+}
+.ws-skeleton-line.short {
+  width: 55%;
+}
+@keyframes ws-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-skeleton {
+    animation: none;
+  }
+}
+
 /* Page links ([[ and @). */
 .ws-prose a.ws-pagelink {
   color: var(--ember);
@@ -1242,6 +1683,10 @@ code {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+.ws-color-remove {
+  margin-left: auto;
+  font-size: 12px;
 }
 .ws-colors-heading {
   margin: 12px 0 0;

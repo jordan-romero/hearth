@@ -7,6 +7,8 @@ import {
   relinkPages,
   savePage,
   archivePage,
+  getUnlinkedMentions,
+  linkMentions,
 } from "./workspace.js";
 import { markdownToPage } from "./markdown-to-page.js";
 import { getQueue } from "./queue.js";
@@ -128,6 +130,30 @@ describe.skipIf(!live)("page links (database)", () => {
     expect(await getBacklinks(C, ildin)).toHaveLength(1);
     await archivePage(C, notes);
     expect(await getBacklinks(C, ildin)).toEqual([]);
+  });
+
+  it("finds pages that name a page without linking it, and links them", async () => {
+    const shrine = await createPage(C, null, "Moon Shrine");
+    const notes = await createPage(C, null, "Rumours");
+    await write(
+      notes,
+      "They say the moon shrine is cursed. `Moon Shrine` in code doesn't count, nor Moon Shrines.",
+    );
+    const mentions = await getUnlinkedMentions(C, shrine);
+    expect(mentions).toEqual([
+      expect.objectContaining({ id: notes, title: "Rumours" }),
+    ]);
+    expect(mentions[0]!.snippet).toContain("moon shrine is cursed");
+
+    expect(await linkMentions(C, notes, shrine)).toBe(1);
+    expect(links((await getPage(C, notes))!.content)).toEqual([
+      [shrine, "Moon Shrine"],
+    ]);
+    expect(await getBacklinks(C, shrine)).toEqual([
+      { id: notes, title: "Rumours" },
+    ]);
+    // Linked now, so no longer an unlinked mention.
+    expect(await getUnlinkedMentions(C, shrine)).toEqual([]);
   });
 
   it("relinking an imported page turns its literal [[text]] into links", async () => {

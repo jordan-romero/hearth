@@ -14,6 +14,7 @@
 // yet) creates the page and opens it.
 
 import { useRouter } from "next/navigation";
+import { EditorState } from "@tiptap/pm/state";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   EditorContent,
@@ -27,9 +28,30 @@ import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { TableKit } from "@tiptap/extension-table";
 import { Placeholder } from "@tiptap/extensions";
 import type { PmNode } from "@hearth/agents";
-import { createLinkedPageAction, savePageAction } from "../../actions";
+import {
+  createLinkedPageAction,
+  savePageAction,
+  setPageIconAction,
+} from "../../actions";
+import {
+  fetchDocs,
+  getDoc,
+  savedDoc,
+  setIcon,
+  setTitle as showTitle,
+  type PageDoc,
+} from "../../page-store";
 import { SlashCommand } from "./slash";
-import { PageLink, setLinkTarget, type PageRef } from "./page-link";
+import { headingsOf, PageLink, setLinkTarget, type PageRef } from "./page-link";
+import { LinkPreview } from "./link-preview";
+import {
+  Callout,
+  IconButton,
+  isEmptyDoc,
+  TemplateChips,
+  type Template,
+} from "./page-extras";
+import { scrollToHeading } from "../../workspace-context";
 import { AssistantPanel } from "./assistant-panel";
 import {
   canonMark,
@@ -49,6 +71,13 @@ type SaveState = "saved" | "dirty" | "saving" | "conflict" | "error";
 
 const SAVE_DELAY_MS = 800;
 
+/** What a save sends: one page's title and content, as they were when it was taken. */
+interface Snapshot {
+  pageId: string;
+  title: string;
+  content: PmNode;
+}
+
 /** A link's address as a path within Hearth, or null when it leads elsewhere. */
 function hearthPath(href: string): string | null {
   try {
@@ -61,50 +90,53 @@ function hearthPath(href: string): string | null {
   }
 }
 
+/**
+ * One editor for the whole workspace: opening another page swaps its document in (the editor
+ * isn't rebuilt), so moving between pages is instant. Unsaved typing on the page being left is
+ * saved first, and each page keeps the revision its copy was based on.
+ */
 export function PageEditor({
   campaignId,
-  pageId,
-  initialTitle,
-  initialContent,
-  initialRevision,
-  readOnly,
+  doc,
   tableColor,
   characters,
-  folderId,
   pages,
+  openPage,
 }: {
   campaignId: string;
-  pageId: string;
-  /** Where a page created from a link goes: beside this one. */
-  folderId: string | null;
-  /** Every page in the campaign, for page links. */
-  pages: PageRef[];
-  initialTitle: string;
-  initialContent: PmNode;
-  initialRevision: number;
-  readOnly: boolean;
+  /** The page to show. When it changes, the editor switches to it. */
+  doc: PageDoc;
   tableColor: string;
   characters: TableCharacter[];
+  /** Every page in the campaign, for page links. */
+  pages: PageRef[];
+  openPage: (id: string, heading?: string | null) => void;
 }) {
   const router = useRouter();
-  const [title, setTitle] = useState(initialTitle);
+  const base = `/campaign/${campaignId}/workspace`;
+  const [pageId, setPageId] = useState(doc.id);
+  const [title, setTitle] = useState(doc.title);
   const [claudeOpen, setClaudeOpen] = useState(false);
   const [state, setState] = useState<SaveState>("saved");
   const [error, setError] = useState<string | null>(null);
-  const revision = useRef(initialRevision);
-  const savedTitle = useRef(initialTitle);
+  const readOnly = !!doc.archivedAt;
+  // Refs, because the editor is made once and its handlers outlive any one render.
+  const current = useRef(doc.id);
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly && doc.id === current.current;
+  const folderRef = useRef(doc.folderId);
+  if (doc.id === current.current) folderRef.current = doc.folderId;
+  /** Per page: the revision this tab's copy is based on (what a save says it replaces). */
+  const revisions = useRef(new Map<string, number>([[doc.id, doc.revision]]));
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const inFlight = useRef(false);
-  const again = useRef(false);
+  const inFlight = useRef(new Set<string>());
+  const queued = useRef(new Map<string, Snapshot>());
   const titleRef = useRef(title);
   titleRef.current = title;
-  // The editor is created once, so its change handler goes through a ref to always reach the
-  // current save logic (and the editor itself, which doesn't exist on the first render).
   const scheduleRef = useRef<() => void>(() => {});
   const openLinkRef = useRef<(href: string, newTab: boolean) => void>(() => {});
-  const base = `/campaign/${campaignId}/workspace`;
-  // Page links read the page list through refs: the editor is made once, and pages created from
-  // a link count before the server's list catches up.
+  // Page links read the page list through refs: pages created from a link count before the
+  // server's list catches up.
   const pagesRef = useRef(pages);
   pagesRef.current = pages;
   const createdRef = useRef<PageRef[]>([]);
@@ -114,7 +146,7 @@ export function PageEditor({
   createPageRef.current = async (title) => {
     const result = await createLinkedPageAction(
       campaignId,
-      folderId,
+      folderRef.current,
       title,
     ).catch(() => null);
     if (!result?.ok) return null;
@@ -123,7 +155,13 @@ export function PageEditor({
   };
   openLinkRef.current = (href, newTab) => {
     const path = hearthPath(href);
-    if (path && !newTab) router.push(path);
+    const page = path?.match(new RegExp(`^${base}/p/([^/?#]+)(?:#(.*))?$`));
+    if (page && !newTab)
+      openPage(
+        decodeURIComponent(page[1]!),
+        page[2] ? decodeURIComponent(page[2]) : null,
+      );
+    else if (path && !newTab) router.push(path);
     else window.open(path ?? href, "_blank", "noopener,noreferrer");
   };
 
@@ -141,21 +179,26 @@ export function PageEditor({
         placeholder: ({ node }) =>
           node.type.name === "heading"
             ? "Heading"
-            : "Write, or press / for blocks…",
+            : "Write, or press / for blocks, [[ to link a page…",
       }),
       SlashCommand,
+      Callout,
       PageLink.configure({
         base,
-        currentPageId: pageId,
+        currentPageId: () => current.current,
         pages: () => [...pagesRef.current, ...createdRef.current],
         createPage: (title) => createPageRef.current(title),
+        headings: (id) => {
+          const d = getDoc(id);
+          return d ? headingsOf(d.content) : [];
+        },
       }),
       canonMark({
         table: tableColor,
         characters: Object.fromEntries(characters.map((c) => [c.id, c.color])),
       } satisfies HighlightColors),
     ],
-    content: initialContent,
+    content: doc.content,
     onUpdate: () => scheduleRef.current(),
     editorProps: {
       attributes: { class: "ws-prose", "aria-label": "Page content" },
@@ -165,11 +208,14 @@ export function PageEditor({
         const unresolved = target?.closest?.("a[data-page-link='']");
         if (unresolved) {
           event.preventDefault();
-          const label = unresolved.textContent ?? "";
+          const label =
+            unresolved.getAttribute("data-label") ??
+            unresolved.textContent ??
+            "";
           void createPageRef.current(label).then((id) => {
             if (!id || !editorRef.current) return;
             setLinkTarget(editorRef.current, label, id);
-            router.push(`${base}/p/${id}`);
+            openPage(id);
           });
           return true;
         }
@@ -188,82 +234,164 @@ export function PageEditor({
   const editorRef = useRef(editor);
   editorRef.current = editor;
 
-  const save = useCallback(async () => {
-    if (!editor || readOnly) return;
-    if (inFlight.current) {
-      again.current = true;
-      return;
-    }
-    inFlight.current = true;
-    setState("saving");
-    const sentTitle = titleRef.current;
-    const result = await savePageAction(campaignId, pageId, {
-      title: sentTitle,
-      // As a string: the editor's JSON can hold objects React won't pass to a server action
-      // as plain data.
-      content: JSON.stringify(editor.getJSON()),
-      baseRevision: revision.current,
-    }).catch(() => ({
-      ok: false as const,
-      error: "Couldn't save — check your connection.",
-    }));
-    inFlight.current = false;
-
-    if (result.ok) {
-      revision.current = result.revision;
-      setError(null);
-      if (sentTitle !== savedTitle.current) {
-        savedTitle.current = sentTitle;
-        router.refresh(); // the sidebar shows the title
+  /** Save one page's snapshot. A save for a page already saving waits for it, then goes. */
+  const send = useCallback(
+    async (snap: Snapshot): Promise<void> => {
+      const id = snap.pageId;
+      if (inFlight.current.has(id)) {
+        queued.current.set(id, snap);
+        return;
       }
-      if (again.current) {
-        again.current = false;
-        void save();
-      } else {
+      inFlight.current.add(id);
+      const mine = () => current.current === id;
+      if (mine()) setState("saving");
+      const result = await savePageAction(campaignId, id, {
+        title: snap.title,
+        // As a string: the editor's JSON can hold objects React won't pass to a server action
+        // as plain data.
+        content: JSON.stringify(snap.content),
+        baseRevision: revisions.current.get(id) ?? 0,
+      }).catch(() => ({
+        ok: false as const,
+        error: "Couldn't save — check your connection.",
+      }));
+      inFlight.current.delete(id);
+
+      if (result.ok) {
+        revisions.current.set(id, result.revision);
+        savedDoc(id, {
+          revision: result.revision,
+          title: snap.title,
+          content: snap.content,
+        });
+        if (mine()) setError(null);
+      } else if ("conflict" in result) {
+        queued.current.delete(id);
+        if (mine()) setState("conflict");
+        return;
+      } else if (mine()) {
+        setState("error");
+        setError(result.error);
+      }
+      const next = queued.current.get(id);
+      if (next) {
+        queued.current.delete(id);
+        void send(next);
+      } else if (mine() && result.ok && !timer.current) {
         setState("saved");
       }
-    } else if ("conflict" in result) {
-      setState("conflict");
-    } else {
-      setState("error");
-      setError(result.error);
-    }
-  }, [editor, readOnly, campaignId, pageId, router]);
+    },
+    [campaignId],
+  );
+
+  const snapshot = useCallback(
+    (): Snapshot | null =>
+      editor
+        ? {
+            pageId: current.current,
+            title: titleRef.current,
+            content: editor.getJSON() as PmNode,
+          }
+        : null,
+    [editor],
+  );
+
+  /** Save now whatever is waiting to be saved. */
+  const flush = useCallback(() => {
+    if (!timer.current) return;
+    clearTimeout(timer.current);
+    timer.current = null;
+    const snap = snapshot();
+    if (snap && !readOnlyRef.current) void send(snap);
+  }, [send, snapshot]);
 
   const schedule = useCallback(() => {
-    if (readOnly) return;
+    if (readOnlyRef.current) return;
     setState((s) => (s === "conflict" ? s : "dirty"));
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => void save(), SAVE_DELAY_MS);
-  }, [readOnly, save]);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      const snap = snapshot();
+      if (snap) void send(snap);
+    }, SAVE_DELAY_MS);
+  }, [send, snapshot]);
   scheduleRef.current = schedule;
 
-  // A newer revision from the server (a restored version) replaces what's on screen, unless the
-  // DM has unsaved typing — then the conflict notice handles it.
-  useEffect(() => {
-    if (!editor || initialRevision <= revision.current) return;
-    if (state === "saved") {
-      editor.commands.setContent(initialContent, { emitUpdate: false });
-      setTitle(initialTitle);
-      savedTitle.current = initialTitle;
-      revision.current = initialRevision;
-    }
-  }, [editor, initialRevision, initialContent, initialTitle, state]);
+  /** Show a page: its document (with its own undo history), title and state. */
+  const load = useCallback(
+    (d: PageDoc) => {
+      if (!editor) return;
+      current.current = d.id;
+      readOnlyRef.current = !!d.archivedAt;
+      folderRef.current = d.folderId;
+      revisions.current.set(d.id, d.revision);
+      try {
+        editor.view.updateState(
+          EditorState.create({
+            doc: editor.schema.nodeFromJSON(d.content),
+            plugins: editor.state.plugins,
+          }),
+        );
+      } catch {
+        editor.commands.setContent(d.content, { emitUpdate: false });
+      }
+      editor.setEditable(!d.archivedAt, false);
+      setPageId(d.id);
+      setTitle(d.title);
+      titleRef.current = d.title;
+      setState("saved");
+      setError(null);
+      // Opened at a heading ("…/p/id#History"): go to it once the page is drawn.
+      const hash = decodeURIComponent(window.location.hash.slice(1));
+      if (hash) requestAnimationFrame(() => scrollToHeading(hash));
+    },
+    [editor],
+  );
 
-  // Don't lose the last few keystrokes when leaving the page.
+  // Opened by its address at a heading.
+  useEffect(() => {
+    if (!editor) return;
+    const hash = decodeURIComponent(window.location.hash.slice(1));
+    if (hash) requestAnimationFrame(() => scrollToHeading(hash));
+  }, [editor]);
+
+  // Another page opened: save what's waiting on this one, then switch.
+  useEffect(() => {
+    if (!editor || doc.id === current.current) return;
+    flush();
+    load(doc);
+    window.scrollTo({ top: 0 });
+  }, [editor, doc, flush, load]);
+
+  // A newer copy of this page from the server (a restore, another tab, Claude) replaces what's on
+  // screen, unless the DM has typed since: then saving reports the conflict instead.
+  useEffect(() => {
+    if (!editor || doc.id !== current.current) return;
+    if (doc.revision <= (revisions.current.get(doc.id) ?? 0)) return;
+    if (timer.current || inFlight.current.has(doc.id)) return;
+    load(doc);
+  }, [editor, doc, load]);
+
+  /** After a conflict: take the server's copy of this page. */
+  const reloadPage = useCallback(async () => {
+    const id = current.current;
+    revisions.current.set(id, -1);
+    await fetchDocs(base, [id]);
+    const fresh = getDoc(id);
+    if (fresh) load(fresh);
+  }, [base, load]);
+
+  // Don't lose the last few keystrokes when leaving the workspace.
   useEffect(() => {
     const warn = (e: BeforeUnloadEvent) => {
-      if (timer.current || inFlight.current) e.preventDefault();
+      if (timer.current || inFlight.current.size > 0) e.preventDefault();
     };
     window.addEventListener("beforeunload", warn);
     return () => {
       window.removeEventListener("beforeunload", warn);
-      if (timer.current) {
-        clearTimeout(timer.current);
-        void save();
-      }
+      flush();
     };
-  }, [save]);
+  }, [flush]);
 
   return (
     <div className="ws-editor">
@@ -279,6 +407,7 @@ export function PageEditor({
       )}
       {claudeOpen && (
         <AssistantPanel
+          key={pageId}
           campaignId={campaignId}
           pageId={pageId}
           editor={editor}
@@ -296,14 +425,22 @@ export function PageEditor({
             <button
               type="button"
               className="ws-link"
-              onClick={() => window.location.reload()}
+              onClick={() => void reloadPage()}
             >
-              Reload it
+              Load that version
             </button>{" "}
             (copy anything you need first).
           </span>
         )}
       </div>
+      <IconButton
+        icon={doc.icon}
+        readOnly={readOnly}
+        onChange={(icon) => {
+          setIcon(pageId, icon); // shown everywhere at once
+          void setPageIconAction(campaignId, pageId, icon);
+        }}
+      />
       <input
         className="ws-title"
         value={title}
@@ -313,6 +450,8 @@ export function PageEditor({
         maxLength={200}
         onChange={(e) => {
           setTitle(e.target.value);
+          titleRef.current = e.target.value;
+          showTitle(pageId, e.target.value); // the sidebar follows as you type
           schedule();
         }}
         onKeyDown={(e) => {
@@ -323,6 +462,17 @@ export function PageEditor({
         }}
       />
       <Legend tableColor={tableColor} characters={characters} />
+      {!readOnly && (
+        <Templates
+          editor={editor}
+          onPick={(t) => {
+            if (!doc.icon) {
+              setIcon(pageId, t.icon);
+              void setPageIconAction(campaignId, pageId, t.icon);
+            }
+          }}
+        />
+      )}
       {editor && !readOnly && (
         <FormatBar
           editor={editor}
@@ -333,7 +483,31 @@ export function PageEditor({
         />
       )}
       <EditorContent editor={editor} />
+      <LinkPreview base={base} />
     </div>
+  );
+}
+
+/** On an empty page: start from an NPC, Location, Faction or Session template. */
+function Templates({
+  editor,
+  onPick,
+}: {
+  editor: Editor | null;
+  onPick: (t: Template) => void;
+}) {
+  const empty = useEditorState({
+    editor,
+    selector: ({ editor: e }) => isEmptyDoc(e),
+  });
+  if (!editor || !empty) return null;
+  return (
+    <TemplateChips
+      onPick={(t) => {
+        editor.chain().focus().setContent(t.html).focus("start").run();
+        onPick(t);
+      }}
+    />
   );
 }
 
