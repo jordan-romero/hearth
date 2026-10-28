@@ -94,12 +94,20 @@ function filter(query: string): Item[] {
   );
 }
 
-/** A small DOM popup; kept framework-free so it can live inside the editor's plugin lifecycle. */
-function popup() {
+/** How a suggestion popup shows its items. */
+export interface PopupLook<T> {
+  label: string;
+  empty: string;
+  show: (item: T) => { title: string; hint?: string; className?: string };
+}
+
+/** A small DOM popup for a suggestion menu (the / menu, the [[ page picker); kept framework-free
+ * so it can live inside the editor's plugin lifecycle. */
+export function suggestionPopup<T>(look: PopupLook<T>) {
   let el: HTMLDivElement | null = null;
-  let items: Item[] = [];
+  let items: T[] = [];
   let index = 0;
-  let props: SuggestionProps<Item> | null = null;
+  let props: SuggestionProps<T> | null = null;
 
   const draw = () => {
     if (!el) return;
@@ -107,21 +115,25 @@ function popup() {
     if (items.length === 0) {
       const none = document.createElement("div");
       none.className = "ws-slash-empty";
-      none.textContent = "No matching block";
+      none.textContent = look.empty;
       el.append(none);
       return;
     }
     items.forEach((item, i) => {
+      const shown = look.show(item);
       const b = document.createElement("button");
       b.type = "button";
-      b.className = `ws-slash-item${i === index ? " on" : ""}`;
+      b.className = `ws-slash-item${i === index ? " on" : ""}${shown.className ? ` ${shown.className}` : ""}`;
       b.setAttribute("role", "option");
       b.setAttribute("aria-selected", String(i === index));
       const t = document.createElement("span");
-      t.textContent = item.title;
-      const h = document.createElement("small");
-      h.textContent = item.hint;
-      b.append(t, h);
+      t.textContent = shown.title;
+      b.append(t);
+      if (shown.hint) {
+        const h = document.createElement("small");
+        h.textContent = shown.hint;
+        b.append(h);
+      }
       b.addEventListener("mousedown", (e) => {
         e.preventDefault();
         props?.command(item);
@@ -142,19 +154,19 @@ function popup() {
   };
 
   return {
-    onStart(p: SuggestionProps<Item>) {
+    onStart(p: SuggestionProps<T>) {
       props = p;
       items = p.items;
       index = 0;
       el = document.createElement("div");
       el.className = "ws-slash";
       el.setAttribute("role", "listbox");
-      el.setAttribute("aria-label", "Insert a block");
+      el.setAttribute("aria-label", look.label);
       document.body.append(el);
       draw();
       void place();
     },
-    onUpdate(p: SuggestionProps<Item>) {
+    onUpdate(p: SuggestionProps<T>) {
       props = p;
       items = p.items;
       index = Math.min(index, Math.max(items.length - 1, 0));
@@ -198,7 +210,12 @@ export const SlashCommand = Extension.create({
         allowSpaces: false,
         items: ({ query }) => filter(query),
         command: ({ editor, range, props }) => props.run(editor, range),
-        render: popup,
+        render: () =>
+          suggestionPopup<Item>({
+            label: "Insert a block",
+            empty: "No matching block",
+            show: (item) => ({ title: item.title, hint: item.hint }),
+          }),
       }),
     ];
   },

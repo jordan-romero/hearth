@@ -27,6 +27,7 @@ export * from "./corrections.js";
 export * from "./upload.js";
 export * from "./external.js";
 export * from "./page-markdown.js";
+export * from "./page-links.js";
 export * from "./workspace.js";
 export * from "./highlights.js";
 export * from "./html-to-markdown.js";
