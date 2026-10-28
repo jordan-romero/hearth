@@ -189,7 +189,13 @@ export type ImportFileResult =
 export async function importFile(
   campaignId: string,
   batchId: string,
-  input: { key: string; fileName: string; folderId: string | null },
+  input: {
+    key: string;
+    fileName: string;
+    folderId: string | null;
+    /** Where the page sits among its folder's pages — the order the DM arranged before importing. */
+    position?: number;
+  },
 ): Promise<ImportFileResult> {
   const batch = await prisma.importBatch.findFirst({
     where: { id: batchId, campaignId },
@@ -243,6 +249,7 @@ export async function importFile(
         title,
         content,
         markdown,
+        position: input.position ?? 0,
         importBatchId: batchId,
         importHash,
         ...(converted.keepOriginal

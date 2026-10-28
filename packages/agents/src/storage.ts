@@ -95,9 +95,18 @@ export async function deleteObject(bucket: string, key: string): Promise<void> {
 }
 
 // Per-bucket convenience wrappers.
-/** Store a clip's bytes (bot) — returns the key (AudioClip.storagePath). */
+/** Store a clip's bytes (bot) — returns the key (AudioClip.storagePath). Clips are Ogg Opus;
+ * older ones were WAV, and keep their .wav key until they're compressed. */
 export const putClip = (key: string, data: Buffer): Promise<string> =>
-  putObject(RECORDINGS_BUCKET, key, data, "audio/wav");
+  putObject(
+    RECORDINGS_BUCKET,
+    key,
+    data,
+    key.endsWith(".wav") ? "audio/wav" : "audio/ogg",
+  );
+/** Remove a stored clip (once it's been replaced by a compressed copy). */
+export const deleteClip = (key: string): Promise<void> =>
+  deleteObject(RECORDINGS_BUCKET, key);
 /** Read a stored clip back (worker). */
 export const getClip = (key: string): Promise<Buffer> =>
   getObject(RECORDINGS_BUCKET, key);

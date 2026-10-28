@@ -143,6 +143,37 @@ describe.skipIf(!live)("workspace import (database + storage)", () => {
     });
   });
 
+  it("puts pages in the order the DM arranged them", async () => {
+    const { batchId, folders } = await startFileImport(C, {
+      destinationFolderId: null,
+      label: "Ordered",
+      folderPaths: ["Ordered"],
+    });
+    const folderId = folders["Ordered"]!;
+    for (const [position, name] of [
+      "Session 1",
+      "Session 2",
+      "Act I",
+    ].entries()) {
+      await importFile(C, batchId, {
+        key: await upload(C, `${name}.md`, Buffer.from(`# ${name} notes`)),
+        fileName: `${name}.md`,
+        folderId,
+        position,
+      });
+    }
+    const pages = await prisma.page.findMany({
+      where: { folderId },
+      orderBy: [{ position: "asc" }, { title: "asc" }],
+    });
+    // The DM's order, not alphabetical.
+    expect(pages.map((p) => p.title)).toEqual([
+      "Session 1",
+      "Session 2",
+      "Act I",
+    ]);
+  });
+
   it("skips a file that's already been imported", async () => {
     const { batchId } = await startFileImport(C, {
       destinationFolderId: null,

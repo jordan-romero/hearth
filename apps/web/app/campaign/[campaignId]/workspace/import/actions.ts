@@ -20,6 +20,10 @@ import { requireDm } from "@/lib/campaign";
 
 const workspace = (campaignId: string) => `/campaign/${campaignId}/workspace`;
 const optionalId = (v: unknown) => (typeof v === "string" && v ? v : null);
+const position = (v: unknown) => {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 0 ? n : 0;
+};
 
 export type BeginResult =
   | { ok: true; batchId: string; folders: Record<string, string | null> }
@@ -66,7 +70,12 @@ export async function prepareImportUpload(
 export async function importUploaded(
   campaignId: string,
   batchId: string,
-  input: { key: string; fileName: string; folderId: string | null },
+  input: {
+    key: string;
+    fileName: string;
+    folderId: string | null;
+    position: number;
+  },
 ): Promise<ImportFileResult> {
   await requireDm(String(campaignId));
   try {
@@ -74,6 +83,7 @@ export async function importUploaded(
       key: String(input.key),
       fileName: String(input.fileName),
       folderId: optionalId(input.folderId),
+      position: position(input.position),
     });
   } catch (err) {
     if (err instanceof WorkspaceError)
@@ -104,6 +114,7 @@ export async function importPosted(
     key,
     fileName,
     folderId: optionalId(formData.get("folderId")),
+    position: position(formData.get("position")),
   });
 }
 

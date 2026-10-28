@@ -7,13 +7,22 @@
 // pooled :6543 connection.
 
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "./generated/prisma/client.js";
+import { Prisma, PrismaClient } from "./generated/prisma/client.js";
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+// One client per copy of this module, shared across hot reloads. A Next.js server can load more
+// than one copy (in development each page and route is compiled on its own), and a raw query only
+// accepts SQL fragments (Prisma.sql) made by the copy that made its client: given another copy's
+// client, `${fragment}` is sent as a value and Postgres rejects it ("invalid input syntax for
+// type boolean"). So clients are kept per copy, keyed by that copy's Sql class.
+const globalForPrisma = globalThis as unknown as {
+  prismaClients?: Map<unknown, PrismaClient>;
+};
 
 /** Build (or reuse) the client. Called on first *use*, never at import. */
 function getClient(): PrismaClient {
-  if (globalForPrisma.prisma) return globalForPrisma.prisma;
+  const clients = (globalForPrisma.prismaClients ??= new Map());
+  const existing = clients.get(Prisma.Sql);
+  if (existing) return existing;
 
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -25,8 +34,8 @@ function getClient(): PrismaClient {
   const client = new PrismaClient({
     adapter: new PrismaPg({ connectionString }),
   });
-  // Reuse one client across hot-reloads (dev) and warm serverless invocations.
-  globalForPrisma.prisma = client;
+  // Reuse it across hot-reloads (dev) and warm serverless invocations.
+  clients.set(Prisma.Sql, client);
   return client;
 }
 

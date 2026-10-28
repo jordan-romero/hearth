@@ -1,12 +1,12 @@
 // Session capture — the spike logic made real: join the VC, capture each speaker's
-// speaking burst separately (no stitching), decode it to a WAV clip, store it, write
-// an AudioClip row, and enqueue a transcription job. The transcript is later just
-// these clips' text ordered by startMs.
+// speaking burst separately (no stitching), store it as an Ogg Opus clip, write an
+// AudioClip row, and enqueue a transcription job. The transcript is later just these
+// clips' text ordered by startMs.
 //
-// Why WAV and not a compressed container: the worker re-encodes clips to Opus for
-// permanent storage, so the bot's format is transient. Deepgram bills by duration,
-// not bytes, so WAV costs the same to transcribe — and decoding with opusscript is
-// pure-JS, which keeps the bot free of native addons that fight every deploy.
+// Why Ogg Opus: it is the audio Discord sent, packet for packet, in a container — no
+// re-encoding, nothing lost, and about a tenth of the bytes of the WAV clips used to be
+// (mono 48 kHz WAV filled the 1 GB free storage tier in four sessions). Deepgram reads it
+// directly. Bursts are still decoded, for live transcription and the health check.
 
 import {
   MessageFlags,
@@ -26,6 +26,7 @@ import {
   type OpusBurstDecoder,
 } from "./opus-decoder.js";
 import { isBotUser } from "./voice-bots.js";
+import { oggOpus } from "./ogg-opus.js";
 import {
   alertText,
   checkHealth,
@@ -92,9 +93,7 @@ const LIVE_TRANSCRIPTION = process.env.HEARTH_LIVE_TRANSCRIPTION === "1";
 const LIVE_AFTER_MS = 2500;
 
 const SAMPLE_RATE = 48000; // Discord voice is always 48kHz
-const DECODE_CHANNELS = 2; // Discord's Opus decodes to stereo…
-const OUTPUT_CHANNELS = 1; // …but each clip is one speaker, so store mono (half the bytes)
-const BIT_DEPTH = 16;
+const DECODE_CHANNELS = 2; // Discord's Opus is stereo
 
 /** Downmix interleaved stereo s16le to mono by averaging the two channels. */
 function stereoToMono(stereo: Buffer): Buffer {
@@ -106,27 +105,6 @@ function stereoToMono(stereo: Buffer): Buffer {
     mono.writeInt16LE((l + r) >> 1, i * 2);
   }
   return mono;
-}
-
-/** Wrap raw mono PCM (s16le) in a 44-byte WAV header so Deepgram reads it directly. */
-function wavFromPcm(pcm: Buffer): Buffer {
-  const byteRate = SAMPLE_RATE * OUTPUT_CHANNELS * (BIT_DEPTH / 8);
-  const blockAlign = OUTPUT_CHANNELS * (BIT_DEPTH / 8);
-  const header = Buffer.alloc(44);
-  header.write("RIFF", 0);
-  header.writeUInt32LE(36 + pcm.length, 4);
-  header.write("WAVE", 8);
-  header.write("fmt ", 12);
-  header.writeUInt32LE(16, 16); // fmt chunk size
-  header.writeUInt16LE(1, 20); // audio format: PCM
-  header.writeUInt16LE(OUTPUT_CHANNELS, 22);
-  header.writeUInt32LE(SAMPLE_RATE, 24);
-  header.writeUInt32LE(byteRate, 28);
-  header.writeUInt16LE(blockAlign, 32);
-  header.writeUInt16LE(BIT_DEPTH, 34);
-  header.write("data", 36);
-  header.writeUInt32LE(pcm.length, 40);
-  return Buffer.concat([header, pcm]);
 }
 
 /** discordUserId → characterId for everyone linked in this campaign. */
@@ -380,7 +358,7 @@ async function watchHealth(state: ActiveRecording): Promise<void> {
   }
 }
 
-/** Capture one speaking burst → mono WAV clip → store → AudioClip → enqueue.
+/** Capture one speaking burst → Ogg Opus clip → store → AudioClip → enqueue.
  *
  * Whatever happens inside, the speaker is released afterwards. The slot used to be cleared only on
  * the happy path, so one decoder crash left that speaker marked "already capturing" and silently
@@ -426,6 +404,7 @@ async function captureBurstInner(
   }
 
   const chunks: Buffer[] = [];
+  const packets: Buffer[] = []; // what's stored: the Opus exactly as Discord sent it
   let opusPackets = 0;
   let decodeFailed = false;
 
@@ -475,6 +454,7 @@ async function captureBurstInner(
 
   opusStream.on("data", (packet: Buffer) => {
     opusPackets++;
+    packets.push(packet);
     if (decodeFailed) return;
     let pcm: Buffer | null;
     try {
@@ -512,10 +492,12 @@ async function captureBurstInner(
     console.warn(`⚠️  burst from ${userId} decoded to 0 bytes — dropped`);
     return;
   }
-  const data = wavFromPcm(stereoToMono(pcmData));
+  const data = oggOpus(packets, { channels: DECODE_CHANNELS });
   const durationMs = Date.now() - state.startedAtMs - startMs;
   const characterId = state.speakerMap.get(userId) ?? null;
 
+  let clipId: string | null = null;
+  let queued = false;
   try {
     const clip = await prisma.audioClip.create({
       data: {
@@ -525,11 +507,12 @@ async function captureBurstInner(
         storagePath: "", // set after upload
         startMs,
         durationMs,
-        codec: "pcm_s16le",
+        codec: "opus",
       },
     });
-    const key = `${state.recordingId}/${clip.id}.wav`;
-    await putClip(key, data);
+    clipId = clip.id;
+    const key = `${state.recordingId}/${clip.id}.ogg`;
+    await withRetry(`upload ${key}`, () => putClip(key, data));
     await prisma.audioClip.update({
       where: { id: clip.id },
       data: { storagePath: key },
@@ -562,11 +545,43 @@ async function captureBurstInner(
       durationMs,
     };
     await boss.send(TRANSCRIBE_QUEUE, job);
+    queued = true;
     state.health.consecutiveSaveFailures = 0;
-    console.log(`💾 clip ${clip.id} (${durationMs}ms) from ${userId} → queued`);
+    console.log(
+      `💾 clip ${clip.id} (${durationMs}ms, ${data.length} bytes) from ${userId} → queued`,
+    );
   } catch (err) {
     state.health.consecutiveSaveFailures++;
     console.error("captureBurst failed:", err);
+    // A clip row with no transcription job is never marked transcribed, and finalize waits for
+    // every clip — so one failed upload once held a whole session's recap for three days. The
+    // burst is lost either way; removing its row lets the rest of the session finish.
+    if (clipId && !queued) {
+      await prisma.audioClip
+        .delete({ where: { id: clipId } })
+        .catch((e) =>
+          console.error(
+            `could not remove unsaved clip ${clipId} — finalize will wait on it:`,
+            e,
+          ),
+        );
+    }
+  }
+}
+
+/** Run `fn`, retrying twice with a short backoff. Uploads fail transiently (Supabase has
+ * returned errors with no message at all), and a burst is worth a few seconds' patience. */
+async function withRetry<T>(what: string, fn: () => Promise<T>): Promise<T> {
+  const delaysMs = [1000, 3000];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const delay = delaysMs[attempt];
+      if (delay === undefined) throw err;
+      console.warn(`${what} failed (attempt ${attempt + 1}), retrying:`, err);
+      await new Promise((r) => setTimeout(r, delay));
+    }
   }
 }
 

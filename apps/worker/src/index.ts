@@ -138,6 +138,9 @@ async function main(): Promise<void> {
   console.log("🛠  Hearth worker online — waiting for jobs");
 }
 
+/** How long finalize waits on a clip that hasn't transcribed before giving up on it. */
+const CLIP_STUCK_AFTER_MS = 6 * 60 * 60 * 1000;
+
 /** Finalize a game session: extract its FULL transcript (every recording — a session can span
  * several stop/restart segments) into a recap + knowledge units, then mark it complete.
  * Reschedules itself if the session resumed inside the gap window, so a break never finalizes
@@ -170,18 +173,29 @@ async function finalizeSession(gameSessionId: string): Promise<void> {
     return;
   }
   // Wait for transcription to drain before extracting, or we'd summarize a partial session.
-  const pending = await prisma.audioClip.count({
+  const pending = await prisma.audioClip.findMany({
     where: {
       recordingId: { in: gameSession.recordings.map((r) => r.id) },
       transcribedAt: null,
     },
+    select: { id: true, createdAt: true },
   });
-  if (pending > 0) {
+  // A clip transcribes in seconds. One still waiting hours later never will (its upload or job
+  // was lost), and waiting on it held a session's recap for three days — so go on without it.
+  const stuckBefore = Date.now() - CLIP_STUCK_AFTER_MS;
+  const waiting = pending.filter((c) => c.createdAt.getTime() > stuckBefore);
+  if (waiting.length > 0) {
     console.log(
-      `[finalize] session ${gameSessionId}: ${pending} clip(s) still transcribing — rescheduling`,
+      `[finalize] session ${gameSessionId}: ${waiting.length} clip(s) still transcribing — rescheduling`,
     );
     await scheduleFinalize(gameSessionId);
     return;
+  }
+  if (pending.length > 0) {
+    console.warn(
+      `[finalize] session ${gameSessionId}: going on without ${pending.length} clip(s) that never ` +
+        `transcribed: ${pending.map((c) => c.id).join(", ")}`,
+    );
   }
 
   // The whole session's speech, across every recording, in order. `startMs` is relative to
