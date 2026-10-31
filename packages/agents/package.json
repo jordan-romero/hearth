@@ -22,14 +22,14 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.129.0",
-    "@deepgram/sdk": "^5.13.0",
+    "@deepgram/sdk": "^5.16.0",
     "@hearth/core": "workspace:*",
     "@hearth/db": "workspace:*",
-    "@supabase/supabase-js": "^2.117.2",
+    "@supabase/supabase-js": "^2.118.0",
     "mammoth": "^1.13.0",
-    "marked": "^18.1.0",
-    "pg-boss": "^12.35.0",
-    "unpdf": "^1.8.1",
+    "marked": "^18.1.1",
+    "pg-boss": "^12.38.0",
+    "unpdf": "^1.9.1",
     "ws": "^8.22.0"
   },
   "devDependencies": {
