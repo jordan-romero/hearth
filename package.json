@@ -45,7 +45,7 @@
     },
     "overrides": {
       "@discordjs/node-pre-gyp>tar": "^7.5.22",
-      "undici": "^6.28.0",
+      "undici": "^6.29.1",
       "fast-uri": "^3.1.8",
       "mysql2": "^3.22.0",
       "deepmerge-ts": "^8.0.0",
