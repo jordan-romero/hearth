@@ -16,6 +16,6 @@
     "tsx": "^4.23.15"
   },
   "devDependencies": {
-    "dotenv-cli": "^11.0.0"
+    "dotenv-cli": "^11.1.0"
   }
 }
